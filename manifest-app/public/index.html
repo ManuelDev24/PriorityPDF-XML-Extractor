@@ -213,6 +213,51 @@ body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;font-size:14px;ba
       <div class="sidebar-tab active" id="tab-active" onclick="switchTab('active')">En curso</div>
       <div class="sidebar-tab" id="tab-completed" onclick="switchTab('completed')">Completados</div>
     </div>
+    <div class="sidebar-search">
+      <i class="ti ti-search" style="color:var(--text3);font-size:14px"></i>
+      <input id="sidebar-search-input" placeholder="Buscar viaje o B/L..." oninput="onSidebarSearch(this.value)"/>
+    </div>
+    <div id="bl-search-results" class="bl-search-results" style="display:none"></div>
+    <div class="manifest-list" id="manifest-list">
+      <div style="padding:24px;text-align:center;color:var(--text3);font-size:12px">
+        <i class="ti ti-file-import" style="font-size:32px;display:block;margin-bottom:8px"></i>
+        Carga un XML o PDF para comenzar
+      </div>
+    </div>
+  </div>
+
+  <!-- MAIN -->
+  <div class="main">
+    <!-- toolbar que aparece cuando hay manifiesto seleccionado -->
+    <div class="main-toolbar" id="main-toolbar" style="display:none">
+      <i class="ti ti-ship" style="color:var(--accent)"></i>
+      <span class="voy-label" id="toolbar-voyage"></span>
+      <span id="toolbar-vessel" style="font-size:11px;color:var(--text3)"></span>
+      <span class="spacer"></span>
+      <button class="btn sm" onclick="showTxtPreview(currentBL?.id)" id="btn-preview" disabled>
+        <i class="ti ti-eye"></i> Ver TXT
+      </button>
+      <button class="btn sm accent" onclick="exportTxt()" id="btn-export">
+        <i class="ti ti-file-export"></i> Exportar TXT
+      </button>
+      <button class="btn sm purple" onclick="pushSiscommate()" id="btn-push">
+        <i class="ti ti-database-import"></i> Guardar en SISCOMMATE
+      </button>
+    </div>
+
+    <div id="editor" class="editor">
+      <div class="empty-state">
+        <i class="ti ti-ship"></i>
+        <p style="font-size:15px;color:var(--text2)">Selecciona un manifiesto</p>
+        <p style="font-size:12px">o carga un XML o PDF de la DGA</p>
+        <div class="drop-zone" id="drop-zone" onclick="openUpload()"
+             ondragover="event.preventDefault();this.classList.add('drag')"
+             ondragleave="this.classList.remove('drag')"
+             ondrop="handleDrop(event)">
+          <i class="ti ti-file-upload" style="font-size:28px;display:block;margin-bottom:8px"></i>
+          Arrastra el XML o PDF aquí o haz clic para seleccionar
+        </div>
+      </div>
     </div>
 
     <div class="statusbar">
@@ -403,8 +448,6 @@ function filteredByTab(list){
     return list.filter(m=>m.status==='siscommate'||m.status==='exportado');
   return list.filter(m=>m.status!=='siscommate'&&m.status!=='exportado');
 }
-
-
 
 let searchTimer;
 async function onSidebarSearch(q){
@@ -1842,21 +1885,12 @@ async function deleteBL(blId){
   }
 }
 
-
 // ═══════════════════════════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════════════════════════
 async function init(){
   await loadCatalogs();
   await loadManifests();
-
-  // Auto-abrir el manifiesto más reciente si no hay ninguno seleccionado
-  const activeList = filteredByTab(allManifests);
-  if(activeList.length && !currentManifestId){
-    await selectManifest(activeList[0].id);
-    expandedSet.add(activeList[0].id);
-    renderManifestList(activeList);
-  }
 }
 init();
 </script>
