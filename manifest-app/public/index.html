@@ -449,6 +449,7 @@ function filteredByTab(list){
   return list.filter(m=>m.status!=='siscommate'&&m.status!=='exportado');
 }
 
+
 let searchTimer;
 async function onSidebarSearch(q){
   clearTimeout(searchTimer);
@@ -1886,11 +1887,96 @@ async function deleteBL(blId){
 }
 
 // ═══════════════════════════════════════════════════════════════
+// ACCIONES DE LA PAPELERA (TRASH ACTIONS)
+// ═══════════════════════════════════════════════════════════════
+async function restoreManifest(id){
+  try{
+    await api(`/api/trash/restore-manifest/${id}`, {method:'POST'});
+    toast('Manifiesto restaurado');
+    await loadManifests();
+    if(currentTab === 'trash') renderTrashList();
+  }catch(e){ toast('Error restaurando: '+e.message, 'err'); }
+}
+
+function confirmPurgeManifest(id, voyageNo){
+  showModal('Eliminar definitivamente',
+    `<p>¿Deseas eliminar <strong>definitivamente</strong> el viaje <strong>${esc(voyageNo)}</strong>?</p>
+     <p style="margin-top:8px;font-size:12px;color:var(--danger);font-weight:600">Esta acción borrará de la base de datos todos sus B/L y registros de forma permanente.</p>`,
+    [
+      {label:'Cancelar', action:'closeModal()', cls:''},
+      {label:'Purgar Definitivo', action:`purgeManifest(${id})`, cls:'danger'},
+    ]
+  );
+}
+
+async function purgeManifest(id){
+  closeModal();
+  try{
+    await api(`/api/trash/purge-manifest/${id}`, {method:'DELETE'});
+    toast('Manifiesto purgado permanentemente');
+    await loadManifests();
+    if(currentTab === 'trash') renderTrashList();
+  }catch(e){ toast('Error purgando: '+e.message, 'err'); }
+}
+
+async function restoreBL(id){
+  try{
+    await api(`/api/trash/restore-bl/${id}`, {method:'POST'});
+    toast('B/L restaurado');
+    await loadManifests();
+    if(currentTab === 'trash') renderTrashList();
+  }catch(e){ toast('Error restaurando B/L: '+e.message, 'err'); }
+}
+
+function confirmPurgeBL(id, blNo){
+  showModal('Eliminar definitivamente',
+    `<p>¿Deseas eliminar <strong>definitivamente</strong> el B/L <strong>${esc(blNo)}</strong>?</p>
+     <p style="margin-top:8px;font-size:12px;color:var(--danger);font-weight:600">Se borrará permanentemente de la base de datos.</p>`,
+    [
+      {label:'Cancelar', action:'closeModal()', cls:''},
+      {label:'Purgar B/L', action:`purgeBL(${id})`, cls:'danger'},
+    ]
+  );
+}
+
+async function purgeBL(id){
+  closeModal();
+  try{
+    await api(`/api/trash/purge-bl/${id}`, {method:'DELETE'});
+    toast('B/L purgado permanentemente');
+    await loadManifests();
+    if(currentTab === 'trash') renderTrashList();
+  }catch(e){ toast('Error purgando B/L: '+e.message, 'err'); }
+}
+
+function confirmEmptyTrash(){
+  showModal('Vaciar papelera',
+    `<p>¿Deseas vaciar <strong>toda la papelera</strong>?</p>
+     <p style="margin-top:8px;font-size:12px;color:var(--danger);font-weight:600">Todos los viajes y B/Ls eliminados se borrarán permanentemente.</p>`,
+    [
+      {label:'Cancelar', action:'closeModal()', cls:''},
+      {label:'Vaciar Todo', action:'emptyTrash()', cls:'danger'},
+    ]
+  );
+}
+
+async function emptyTrash(){
+  closeModal();
+  try{
+    await api('/api/trash/empty', {method:'DELETE'});
+    toast('Papelera vaciada');
+    await loadManifests();
+    if(currentTab === 'trash') renderTrashList();
+  }catch(e){ toast('Error vaciando papelera: '+e.message, 'err'); }
+}
+
+// ═══════════════════════════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════════════════════════
 async function init(){
   await loadCatalogs();
   await loadManifests();
+  await updateTrashBadge();
 
   // Auto-abrir el manifiesto más reciente si no hay ninguno seleccionado
   const activeList = filteredByTab(allManifests);
