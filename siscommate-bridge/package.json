@@ -1,0 +1,14 @@
+{
+  "name": "siscommate-bridge",
+  "version": "1.0.0",
+  "description": "Bridge HTTP → SISCOMMATE DBF (VFP)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "adodb": "^0.0.16",
+    "dotenv": "^16.4.5",
+    "express": "^4.18.2"
+  }
+}

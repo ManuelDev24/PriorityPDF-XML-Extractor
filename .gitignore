@@ -1,0 +1,36 @@
+# Node modules and dependencies
+node_modules/
+*/node_modules/
+
+# SQLite databases and temp files
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+manifest-app/manifest.db
+
+# Node.js binary packages & installation zips
+node20/
+*.zip
+*.msi
+*.log
+node20-install.log
+
+# Logs & temp directories
+logs/
+*/logs/
+logs/*
+*.tmp
+
+# Environment local overrides
+.env.local
+
+# IDE & OS files
+.vscode/
+.vs/
+*/.vs/
+.claude/
+*/.claude/
+.idea/
+.DS_Store
+Thumbs.db
