@@ -272,6 +272,10 @@ function emptyPdfBL() {
 // Los pesos (pares KG,LBS) aparecen agrupados al inicio de cada página, en el
 // mismo orden que las entradas.
 
+function isIsoContainer(s) {
+  return /^[A-Z]{3}[UJZ]\d{6,7}$/i.test(s) || /^(PRRU|MXRU|CRSU|GVTU|MCLU|CAXU|TGHU|TEMU|SEGU|MSKU)\d+$/i.test(s);
+}
+
 function normContainerNo(raw) {
   if (!raw) return '';
   const m = raw.match(/^([A-Z]{4})\s*(\d{6})\s*-?\s*(\d)?$/);
@@ -307,7 +311,7 @@ function collectPartyBlocks(lines, blIdx) {
       if (cur.length) { blocks.push(cur.reverse()); cur = []; }
       continue;
     }
-    if (/^(SH|CO|NO|NF|KG|LBS)$/.test(t) || /^Página/i.test(t) ||
+    if (/^(SH|CO|NO|NF|KG|LBS)$/.test(t) || /^P[aá]gina/i.test(t) || /^Page/i.test(t) ||
         /CUSTOMS USE ONLY/i.test(t) || /^\d[\d,]*\.\d{2}$/.test(t)) break;
     cur.push(t);
   }
@@ -320,23 +324,23 @@ function collectPartyBlocks(lines, blIdx) {
 }
 
 function parseCustoms1302(text) {
-  const lines = text.split('\n');
-
   const header = {
-    voyage_no:'', vessel_code:'', biz_company_code:'',
+    voyage_no:'', vessel_code:'', vessel_name:'', biz_company_code:'',
     loading_port:'', unloading_port:'', departure_date:'', arrival_date:'',
-    manifest_no:'',
+    manifest_no:'', carrier_code:'MPRIORO'
   };
+
   const mShip = text.match(/Name of Ship[^\n]*\n(.+)/i);
   if (mShip) {
-    // "KYDON (KY)   K1304" → buque + número de recibo
     const mv = mShip[1].trim().match(/^(.*?)\s{2,}(\S+)$/);
     if (mv) {
-      header.vessel_code = mv[1].replace(/\s*\([^)]*\)\s*$/,'').trim();
+      header.vessel_name = mv[1].replace(/\s*\([^)]*\)\s*$/,'').trim();
+      header.vessel_code = header.vessel_name;
       header.manifest_no = mv[2];
       header.voyage_no   = mv[2];
     } else {
-      header.vessel_code = mShip[1].trim();
+      header.vessel_name = mShip[1].trim();
+      header.vessel_code = header.vessel_name;
     }
   }
   const mLoad = text.match(/(?:Puerto de carga|Loading Port)\s*\n(.+)/i);
@@ -346,88 +350,167 @@ function parseCustoms1302(text) {
   const mDep = text.match(/(?:Date of Sailing[^\n]*|Fecha\s*de\s*Zarpe[^\n]*)\n\s*(\d{4})[.\/-](\d{1,2})[.\/-](\d{1,2})/i);
   if (mDep) header.departure_date = `${mDep[1]}-${mDep[2].padStart(2,'0')}-${mDep[3].padStart(2,'0')}`;
 
-  // Pesos: líneas que son solo un número decimal, en pares (KG, LBS)
-  const pureNums = [];
-  lines.forEach(l => {
-    if (/^\s*\d{1,3}(?:,\d{3})*\.\d{2}\s*$/.test(l)) pureNums.push(parsePdfNum(l));
+  // Dividir por páginas para emparejar pesos y entradas 1-a-1 por página
+  const rawPages = text.split(/(?:Page\s+\d+\/\d+|P[aá]gina\s*(?:\d+\/\d+)?)/i);
+  const allEntries = [];
+
+  rawPages.forEach((pageText, pIdx) => {
+    if (!pageText.trim()) return;
+    const lines = pageText.split('\n');
+
+    // Pesos al inicio de la página
+    const pureNums = [];
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i].trim();
+      if (/^\s*\d{1,3}(?:,\d{3})*\.\d{2}\s*$/.test(l)) pureNums.push(parsePdfNum(l));
+      if (/1\.- Name of Ship/i.test(l) || /BL Numbers/i.test(l)) break;
+    }
+    const pageWeightsKg = [];
+    for (let i = 0; i + 1 < pureNums.length; i += 2) pageWeightsKg.push(pureNums[i]);
+
+    // Entradas de B/L en la página
+    const blLineRe = /^([A-Z]{2,6}-\d{5,10})(?:\s+(\S.*))?$/;
+    const pageEntries = [];
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].trim().match(blLineRe);
+      if (!m) continue;
+
+      const rawSecondToken = (m[2] || '').trim();
+      let containerNo = '';
+      let vin = '';
+      let equipmentType = '';
+
+      if (rawSecondToken) {
+        const cleaned = normContainerNo(rawSecondToken);
+        if (isIsoContainer(cleaned)) {
+          containerNo = cleaned;
+        } else if (/^[A-HJ-NPR-Z0-9]{11,17}$/i.test(cleaned)) {
+          vin = cleaned;
+          equipmentType = 'VEHICLE';
+        } else {
+          containerNo = cleaned;
+        }
+      }
+
+      const e = {
+        bl_no: m[1],
+        container_no: containerNo,
+        vin: vin,
+        size: '',
+        qty: 0,
+        unit: '',
+        goods: '',
+        equipmentType: equipmentType,
+        hazard: false,
+        page: pIdx + 1,
+        shipper: null,
+        consignee: null,
+        notify: null
+      };
+
+      let j = i + 1;
+      while (j < lines.length && j < i + 6) {
+        const t = lines[j].trim();
+        if (/Hazardous\s*cargo/i.test(t)) { e.hazard = true; j++; continue; }
+        if (!e.vin && /^[A-HJ-NPR-Z0-9]{17}$/i.test(t)) { e.vin = t; j++; continue; }
+        if (/^VEHICLE$/i.test(t)) { e.equipmentType = 'VEHICLE'; j++; continue; }
+        const sz = t.match(/^(\d{2})'\s*(.*)$/);
+        if (sz) { e.size = /HC|HIGH/i.test(sz[2]) ? `${sz[1]}HC` : sz[1]; j++; continue; }
+        if (/^PALLET|^FLATBED|^FR\b/i.test(t)) { j++; continue; }
+        break;
+      }
+
+      let descStart = j;
+      for (let k = 0; k < 6 && j + k < lines.length; k++) {
+        const t = lines[j+k].trim();
+        if (/^(KG|LBS)$/.test(t)) break;
+        const qm = t.match(/^(\d+)\s*([A-Za-z]*)\s*:$/);
+        if (qm) {
+          e.qty = parseInt(qm[1]) || 0;
+          e.unit = qm[2] || (e.equipmentType === 'VEHICLE' ? 'UNIT' : 'PKG');
+          descStart = j + k + 1;
+          break;
+        }
+      }
+
+      const desc = [];
+      for (j = descStart; j < lines.length; j++) {
+        const t = lines[j].trim();
+        if (/^(KG|LBS|SH|CO|NO|NF)$/.test(t) || /^P[aá]gina/i.test(t) || /^Page/i.test(t) || /^1\.- Name/i.test(t)) break;
+        desc.push(t);
+        if (desc.join(' ').length > 400) break;
+      }
+      e.goods = desc.join(' ').replace(/\s+/g, ' ').trim().substring(0, 300);
+
+      const parties = collectPartyBlocks(lines, i);
+      e.shipper = parties[0]; e.consignee = parties[1]; e.notify = parties[2];
+      pageEntries.push(e);
+    }
+
+    pageEntries.forEach((e, idx) => {
+      e.gross_weight = idx < pageWeightsKg.length ? pageWeightsKg[idx] : 0;
+      allEntries.push(e);
+    });
   });
-  const weightKg = [];
-  for (let i = 0; i + 1 < pureNums.length; i += 2) weightKg.push(pureNums[i]);
 
-  // Entradas: una por línea "B/L [contenedor]"
-  const blLineRe = /^([A-Z]{2,6}-\d{5,10})(?:\s+(\S.*))?$/;
-  const entries = [];
-  for (let i = 0; i < lines.length; i++) {
-    const m = lines[i].trim().match(blLineRe);
-    if (!m) continue;
-    const e = { bl_no:m[1], container_no:normContainerNo((m[2]||'').trim()), size:'', qty:0, unit:'', goods:'' };
-
-    let j = i + 1;
-    const sz = (lines[j]||'').trim().match(/^(\d{2})'\s*(.*)$/);
-    if (sz) { e.size = /HC|HIGH/i.test(sz[2]) ? `${sz[1]}HC` : sz[1]; j++; }
-    else if (/^PALLET/i.test((lines[j]||'').trim())) j++;
-
-    // Saltar marcas/sellos hasta la línea de cantidad ("288 carton:")
-    let descStart = j;
-    for (let k = 0; k < 8 && j + k < lines.length; k++) {
-      const t = lines[j+k].trim();
-      if (/^(KG|LBS)$/.test(t)) break;
-      const qm = t.match(/^(\d+)\s*([A-Za-z]*)\s*:$/);
-      if (qm) { e.qty = parseInt(qm[1])||0; e.unit = qm[2]; descStart = j + k + 1; break; }
-    }
-    const desc = [];
-    for (j = descStart; j < lines.length; j++) {
-      const t = lines[j].trim();
-      if (/^(KG|LBS|SH|CO|NO)$/.test(t) || /^Página/i.test(t)) break;
-      desc.push(t);
-      if (desc.join(' ').length > 400) break;
-    }
-    e.goods = desc.join(' ').replace(/\s+/g,' ').trim().substring(0, 300);
-
-    const parties = collectPartyBlocks(lines, i);
-    e.shipper = parties[0]; e.consignee = parties[1]; e.notify = parties[2];
-    entries.push(e);
-  }
-
-  if (entries.length && weightKg.length !== entries.length) {
-    console.warn(`PDF 1302: ${entries.length} entradas pero ${weightKg.length} pares de peso — se asignan en orden`);
-  }
-
-  // Agrupar por B/L (los repetidos son un contenedor adicional del mismo B/L)
+  // Consolidar B/Ls y extraer Contenedores y Cargo Items
   const blMap = new Map();
   const containers = [];
   const containerBLs = [];
+  const cargoItems = [];
   const seenCont = new Set();
-  entries.forEach((e, idx) => {
-    const kg = idx < weightKg.length ? weightKg[idx] : 0;
+
+  allEntries.forEach(e => {
     let bl = blMap.get(e.bl_no);
     if (!bl) {
       bl = emptyPdfBL();
-      bl.bl_no             = e.bl_no;
-      bl.goods_name        = e.goods;
+      bl.bl_no = e.bl_no;
+      bl.unloading_port_code = header.unloading_port;
+      bl.goods_name = e.goods;
       bl.package_unit_code = e.unit;
-      const sh = parsePdfParty(e.shipper), co = parsePdfParty(e.consignee), nf = parsePdfParty(e.notify);
+      const sh = parsePdfParty(e.shipper);
+      const co = parsePdfParty(e.consignee);
+      const nf = parsePdfParty(e.notify);
       bl.consignor_name = sh.name; bl.consignor_street = sh.street; bl.consignor_city = sh.city; bl.consignor_tel = sh.tel;
       bl.consignee_name = co.name; bl.consignee_street = co.street; bl.consignee_city = co.city; bl.consignee_tel = co.tel;
       bl.notify_name    = nf.name; bl.notify_street    = nf.street; bl.notify_city    = nf.city; bl.notify_tel    = nf.tel;
+      bl.hacienda_container_no = e.container_no || e.vin || '';
       blMap.set(e.bl_no, bl);
     }
-    bl.gross_weight += kg;
+
+    bl.gross_weight += e.gross_weight;
     bl.package_qty  += e.qty;
+
     if (e.container_no) {
       containerBLs.push({ bl_no: e.bl_no, container_no: e.container_no });
       if (!seenCont.has(e.container_no)) {
         seenCont.add(e.container_no);
         containers.push({
-          container_no: e.container_no, container_type:'R', xml_container_type:'',
-          package_code:'', amount:e.qty, gross_weight:kg, net_weight:0, seal_no1:'',
-          size: e.size,
+          container_no: e.container_no,
+          container_type: 'R',
+          xml_container_type: '',
+          package_code: e.unit || '',
+          amount: e.qty,
+          gross_weight: e.gross_weight,
+          net_weight: 0,
+          seal_no1: '',
+          size: e.size || '40'
         });
       }
     }
+
+    cargoItems.push({
+      bl_no: e.bl_no,
+      container_no: e.container_no || null,
+      vin: e.vin || null,
+      goods_name: e.vin ? `[VIN: ${e.vin}] ${e.goods}` : e.goods,
+      gross_weight: e.gross_weight,
+      package_qty: e.qty,
+      package_unit: e.unit || ''
+    });
   });
 
-  return { header, bls: [...blMap.values()], containers, containerBLs };
+  return { header, bls: [...blMap.values()], containers, containerBLs, cargoItems };
 }
 
 async function parsePdfManifest(buffer) {
@@ -796,6 +879,32 @@ app.post('/api/manifests/upload', upload.single('xml'), async (req,res) => {
            parsed.header.arrival_date, 'MPRIORO', parsed.header.manifest_no || '');
     const manifestId = info.lastInsertRowid;
 
+    // Catálogo de clientes para auto-match de SS/EIN e IVU
+    const clients = db.prepare(`SELECT name, ss, ivu FROM clients WHERE ss IS NOT NULL AND ss != ''`).all();
+    const clientMap = new Map();
+    clients.forEach(c => {
+      if (c.name) clientMap.set(c.name.trim().toUpperCase(), c);
+    });
+
+    // Enriquecer BLs antes de insertar
+    parsed.bls.forEach(bl => {
+      let clientMatch = clientMap.get((bl.consignee_name||'').trim().toUpperCase());
+      if (!clientMatch && bl.consignee_name) {
+        const normName = bl.consignee_name.trim().toUpperCase();
+        for (const [cName, cObj] of clientMap.entries()) {
+          if (cName.length >= 4 && (normName.includes(cName) || cName.includes(normName))) {
+            clientMatch = cObj;
+            break;
+          }
+        }
+      }
+      if (clientMatch) {
+        if (!bl.consignee_document_no && clientMatch.ss) bl.consignee_document_no = clientMatch.ss;
+        bl.hacienda_client_ss  = clientMatch.ss || '';
+        bl.hacienda_client_ivu = clientMatch.ivu || '';
+      }
+    });
+
     const insBL = db.prepare(`
       INSERT INTO bills_of_lading
         (manifest_id,bl_no,bl_type,transit_type,unloading_port_code,
@@ -807,8 +916,9 @@ app.post('/api/manifests/upload', upload.single('xml'), async (req,res) => {
          consignee_document_no,consignee_country_code,consignee_tel,consignee_email,
          consignee_street,consignee_city,consignee_zip,
          notify_name,notify_code,notify_document_type,notify_document_no,
-         notify_country_code,notify_tel,notify_email,notify_street,notify_city,notify_zip)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         notify_country_code,notify_tel,notify_email,notify_street,notify_city,notify_zip,
+         hacienda_container_no,hacienda_client_ss,hacienda_client_ivu)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
     db.transaction(bls => bls.forEach(bl => insBL.run(
       manifestId,bl.bl_no,bl.bl_type,bl.transit_type,bl.unloading_port_code,
@@ -821,8 +931,40 @@ app.post('/api/manifests/upload', upload.single('xml'), async (req,res) => {
       bl.consignee_street,bl.consignee_city,bl.consignee_zip,
       bl.notify_name,bl.notify_code,bl.notify_document_type,bl.notify_document_no,
       bl.notify_country_code,bl.notify_tel,bl.notify_email,bl.notify_street,
-      bl.notify_city,bl.notify_zip
+      bl.notify_city,bl.notify_zip,
+      bl.hacienda_container_no||'',bl.hacienda_client_ss||'',bl.hacienda_client_ivu||''
     )))(parsed.bls);
+
+    // Insertar items de carga individuales (soporta multi-ítem y vehículos)
+    if (parsed.cargoItems && parsed.cargoItems.length) {
+      const blRows = db.prepare(`SELECT id, bl_no FROM bills_of_lading WHERE manifest_id=?`).all(manifestId);
+      const blIdMap = {};
+      blRows.forEach(r => { blIdMap[r.bl_no] = r.id; });
+
+      const insCargo = db.prepare(`
+        INSERT INTO bl_cargo_items
+          (bl_id, manifest_id, container_no, goods_name, gross_weight, hacienda_item_code, hacienda_tariff, seq)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      const seqMap = {};
+      parsed.cargoItems.forEach(ci => {
+        const blId = blIdMap[ci.bl_no];
+        if (blId) {
+          seqMap[blId] = (seqMap[blId] || 0) + 1;
+          insCargo.run(
+            blId,
+            manifestId,
+            ci.container_no || null,
+            ci.goods_name || '',
+            parseFloat(ci.gross_weight) || 0,
+            ci.hacienda_item_code || null,
+            ci.hacienda_tariff || null,
+            seqMap[blId]
+          );
+        }
+      });
+    }
 
     if (parsed.containers.length) {
       // Leer el mapeo ContainerType XML → size para asignar tamaño automáticamente
