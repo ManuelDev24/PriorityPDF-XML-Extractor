@@ -384,7 +384,7 @@ function renderManifestList(list){
             ${bl.status==='validado'?'<i class="ti ti-check" style="font-size:11px;color:var(--success)"></i>':''}
             <button class="mi-btn danger sm" style="padding:1px 5px;height:20px;font-size:10px;margin-left:4px" title="Eliminar B/L ${esc(bl.bl_no)}"
               onclick="event.stopPropagation();confirmDeleteBL(${bl.id},'${esc(bl.bl_no)}')">
-              <i class="ti ti-trash" style="font-size:11px"></i>
+              <i class="ti ti-trash" style="font-size:11px"></i> Eliminar B/L
             </button>
           </div>`;
         }).join('')+

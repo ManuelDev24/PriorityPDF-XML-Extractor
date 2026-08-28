@@ -1148,7 +1148,6 @@ app.delete('/api/manifests/:id', (req,res) => {
   const manifest = db.prepare('SELECT * FROM manifests WHERE id=?').get(req.params.id);
   if (!manifest) { db.close(); return res.status(404).json({ error:'No encontrado' }); }
   db.prepare('DELETE FROM export_log    WHERE manifest_id=?').run(req.params.id);
-  db.prepare('DELETE FROM bl_cargo_items WHERE manifest_id=?').run(req.params.id);
   db.prepare('DELETE FROM container_bl  WHERE manifest_id=?').run(req.params.id);
   db.prepare('DELETE FROM containers    WHERE manifest_id=?').run(req.params.id);
   db.prepare('DELETE FROM bills_of_lading WHERE manifest_id=?').run(req.params.id);
