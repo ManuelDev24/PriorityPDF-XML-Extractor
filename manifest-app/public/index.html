@@ -382,6 +382,10 @@ function renderManifestList(list){
             <span class="bl-dot"></span>
             <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(bl.bl_no)}</span>
             ${bl.status==='validado'?'<i class="ti ti-check" style="font-size:11px;color:var(--success)"></i>':''}
+            <button class="mi-btn danger sm" style="padding:1px 5px;height:20px;font-size:10px;margin-left:4px" title="Eliminar B/L ${esc(bl.bl_no)}"
+              onclick="event.stopPropagation();confirmDeleteBL(${bl.id},'${esc(bl.bl_no)}')">
+              <i class="ti ti-trash" style="font-size:11px"></i>
+            </button>
           </div>`;
         }).join('')+
       `</div>`;
@@ -1831,6 +1835,53 @@ async function deleteManifest(id){
     await loadManifests();
   } catch(e){
     toast('Error al eliminar: '+e.message, 'err');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ELIMINAR B/L INDIVIDUAL
+// ═══════════════════════════════════════════════════════════════
+function confirmDeleteBL(blId, blNo){
+  showModal('Eliminar B/L',
+    `<p>¿Seguro que deseas eliminar el B/L <strong>${esc(blNo)}</strong> de este manifiesto?</p>
+     <p style="margin-top:8px;font-size:12px;color:var(--danger)">Esta acción no se puede deshacer.</p>`,
+    [
+      {label:'Cancelar', action:'closeModal()', cls:''},
+      {label:'Eliminar B/L', action:`deleteBL(${blId})`, cls:'danger'},
+    ]
+  );
+}
+
+async function deleteBL(blId){
+  closeModal();
+  try {
+    await api(`/api/bl/${blId}`, {method:'DELETE'});
+    toast('B/L eliminado correctamente');
+    if(currentManifestId){
+      currentManifestData = await api(`/api/manifests/${currentManifestId}`);
+      // Actualizar conteo de B/Ls en lista global
+      const m = allManifests.find(x => x.id === currentManifestId);
+      if(m && currentManifestData.bls) m.bl_count = currentManifestData.bls.length;
+      renderManifestList(filteredByTab(allManifests));
+      loadStats();
+
+      // Si el B/L eliminado era el que estaba abierto en el editor
+      if(currentBL && currentBL.id === blId){
+        if(currentManifestData.bls && currentManifestData.bls.length){
+          selectBL(currentManifestData.bls[0]);
+        } else {
+          currentBL = null;
+          document.getElementById('btn-preview').disabled = true;
+          document.getElementById('editor').innerHTML = `
+            <div class="empty-state">
+              <i class="ti ti-packages"></i>
+              <p style="font-size:15px;color:var(--text2)">Este manifiesto no tiene B/L</p>
+            </div>`;
+        }
+      }
+    }
+  } catch(e){
+    toast('Error eliminando B/L: ' + e.message, 'err');
   }
 }
 

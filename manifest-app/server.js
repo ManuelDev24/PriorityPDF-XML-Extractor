@@ -1156,6 +1156,25 @@ app.delete('/api/manifests/:id', (req,res) => {
   res.json({ ok: true, deleted: manifest.voyage_no });
 });
 
+// Eliminar un B/L individual (y sus items de carga y vínculos de contenedor)
+app.delete('/api/bl/:id', (req, res) => {
+  const db = getDB();
+  const bl = db.prepare('SELECT * FROM bills_of_lading WHERE id=?').get(req.params.id);
+  if (!bl) { db.close(); return res.status(404).json({ error: 'B/L no encontrado' }); }
+
+  db.prepare('DELETE FROM bl_cargo_items WHERE bl_id=?').run(bl.id);
+  db.prepare('DELETE FROM container_bl WHERE bl_no=? AND manifest_id=?').run(bl.bl_no, bl.manifest_id);
+  db.prepare(`
+    DELETE FROM containers
+    WHERE manifest_id=?
+      AND container_no NOT IN (SELECT container_no FROM container_bl WHERE manifest_id=?)
+  `).run(bl.manifest_id, bl.manifest_id);
+
+  db.prepare('DELETE FROM bills_of_lading WHERE id=?').run(bl.id);
+  db.close();
+  res.json({ ok: true, deleted: bl.bl_no, manifest_id: bl.manifest_id });
+});
+
 // Actualizar manifiesto
 app.put('/api/manifests/:id', (req,res) => {
   const db = getDB();
