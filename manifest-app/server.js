@@ -283,21 +283,85 @@ function normContainerNo(raw) {
   return raw.replace(/\s+/g, '');
 }
 
-// Bloque de dirección → { name, street, city, tel }
+// Verifica si una línea de texto corresponde realmente a un número de teléfono
+function isPhoneNumber(l) {
+  const clean = l.trim();
+  const digits = clean.replace(/\D/g, '');
+  if (digits.length < 7) return false;
+  return /^[\d\s()\-.\/+]+$/.test(clean) || /(?:Tel|Phone|Cel|Fax|Mobile)/i.test(clean);
+}
+
+// Bloque de dirección → { name, street, city, zip, tel, email, rnc }
 function parsePdfParty(blockLines) {
-  const p = { name:'', street:'', city:'', tel:'' };
+  const p = { name:'', street:'', city:'', zip:'', tel:'', email:'', rnc:'' };
   if (!blockLines || !blockLines.length) return p;
   p.name = blockLines[0].substring(0, 60);
-  const isPhone = l => /^[\d\s()\-.\/]+$/.test(l);
-  const street = [], city = [];
-  let inCity = false;
-  blockLines.slice(1).forEach(l => {
-    if (isPhone(l)) { if (!p.tel) p.tel = l.substring(0, 20); return; }
-    if (inCity || /\(/.test(l)) { inCity = true; city.push(l); return; }
-    street.push(l);
+
+  // Unir líneas de ciudad/país partidas entre paréntesis, ej: '4837 - KINGSHILL (UNITED STATES VIRGIN' y 'ISLANDS)'
+  const mergedLines = [];
+  let pendingWrap = '';
+  for (let i = 1; i < blockLines.length; i++) {
+    const l = blockLines[i].trim();
+    if (!l) continue;
+    if (pendingWrap) {
+      pendingWrap += ' ' + l;
+      if (l.includes(')')) {
+        mergedLines.push(pendingWrap);
+        pendingWrap = '';
+      }
+    } else if (l.includes('(') && !l.includes(')')) {
+      pendingWrap = l;
+    } else {
+      mergedLines.push(l);
+    }
+  }
+  if (pendingWrap) mergedLines.push(pendingWrap);
+
+  const streetParts = [];
+  mergedLines.forEach(raw => {
+    // Email
+    const mEmail = raw.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+    if (mEmail) {
+      p.email = mEmail[0];
+      raw = raw.replace(mEmail[0], '').trim();
+      if (!raw) return;
+    }
+
+    // RNC
+    const mRnc = raw.match(/RNC\s*:\s*(\d+)/i);
+    if (mRnc) {
+      p.rnc = mRnc[1];
+      raw = raw.replace(/RNC\s*:\s*\d+/i, '').replace(/^[-\s]+|[-\s]+$/g, '').trim();
+    }
+
+    // Teléfono
+    if (isPhoneNumber(raw)) {
+      if (!p.tel || p.tel.replace(/\D/g,'').length < raw.replace(/\D/g,'').length) {
+        p.tel = raw.substring(0, 30);
+      }
+      return;
+    }
+
+    // Código postal / ZIP: '00907 - SAN JUAN (PR - PUERTO RICO)' o '4837 - KINGSHILL (UNITED STATES VIRGIN ISLANDS)'
+    const zipMatch = raw.match(/^(\d{4,5}(?:-\d{4})?)\s*-\s*(.+)$/);
+    if (zipMatch) {
+      p.zip = zipMatch[1];
+      raw = zipMatch[2].trim();
+    }
+
+    // Ciudad limpia sin paréntesis de estado/país
+    if (/\(/.test(raw) || p.zip) {
+      const cleanCity = raw.replace(/\s*\([^)]*\)\s*$/, '').trim();
+      if (cleanCity && !p.city) {
+        p.city = cleanCity.substring(0, 40);
+        return;
+      }
+    }
+
+    streetParts.push(raw);
   });
-  p.street = street.join(' ').substring(0, 60);
-  p.city   = city.join(' ').substring(0, 40);
+
+  p.street = streetParts.join(' ').substring(0, 60);
   return p;
 }
 
@@ -316,8 +380,6 @@ function collectPartyBlocks(lines, blIdx) {
     cur.push(t);
   }
   if (cur.length && blocks.length < 3) blocks.push(cur.reverse());
-  // Se recolectaron en orden [notify, consignee, shipper] → invertir y
-  // rellenar por delante si faltan bloques
   blocks.reverse();
   while (blocks.length < 3) blocks.unshift(null);
   return blocks;  // [shipper, consignee, notify]
@@ -350,7 +412,6 @@ function parseCustoms1302(text) {
   const mDep = text.match(/(?:Date of Sailing[^\n]*|Fecha\s*de\s*Zarpe[^\n]*)\n\s*(\d{4})[.\/-](\d{1,2})[.\/-](\d{1,2})/i);
   if (mDep) header.departure_date = `${mDep[1]}-${mDep[2].padStart(2,'0')}-${mDep[3].padStart(2,'0')}`;
 
-  // Dividir por páginas para emparejar pesos y entradas 1-a-1 por página
   const rawPages = text.split(/(?:Page\s+\d+\/\d+|P[aá]gina\s*(?:\d+\/\d+)?)/i);
   const allEntries = [];
 
@@ -358,7 +419,6 @@ function parseCustoms1302(text) {
     if (!pageText.trim()) return;
     const lines = pageText.split('\n');
 
-    // Pesos al inicio de la página
     const pureNums = [];
     for (let i = 0; i < lines.length; i++) {
       const l = lines[i].trim();
@@ -368,7 +428,6 @@ function parseCustoms1302(text) {
     const pageWeightsKg = [];
     for (let i = 0; i + 1 < pureNums.length; i += 2) pageWeightsKg.push(pureNums[i]);
 
-    // Entradas de B/L en la página
     const blLineRe = /^([A-Z]{2,6}-\d{5,10})(?:\s+(\S.*))?$/;
     const pageEntries = [];
     for (let i = 0; i < lines.length; i++) {
@@ -376,36 +435,18 @@ function parseCustoms1302(text) {
       if (!m) continue;
 
       const rawSecondToken = (m[2] || '').trim();
-      let containerNo = '';
-      let vin = '';
-      let equipmentType = '';
-
+      let containerNo = '', vin = '', equipmentType = '';
       if (rawSecondToken) {
         const cleaned = normContainerNo(rawSecondToken);
-        if (isIsoContainer(cleaned)) {
-          containerNo = cleaned;
-        } else if (/^[A-HJ-NPR-Z0-9]{11,17}$/i.test(cleaned)) {
-          vin = cleaned;
-          equipmentType = 'VEHICLE';
-        } else {
-          containerNo = cleaned;
-        }
+        if (isIsoContainer(cleaned)) containerNo = cleaned;
+        else if (/^[A-HJ-NPR-Z0-9]{11,17}$/i.test(cleaned)) { vin = cleaned; equipmentType = 'VEHICLE'; }
+        else containerNo = cleaned;
       }
 
       const e = {
-        bl_no: m[1],
-        container_no: containerNo,
-        vin: vin,
-        size: '',
-        qty: 0,
-        unit: '',
-        goods: '',
-        equipmentType: equipmentType,
-        hazard: false,
-        page: pIdx + 1,
-        shipper: null,
-        consignee: null,
-        notify: null
+        bl_no: m[1], container_no: containerNo, vin: vin, size: '', qty: 0, unit: '', goods: '',
+        equipmentType: equipmentType, hazard: false, page: pIdx + 1,
+        shipper: null, consignee: null, notify: null
       };
 
       let j = i + 1;
@@ -446,14 +487,12 @@ function parseCustoms1302(text) {
       e.shipper = parties[0]; e.consignee = parties[1]; e.notify = parties[2];
       pageEntries.push(e);
     }
-
     pageEntries.forEach((e, idx) => {
       e.gross_weight = idx < pageWeightsKg.length ? pageWeightsKg[idx] : 0;
       allEntries.push(e);
     });
   });
 
-  // Consolidar B/Ls y extraer Contenedores y Cargo Items
   const blMap = new Map();
   const containers = [];
   const containerBLs = [];
@@ -468,12 +507,10 @@ function parseCustoms1302(text) {
       bl.unloading_port_code = header.unloading_port;
       bl.goods_name = e.goods;
       bl.package_unit_code = e.unit;
-      const sh = parsePdfParty(e.shipper);
-      const co = parsePdfParty(e.consignee);
-      const nf = parsePdfParty(e.notify);
-      bl.consignor_name = sh.name; bl.consignor_street = sh.street; bl.consignor_city = sh.city; bl.consignor_tel = sh.tel;
-      bl.consignee_name = co.name; bl.consignee_street = co.street; bl.consignee_city = co.city; bl.consignee_tel = co.tel;
-      bl.notify_name    = nf.name; bl.notify_street    = nf.street; bl.notify_city    = nf.city; bl.notify_tel    = nf.tel;
+      const sh = parsePdfParty(e.shipper), co = parsePdfParty(e.consignee), nf = parsePdfParty(e.notify);
+      bl.consignor_name   = sh.name;   bl.consignor_street = sh.street; bl.consignor_city = sh.city; bl.consignor_zip = sh.zip; bl.consignor_tel = sh.tel;
+      bl.consignee_name   = co.name;   bl.consignee_street = co.street; bl.consignee_city = co.city; bl.consignee_zip = co.zip; bl.consignee_tel = co.tel;
+      bl.notify_name      = nf.name;   bl.notify_street    = nf.street; bl.notify_city    = nf.city; bl.notify_zip    = nf.zip; bl.notify_tel    = nf.tel;
       bl.hacienda_container_no = e.container_no || e.vin || '';
       blMap.set(e.bl_no, bl);
     }
@@ -1261,30 +1298,36 @@ app.get('/api/catalogs/items/suggest', (req,res) => {
   const desc = (req.query.desc || '').toLowerCase();
   if (!desc || desc.length < 3) { db.close(); return res.json([]); }
 
-  // Extraer palabras clave de la descripción (ignorar palabras cortas y comunes)
-  const stopWords = new Set(['and','the','for','with','not','per','are','fue','los','las','del','con','para','que','una','uno']);
-  const words = desc.split(/\s+/).filter(w => w.length >= 3 && !stopWords.has(w)).slice(0, 5);
-
-  if (!words.length) { db.close(); return res.json([]); }
-
-  // Buscar coincidencias por cada palabra clave
   const candidates = [];
   const seen = new Set();
-  words.forEach(word => {
-    db.prepare(`SELECT *, ? as match_word FROM hacienda_items WHERE description LIKE ? LIMIT 10`)
-      .all(word, `%${word}%`)
-      .forEach(row => { if(!seen.has(row.code)){ seen.add(row.code); candidates.push(row); } });
+  function addRow(row) {
+    if (!seen.has(row.code)) { seen.add(row.code); candidates.push(row); }
+  }
+
+  // Detección semántica de Vehículos (marcas, modelos, tipo de equipo o VIN)
+  const isVehicle = /\b(toyota|tacoma|jeep|wrangler|hyundai|santa\s*fe|ford|chevrolet|chevy|nissan|honda|ram|dodge|kia|bmw|mercedes|auto|automovil|automobiles|vehiculo|vehicle|suv|sedan|pickup|vin:)\b/i.test(desc);
+  if (isVehicle) {
+    db.prepare(`SELECT * FROM hacienda_items WHERE code LIKE '8703%' OR code LIKE '8704%' OR code LIKE '8702%' LIMIT 6`).all().forEach(addRow);
+  }
+
+  // Detección semántica de Plataformas / Furgones / Arrastres
+  const isPlatform = /\b(platform|flatbed|plataforma|arrastre|trailer|chasis|chassis|furgon)\b/i.test(desc);
+  if (isPlatform) {
+    db.prepare(`SELECT * FROM hacienda_items WHERE code LIKE '8716%' LIMIT 6`).all().forEach(addRow);
+  }
+
+  // Extraer palabras clave de la descripción (limpiando puntuación y palabras vacías)
+  const stopWords = new Set(['and','the','for','with','not','per','are','fue','los','las','del','con','para','que','una','uno','maritime','insurance','applied','aes','itn']);
+  const cleanTerms = desc.replace(/[^a-z0-9\s]/gi, ' ').split(/\s+/).filter(w => w.length >= 3 && !stopWords.has(w) && !/^\d+$/.test(w)).slice(0, 5);
+
+  cleanTerms.forEach(word => {
+    db.prepare(`SELECT * FROM hacienda_items WHERE description LIKE ? LIMIT 10`)
+      .all(`%${word}%`)
+      .forEach(addRow);
   });
 
-  // Puntuar: cuántas palabras clave aparecen en la descripción
-  const scored = candidates.map(item => {
-    let score = 0;
-    words.forEach(w => { if(item.description.toLowerCase().includes(w)) score++; });
-    return { ...item, score };
-  }).sort((a,b) => b.score - a.score).slice(0, 8);
-
   db.close();
-  res.json(scored);
+  res.json(candidates.slice(0, 8));
 });
 
 app.get('/api/catalogs/ports',   (req,res) => { const db=getDB(); res.json(db.prepare('SELECT * FROM ports ORDER BY country,description').all()); db.close(); });
