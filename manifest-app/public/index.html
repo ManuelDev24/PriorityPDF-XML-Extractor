@@ -212,9 +212,6 @@ body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;font-size:14px;ba
     <div class="sidebar-tabs">
       <div class="sidebar-tab active" id="tab-active" onclick="switchTab('active')">En curso</div>
       <div class="sidebar-tab" id="tab-completed" onclick="switchTab('completed')">Completados</div>
-      <div class="sidebar-tab" id="tab-trash" onclick="switchTab('trash')" title="Papelera de reciclaje">
-        <i class="ti ti-trash"></i> Papelera <span id="trash-badge" style="display:none;margin-left:3px;font-size:10px;padding:1px 5px;border-radius:10px;background:var(--danger-bg);color:var(--danger);font-weight:700">0</span>
-      </div>
     </div>
     <div class="sidebar-search">
       <i class="ti ti-search" style="color:var(--text3);font-size:14px"></i>
@@ -436,115 +433,20 @@ async function toggleExpand(id){
 
 // ─── TABS: En curso / Completados ───────────────────────────────────────────
 let currentTab = 'active'; // 'active' | 'completed'
-// ─── TABS: En curso / Completados / Papelera ───────────────────────────────
-let currentTab = 'active'; // 'active' | 'completed' | 'trash'
 
 function switchTab(tab){
   currentTab = tab;
   document.getElementById('tab-active').className    = 'sidebar-tab' + (tab==='active'?' active':'');
   document.getElementById('tab-completed').className = 'sidebar-tab' + (tab==='completed'?' active':'');
-  document.getElementById('tab-trash').className     = 'sidebar-tab' + (tab==='trash'?' active':'');
   document.getElementById('sidebar-search-input').value = '';
   document.getElementById('bl-search-results').style.display = 'none';
   renderManifestList(filteredByTab(allManifests));
-  if(tab === 'trash'){
-    renderTrashList();
-  } else {
-    renderManifestList(filteredByTab(allManifests));
-  }
 }
 
 function filteredByTab(list){
   if(currentTab==='completed')
     return list.filter(m=>m.status==='siscommate'||m.status==='exportado');
   return list.filter(m=>m.status!=='siscommate'&&m.status!=='exportado');
-  return list.filter(m=>m.status!=='siscommate'&&m.status!=='exportado'&&m.status!=='eliminado');
-}
-
-async function updateTrashBadge(){
-  try{
-    const d = await api('/api/trash');
-    const badge = document.getElementById('trash-badge');
-    if(badge){
-      if(d.total > 0){
-        badge.textContent = d.total;
-        badge.style.display = 'inline-block';
-      } else {
-        badge.style.display = 'none';
-      }
-    }
-  }catch(e){}
-}
-
-async function renderTrashList(){
-  const el = document.getElementById('manifest-list');
-  el.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text3);font-size:12px"><i class="ti ti-loader spin" style="font-size:20px"></i> Cargando papelera...</div>';
-  try{
-    const data = await api('/api/trash');
-    updateTrashBadge();
-    const hasItems = data.manifests.length > 0 || data.bls.length > 0;
-    if(!hasItems){
-      el.innerHTML = `
-        <div style="padding:36px 16px;text-align:center;color:var(--text3)">
-          <i class="ti ti-trash-off" style="font-size:38px;display:block;margin-bottom:8px;opacity:.5"></i>
-          <div style="font-size:13px;font-weight:600;color:var(--text2)">La papelera está vacía</div>
-          <div style="font-size:11px;margin-top:4px">Los viajes o B/Ls que elimines aparecerán aquí</div>
-        </div>`;
-      return;
-    }
-
-    let html = `
-      <div style="padding:7px 10px;background:var(--surface2);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
-        <span style="font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.5px">
-          <i class="ti ti-trash" style="color:var(--danger)"></i> Papelera (${data.total})
-        </span>
-        <button class="btn sm danger" onclick="confirmEmptyTrash()" title="Vaciar toda la papelera">
-          <i class="ti ti-trash-x"></i> Vaciar
-        </button>
-      </div>`;
-
-    if(data.manifests.length){
-      html += `<div style="padding:5px 10px;font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;background:var(--surface3);letter-spacing:.5px">Manifiestos en papelera</div>`;
-      html += data.manifests.map(m => `
-        <div class="manifest-item" style="opacity:.9">
-          <div class="mi-title">
-            <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:600">
-              Viaje ${esc(m.voyage_no)}
-            </span>
-            <button class="mi-btn sm" style="color:var(--accent)" title="Restaurar viaje" onclick="restoreManifest(${m.id})">
-              <i class="ti ti-rotate-clockwise"></i> Restaurar
-            </button>
-            <button class="mi-btn danger sm" title="Eliminar definitivamente" onclick="confirmPurgeManifest(${m.id},'${esc(m.voyage_no)}')">
-              <i class="ti ti-trash-x"></i>
-            </button>
-          </div>
-          <div class="mi-sub" style="padding-left:2px">${esc(m.vessel_name||m.vessel_code||'')} &nbsp;·&nbsp; ${m.bl_count} B/L</div>
-        </div>`).join('');
-    }
-
-    if(data.bls.length){
-      html += `<div style="padding:5px 10px;font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;background:var(--surface3);letter-spacing:.5px;margin-top:6px">B/L en papelera</div>`;
-      html += data.bls.map(bl => `
-        <div class="manifest-item" style="opacity:.9">
-          <div class="mi-title">
-            <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-weight:600;color:var(--accent)">
-              ${esc(bl.bl_no)}
-            </span>
-            <button class="mi-btn sm" style="color:var(--accent)" title="Restaurar B/L" onclick="restoreBL(${bl.id})">
-              <i class="ti ti-rotate-clockwise"></i> Restaurar
-            </button>
-            <button class="mi-btn danger sm" title="Eliminar definitivamente" onclick="confirmPurgeBL(${bl.id},'${esc(bl.bl_no)}')">
-              <i class="ti ti-trash-x"></i>
-            </button>
-          </div>
-          <div class="mi-sub" style="padding-left:2px">${esc(bl.consignee_name||bl.goods_name||'')} &nbsp;·&nbsp; Viaje ${esc(bl.voyage_no||'')}</div>
-        </div>`).join('');
-    }
-
-    el.innerHTML = html;
-  }catch(e){
-    el.innerHTML = '<div style="padding:20px;text-align:center;color:var(--danger);font-size:12px">Error cargando papelera</div>';
-  }
 }
 
 let searchTimer;
@@ -1984,96 +1886,11 @@ async function deleteBL(blId){
 }
 
 // ═══════════════════════════════════════════════════════════════
-// ACCIONES DE LA PAPELERA (TRASH ACTIONS)
-// ═══════════════════════════════════════════════════════════════
-async function restoreManifest(id){
-  try{
-    await api(`/api/trash/restore-manifest/${id}`, {method:'POST'});
-    toast('Manifiesto restaurado');
-    await loadManifests();
-    if(currentTab === 'trash') renderTrashList();
-  }catch(e){ toast('Error restaurando: '+e.message, 'err'); }
-}
-
-function confirmPurgeManifest(id, voyageNo){
-  showModal('Eliminar definitivamente',
-    `<p>¿Deseas eliminar <strong>definitivamente</strong> el viaje <strong>${esc(voyageNo)}</strong>?</p>
-     <p style="margin-top:8px;font-size:12px;color:var(--danger);font-weight:600">Esta acción borrará de la base de datos todos sus B/L y registros de forma permanente.</p>`,
-    [
-      {label:'Cancelar', action:'closeModal()', cls:''},
-      {label:'Purgar Definitivo', action:`purgeManifest(${id})`, cls:'danger'},
-    ]
-  );
-}
-
-async function purgeManifest(id){
-  closeModal();
-  try{
-    await api(`/api/trash/purge-manifest/${id}`, {method:'DELETE'});
-    toast('Manifiesto purgado permanentemente');
-    await loadManifests();
-    if(currentTab === 'trash') renderTrashList();
-  }catch(e){ toast('Error purgando: '+e.message, 'err'); }
-}
-
-async function restoreBL(id){
-  try{
-    await api(`/api/trash/restore-bl/${id}`, {method:'POST'});
-    toast('B/L restaurado');
-    await loadManifests();
-    if(currentTab === 'trash') renderTrashList();
-  }catch(e){ toast('Error restaurando B/L: '+e.message, 'err'); }
-}
-
-function confirmPurgeBL(id, blNo){
-  showModal('Eliminar definitivamente',
-    `<p>¿Deseas eliminar <strong>definitivamente</strong> el B/L <strong>${esc(blNo)}</strong>?</p>
-     <p style="margin-top:8px;font-size:12px;color:var(--danger);font-weight:600">Se borrará permanentemente de la base de datos.</p>`,
-    [
-      {label:'Cancelar', action:'closeModal()', cls:''},
-      {label:'Purgar B/L', action:`purgeBL(${id})`, cls:'danger'},
-    ]
-  );
-}
-
-async function purgeBL(id){
-  closeModal();
-  try{
-    await api(`/api/trash/purge-bl/${id}`, {method:'DELETE'});
-    toast('B/L purgado permanentemente');
-    await loadManifests();
-    if(currentTab === 'trash') renderTrashList();
-  }catch(e){ toast('Error purgando B/L: '+e.message, 'err'); }
-}
-
-function confirmEmptyTrash(){
-  showModal('Vaciar papelera',
-    `<p>¿Deseas vaciar <strong>toda la papelera</strong>?</p>
-     <p style="margin-top:8px;font-size:12px;color:var(--danger);font-weight:600">Todos los viajes y B/Ls eliminados se borrarán permanentemente.</p>`,
-    [
-      {label:'Cancelar', action:'closeModal()', cls:''},
-      {label:'Vaciar Todo', action:'emptyTrash()', cls:'danger'},
-    ]
-  );
-}
-
-async function emptyTrash(){
-  closeModal();
-  try{
-    await api('/api/trash/empty', {method:'DELETE'});
-    toast('Papelera vaciada');
-    await loadManifests();
-    if(currentTab === 'trash') renderTrashList();
-  }catch(e){ toast('Error vaciando papelera: '+e.message, 'err'); }
-}
-
-// ═══════════════════════════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════════════════════════
 async function init(){
   await loadCatalogs();
   await loadManifests();
-  await updateTrashBadge();
 
   // Auto-abrir el manifiesto más reciente si no hay ninguno seleccionado
   const activeList = filteredByTab(allManifests);
