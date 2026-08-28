@@ -213,51 +213,6 @@ body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;font-size:14px;ba
       <div class="sidebar-tab active" id="tab-active" onclick="switchTab('active')">En curso</div>
       <div class="sidebar-tab" id="tab-completed" onclick="switchTab('completed')">Completados</div>
     </div>
-    <div class="sidebar-search">
-      <i class="ti ti-search" style="color:var(--text3);font-size:14px"></i>
-      <input id="sidebar-search-input" placeholder="Buscar viaje o B/L..." oninput="onSidebarSearch(this.value)"/>
-    </div>
-    <div id="bl-search-results" class="bl-search-results" style="display:none"></div>
-    <div class="manifest-list" id="manifest-list">
-      <div style="padding:24px;text-align:center;color:var(--text3);font-size:12px">
-        <i class="ti ti-file-import" style="font-size:32px;display:block;margin-bottom:8px"></i>
-        Carga un XML o PDF para comenzar
-      </div>
-    </div>
-  </div>
-
-  <!-- MAIN -->
-  <div class="main">
-    <!-- toolbar que aparece cuando hay manifiesto seleccionado -->
-    <div class="main-toolbar" id="main-toolbar" style="display:none">
-      <i class="ti ti-ship" style="color:var(--accent)"></i>
-      <span class="voy-label" id="toolbar-voyage"></span>
-      <span id="toolbar-vessel" style="font-size:11px;color:var(--text3)"></span>
-      <span class="spacer"></span>
-      <button class="btn sm" onclick="showTxtPreview(currentBL?.id)" id="btn-preview" disabled>
-        <i class="ti ti-eye"></i> Ver TXT
-      </button>
-      <button class="btn sm accent" onclick="exportTxt()" id="btn-export">
-        <i class="ti ti-file-export"></i> Exportar TXT
-      </button>
-      <button class="btn sm purple" onclick="pushSiscommate()" id="btn-push">
-        <i class="ti ti-database-import"></i> Guardar en SISCOMMATE
-      </button>
-    </div>
-
-    <div id="editor" class="editor">
-      <div class="empty-state">
-        <i class="ti ti-ship"></i>
-        <p style="font-size:15px;color:var(--text2)">Selecciona un manifiesto</p>
-        <p style="font-size:12px">o carga un XML o PDF de la DGA</p>
-        <div class="drop-zone" id="drop-zone" onclick="openUpload()"
-             ondragover="event.preventDefault();this.classList.add('drag')"
-             ondragleave="this.classList.remove('drag')"
-             ondrop="handleDrop(event)">
-          <i class="ti ti-file-upload" style="font-size:28px;display:block;margin-bottom:8px"></i>
-          Arrastra el XML o PDF aquí o haz clic para seleccionar
-        </div>
-      </div>
     </div>
 
     <div class="statusbar">
@@ -448,6 +403,7 @@ function filteredByTab(list){
     return list.filter(m=>m.status==='siscommate'||m.status==='exportado');
   return list.filter(m=>m.status!=='siscommate'&&m.status!=='exportado');
 }
+
 
 
 let searchTimer;
@@ -1886,89 +1842,6 @@ async function deleteBL(blId){
   }
 }
 
-// ═══════════════════════════════════════════════════════════════
-// ACCIONES DE LA PAPELERA (TRASH ACTIONS)
-// ═══════════════════════════════════════════════════════════════
-async function restoreManifest(id){
-  try{
-    await api(`/api/trash/restore-manifest/${id}`, {method:'POST'});
-    toast('Manifiesto restaurado');
-    await loadManifests();
-    if(currentTab === 'trash') renderTrashList();
-  }catch(e){ toast('Error restaurando: '+e.message, 'err'); }
-}
-
-function confirmPurgeManifest(id, voyageNo){
-  showModal('Eliminar definitivamente',
-    `<p>¿Deseas eliminar <strong>definitivamente</strong> el viaje <strong>${esc(voyageNo)}</strong>?</p>
-     <p style="margin-top:8px;font-size:12px;color:var(--danger);font-weight:600">Esta acción borrará de la base de datos todos sus B/L y registros de forma permanente.</p>`,
-    [
-      {label:'Cancelar', action:'closeModal()', cls:''},
-      {label:'Purgar Definitivo', action:`purgeManifest(${id})`, cls:'danger'},
-    ]
-  );
-}
-
-async function purgeManifest(id){
-  closeModal();
-  try{
-    await api(`/api/trash/purge-manifest/${id}`, {method:'DELETE'});
-    toast('Manifiesto purgado permanentemente');
-    await loadManifests();
-    if(currentTab === 'trash') renderTrashList();
-  }catch(e){ toast('Error purgando: '+e.message, 'err'); }
-}
-
-async function restoreBL(id){
-  try{
-    await api(`/api/trash/restore-bl/${id}`, {method:'POST'});
-    toast('B/L restaurado');
-    await loadManifests();
-    if(currentTab === 'trash') renderTrashList();
-  }catch(e){ toast('Error restaurando B/L: '+e.message, 'err'); }
-}
-
-function confirmPurgeBL(id, blNo){
-  showModal('Eliminar definitivamente',
-    `<p>¿Deseas eliminar <strong>definitivamente</strong> el B/L <strong>${esc(blNo)}</strong>?</p>
-     <p style="margin-top:8px;font-size:12px;color:var(--danger);font-weight:600">Se borrará permanentemente de la base de datos.</p>`,
-    [
-      {label:'Cancelar', action:'closeModal()', cls:''},
-      {label:'Purgar B/L', action:`purgeBL(${id})`, cls:'danger'},
-    ]
-  );
-}
-
-async function purgeBL(id){
-  closeModal();
-  try{
-    await api(`/api/trash/purge-bl/${id}`, {method:'DELETE'});
-    toast('B/L purgado permanentemente');
-    await loadManifests();
-    if(currentTab === 'trash') renderTrashList();
-  }catch(e){ toast('Error purgando B/L: '+e.message, 'err'); }
-}
-
-function confirmEmptyTrash(){
-  showModal('Vaciar papelera',
-    `<p>¿Deseas vaciar <strong>toda la papelera</strong>?</p>
-     <p style="margin-top:8px;font-size:12px;color:var(--danger);font-weight:600">Todos los viajes y B/Ls eliminados se borrarán permanentemente.</p>`,
-    [
-      {label:'Cancelar', action:'closeModal()', cls:''},
-      {label:'Vaciar Todo', action:'emptyTrash()', cls:'danger'},
-    ]
-  );
-}
-
-async function emptyTrash(){
-  closeModal();
-  try{
-    await api('/api/trash/empty', {method:'DELETE'});
-    toast('Papelera vaciada');
-    await loadManifests();
-    if(currentTab === 'trash') renderTrashList();
-  }catch(e){ toast('Error vaciando papelera: '+e.message, 'err'); }
-}
 
 // ═══════════════════════════════════════════════════════════════
 // INIT
@@ -1976,7 +1849,6 @@ async function emptyTrash(){
 async function init(){
   await loadCatalogs();
   await loadManifests();
-  await updateTrashBadge();
 
   // Auto-abrir el manifiesto más reciente si no hay ninguno seleccionado
   const activeList = filteredByTab(allManifests);
