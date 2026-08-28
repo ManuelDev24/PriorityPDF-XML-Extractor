@@ -794,10 +794,9 @@ function renderEditor(bl){
         <div class="field"><label>No. documento (RNC / Cédula)</label><input value="${esc(bl.consignor_document_no||'')}" onchange="updateBL('consignor_document_no',this.value)"/></div>
         <div class="field"><label>Tipo documento</label><input value="${esc(bl.consignor_document_type||'')}" onchange="updateBL('consignor_document_type',this.value)"/></div>
       </div>
-      <div class="fg fg4">
+      <div class="fg fg3">
         <div class="field fspan"><label>Dirección</label><input value="${esc(bl.consignor_street||'')}" onchange="updateBL('consignor_street',this.value)"/></div>
         <div class="field"><label>Ciudad</label><input value="${esc(bl.consignor_city||'')}" onchange="updateBL('consignor_city',this.value)"/></div>
-        <div class="field"><label>Zip code</label><input value="${esc(bl.consignor_zip||'')}" onchange="updateBL('consignor_zip',this.value)"/></div>
         <div class="field"><label>Teléfono</label><input value="${esc(bl.consignor_tel||'')}" onchange="updateBL('consignor_tel',this.value)"/></div>
         <div class="field"><label>Email</label><input value="${esc(bl.consignor_email||'')}" onchange="updateBL('consignor_email',this.value)"/></div>
       </div>
