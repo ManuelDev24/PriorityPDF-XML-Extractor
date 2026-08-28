@@ -1088,12 +1088,14 @@ app.post('/api/manifests/upload', upload.single('xml'), async (req,res) => {
 
 // (ruta /api/ports eliminada — usar /api/catalogs/ports)
 
-// Listar manifiestos
+// Listar manifiestos activos
 app.get('/api/manifests', (req,res) => {
   const db = getDB();
   res.json(db.prepare(`
     SELECT m.*, COUNT(b.id) as bl_count
-    FROM manifests m LEFT JOIN bills_of_lading b ON b.manifest_id=m.id
+    FROM manifests m
+    LEFT JOIN bills_of_lading b ON b.manifest_id=m.id AND (b.status IS NULL OR b.status != 'eliminado')
+    WHERE m.status != 'eliminado'
     GROUP BY m.id ORDER BY m.created_at DESC
   `).all());
   db.close();
@@ -1106,7 +1108,7 @@ app.get('/api/manifests/:id', (req,res) => {
   if (!manifest) { db.close(); return res.status(404).json({ error:'No encontrado' }); }
   res.json({
     manifest,
-    bls:          db.prepare('SELECT * FROM bills_of_lading WHERE manifest_id=? ORDER BY bl_no').all(req.params.id),
+    bls:          db.prepare("SELECT * FROM bills_of_lading WHERE manifest_id=? AND (status IS NULL OR status != 'eliminado') ORDER BY bl_no").all(req.params.id),
     containers:   db.prepare('SELECT * FROM containers WHERE manifest_id=?').all(req.params.id),
     container_bl: db.prepare('SELECT * FROM container_bl WHERE manifest_id=?').all(req.params.id),
   });
@@ -1142,37 +1144,105 @@ app.put('/api/containers/:id', (req,res) => {
   res.json({ ok:true });
 });
 
-// Eliminar manifiesto (y sus B/L, contenedores, logs — CASCADE)
+// Mover manifiesto a la papelera (soft delete)
 app.delete('/api/manifests/:id', (req,res) => {
   const db = getDB();
   const manifest = db.prepare('SELECT * FROM manifests WHERE id=?').get(req.params.id);
   if (!manifest) { db.close(); return res.status(404).json({ error:'No encontrado' }); }
-  db.prepare('DELETE FROM export_log    WHERE manifest_id=?').run(req.params.id);
-  db.prepare('DELETE FROM container_bl  WHERE manifest_id=?').run(req.params.id);
-  db.prepare('DELETE FROM containers    WHERE manifest_id=?').run(req.params.id);
-  db.prepare('DELETE FROM bills_of_lading WHERE manifest_id=?').run(req.params.id);
-  db.prepare('DELETE FROM manifests     WHERE id=?').run(req.params.id);
+  db.prepare("UPDATE manifests SET status='eliminado' WHERE id=?").run(req.params.id);
   db.close();
   res.json({ ok: true, deleted: manifest.voyage_no });
 });
 
-// Eliminar un B/L individual (y sus items de carga y vínculos de contenedor)
+// Mover un B/L individual a la papelera (soft delete)
 app.delete('/api/bl/:id', (req, res) => {
   const db = getDB();
   const bl = db.prepare('SELECT * FROM bills_of_lading WHERE id=?').get(req.params.id);
   if (!bl) { db.close(); return res.status(404).json({ error: 'B/L no encontrado' }); }
-
-  db.prepare('DELETE FROM bl_cargo_items WHERE bl_id=?').run(bl.id);
-  db.prepare('DELETE FROM container_bl WHERE bl_no=? AND manifest_id=?').run(bl.bl_no, bl.manifest_id);
-  db.prepare(`
-    DELETE FROM containers
-    WHERE manifest_id=?
-      AND container_no NOT IN (SELECT container_no FROM container_bl WHERE manifest_id=?)
-  `).run(bl.manifest_id, bl.manifest_id);
-
-  db.prepare('DELETE FROM bills_of_lading WHERE id=?').run(bl.id);
+  db.prepare("UPDATE bills_of_lading SET status='eliminado' WHERE id=?").run(bl.id);
   db.close();
   res.json({ ok: true, deleted: bl.bl_no, manifest_id: bl.manifest_id });
+});
+
+// ─── PAPELERA DE RECICLAJE (TRASH COMPONENT) ──────────────────────────────────
+app.get('/api/trash', (req, res) => {
+  const db = getDB();
+  const manifests = db.prepare(`
+    SELECT m.*, COUNT(b.id) as bl_count
+    FROM manifests m LEFT JOIN bills_of_lading b ON b.manifest_id=m.id
+    WHERE m.status='eliminado'
+    GROUP BY m.id ORDER BY m.created_at DESC
+  `).all();
+
+  const bls = db.prepare(`
+    SELECT b.*, m.voyage_no, m.vessel_name
+    FROM bills_of_lading b
+    JOIN manifests m ON m.id = b.manifest_id
+    WHERE b.status='eliminado' AND m.status != 'eliminado'
+    ORDER BY b.modified_at DESC
+  `).all();
+
+  db.close();
+  res.json({ manifests, bls, total: manifests.length + bls.length });
+});
+
+// Restaurar manifiesto
+app.post('/api/trash/restore-manifest/:id', (req, res) => {
+  const db = getDB();
+  db.prepare("UPDATE manifests SET status='borrador' WHERE id=?").run(req.params.id);
+  db.close();
+  res.json({ ok: true });
+});
+
+// Restaurar B/L
+app.post('/api/trash/restore-bl/:id', (req, res) => {
+  const db = getDB();
+  db.prepare("UPDATE bills_of_lading SET status='pendiente' WHERE id=?").run(req.params.id);
+  db.close();
+  res.json({ ok: true });
+});
+
+// Purgar manifiesto definitivamente
+app.delete('/api/trash/purge-manifest/:id', (req, res) => {
+  const db = getDB();
+  db.prepare('DELETE FROM export_log WHERE manifest_id=?').run(req.params.id);
+  db.prepare('DELETE FROM bl_cargo_items WHERE manifest_id=?').run(req.params.id);
+  db.prepare('DELETE FROM container_bl WHERE manifest_id=?').run(req.params.id);
+  db.prepare('DELETE FROM containers WHERE manifest_id=?').run(req.params.id);
+  db.prepare('DELETE FROM bills_of_lading WHERE manifest_id=?').run(req.params.id);
+  db.prepare('DELETE FROM manifests WHERE id=?').run(req.params.id);
+  db.close();
+  res.json({ ok: true });
+});
+
+// Purgar B/L definitivamente
+app.delete('/api/trash/purge-bl/:id', (req, res) => {
+  const db = getDB();
+  const bl = db.prepare('SELECT * FROM bills_of_lading WHERE id=?').get(req.params.id);
+  if (bl) {
+    db.prepare('DELETE FROM bl_cargo_items WHERE bl_id=?').run(bl.id);
+    db.prepare('DELETE FROM container_bl WHERE bl_no=? AND manifest_id=?').run(bl.bl_no, bl.manifest_id);
+    db.prepare('DELETE FROM bills_of_lading WHERE id=?').run(bl.id);
+  }
+  db.close();
+  res.json({ ok: true });
+});
+
+// Vaciar toda la papelera
+app.delete('/api/trash/empty', (req, res) => {
+  const db = getDB();
+  const delMans = db.prepare("SELECT id FROM manifests WHERE status='eliminado'").all();
+  delMans.forEach(m => {
+    db.prepare('DELETE FROM export_log WHERE manifest_id=?').run(m.id);
+    db.prepare('DELETE FROM bl_cargo_items WHERE manifest_id=?').run(m.id);
+    db.prepare('DELETE FROM container_bl WHERE manifest_id=?').run(m.id);
+    db.prepare('DELETE FROM containers WHERE manifest_id=?').run(m.id);
+    db.prepare('DELETE FROM bills_of_lading WHERE manifest_id=?').run(m.id);
+    db.prepare('DELETE FROM manifests WHERE id=?').run(m.id);
+  });
+  db.prepare("DELETE FROM bills_of_lading WHERE status='eliminado'").run();
+  db.close();
+  res.json({ ok: true });
 });
 
 // Actualizar manifiesto
