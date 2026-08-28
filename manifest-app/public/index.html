@@ -361,7 +361,6 @@ async function loadManifests(){
     allManifests=await api('/api/manifests');
     renderManifestList(filteredByTab(allManifests));
     loadStats();
-    updateTrashBadge();
   } catch(e){ setStatus('Error conectando con el servidor: '+e.message); }
 }
 
@@ -2071,6 +2070,14 @@ async function init(){
   await loadCatalogs();
   await loadManifests();
   await updateTrashBadge();
+
+  // Auto-abrir el manifiesto más reciente si no hay ninguno seleccionado
+  const activeList = filteredByTab(allManifests);
+  if(activeList.length && !currentManifestId){
+    await selectManifest(activeList[0].id);
+    expandedSet.add(activeList[0].id);
+    renderManifestList(activeList);
+  }
 }
 init();
 </script>
