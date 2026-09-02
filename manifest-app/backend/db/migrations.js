@@ -7,6 +7,13 @@
 const db = require('./connection');
 
 // Agrega una columna solo si no existe todavía
+/**
+ * Agrega una columna solo si no existe. Idempotente.
+ * @param {string} table
+ * @param {string} column
+ * @param {string} definition Tipo SQL, por ejemplo TEXT
+ * @returns {boolean} true si la agregó
+ */
 function addColumnIfMissing(table, column, definition) {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
   if (!cols.includes(column)) {
@@ -16,11 +23,23 @@ function addColumnIfMissing(table, column, definition) {
   return false;
 }
 
+/**
+ * Aplica las migraciones de arranque. Todas idempotentes: se pueden correr
+ * en cada inicio sin efecto secundario.
+ * @param {{bridgeHost: string, bridgePort: string|number}} defaults Valores
+ *   iniciales de settings, solo se usan la primera vez
+ */
 function runMigrations({ bridgeHost, bridgePort }) {
   // ── Columnas agregadas después del esquema original ────────────────────────
   addColumnIfMissing('bills_of_lading', 'hacienda_client_ivu', 'TEXT');
   addColumnIfMissing('containers',      'size',                'TEXT');
   addColumnIfMissing('manifests',       'docking_number',      'TEXT');
+
+  // El IMO del buque nunca tuvo columna, pese a que el editor lo pide, la ruta
+  // lo declara editable y el TXT de Hacienda lo escribe en [174:181]. Cualquier
+  // PUT que lo incluyera fallaba con "no such column: imo", perdiendo de paso
+  // todos los demás campos de esa misma petición, y en el TXT salía 0000000.
+  addColumnIfMissing('manifests',       'imo',                 'TEXT');
 
   // ── Configuración persistente (bridge host/port, ruta DBF) ─────────────────
   db.exec(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')`);

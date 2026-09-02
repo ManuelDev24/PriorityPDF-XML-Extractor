@@ -6,6 +6,11 @@ const express = require('express');
 const multer  = require('multer');
 const db = require('../db/connection');
 
+/** @typedef {import('../types').ManifestRow} ManifestRow */
+/** @typedef {import('../types').BLRow} BLRow */
+/** @typedef {import('../types').ClientRow} ClientRow */
+/** @typedef {import('../types').ParsedManifest} ParsedManifest */
+
 const { parseXmlManifest } = require('../services/xmlParser');
 const { parsePdfManifest } = require('../services/pdfParser');
 const { toSiscommatePort, generateFullTxt } = require('../services/txtGenerator');
@@ -40,6 +45,7 @@ router.post('/api/manifests/upload', upload.single('xml'), async (req, res) => {
     const manifestId = info.lastInsertRowid;
 
     // Catálogo de clientes para auto-match de SS/EIN e IVU
+    /** @type {ClientRow[]} */
     const clients = db.prepare(`SELECT name, ss, ivu FROM clients WHERE ss IS NOT NULL AND ss != ''`).all();
     const clientMap = new Map();
     clients.forEach(c => { if (c.name) clientMap.set(c.name.trim().toUpperCase(), c); });
@@ -160,6 +166,7 @@ router.get('/api/manifests', (req, res) => {
 });
 
 router.get('/api/manifests/:id', (req, res) => {
+  /** @type {ManifestRow} */
   const manifest = db.prepare('SELECT * FROM manifests WHERE id=?').get(req.params.id);
   if (!manifest) return res.status(404).json({ error: 'No encontrado' });
   res.json({
@@ -171,8 +178,12 @@ router.get('/api/manifests/:id', (req, res) => {
 });
 
 // ── ACTUALIZAR ───────────────────────────────────────────────────────────────
+// Cualquier campo que el editor pueda enviar tiene que estar aquí: los que
+// falten se descartan sin aviso ni error. Así se perdía 'vessel_code', que el
+// desplegable de buque envía y el propio editor usa para preseleccionarlo — el
+// buque elegido no se recordaba al recargar.
 const CAMPOS_EDITABLES_MANIFEST = [
-  'manifest_no','vessel_name','carrier_code','voyage_no','imo',
+  'manifest_no','vessel_name','vessel_code','carrier_code','voyage_no','imo',
   'loading_port','unloading_port','departure_date','arrival_date','status',
   'docking_number',
 ];
@@ -191,6 +202,7 @@ router.put('/api/manifests/:id', (req, res) => {
 
 // ── ELIMINAR (con sus B/L, contenedores y logs) ──────────────────────────────
 router.delete('/api/manifests/:id', (req, res) => {
+  /** @type {ManifestRow} */
   const manifest = db.prepare('SELECT * FROM manifests WHERE id=?').get(req.params.id);
   if (!manifest) return res.status(404).json({ error: 'No encontrado' });
 
@@ -205,9 +217,11 @@ router.delete('/api/manifests/:id', (req, res) => {
 
 // ── EXPORTAR TXT HACIENDA ────────────────────────────────────────────────────
 router.get('/api/manifests/:id/export-txt', (req, res) => {
+  /** @type {ManifestRow} */
   const manifest = db.prepare('SELECT * FROM manifests WHERE id=?').get(req.params.id);
   if (!manifest) return res.status(404).json({ error: 'No encontrado' });
 
+  /** @type {BLRow[]} */
   const allBls = db.prepare('SELECT * FROM bills_of_lading WHERE manifest_id=? ORDER BY bl_no').all(req.params.id);
 
   // Mismas reglas que el push a SISCOMMATE (services/blValidation.js)

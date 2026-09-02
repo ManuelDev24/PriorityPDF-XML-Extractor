@@ -141,4 +141,111 @@
  * @property {string} document_type  'RNC' | 'EIN' | ''
  */
 
+// ─────────────────────────────────────────────────────────────────────────────
+// FILAS DE LA BASE
+//
+// Lo que devuelven las consultas, que no es lo mismo que produce un parser: la
+// base agrega id, status, timestamps y los campos que llena el operador.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Fila de `manifests`.
+ * @typedef {object} ManifestRow
+ * @property {number} id
+ * @property {string} filename
+ * @property {string} voyage_no
+ * @property {string} vessel_code
+ * @property {string} vessel_name
+ * @property {string} biz_company_code
+ * @property {string} loading_port
+ * @property {string} unloading_port
+ * @property {string} departure_date
+ * @property {string} arrival_date
+ * @property {string} manifest_no
+ * @property {string} carrier_code
+ * @property {string} status          'borrador' | 'validado' | 'exportado' | 'siscommate'
+ * @property {string} created_at
+ * @property {string} [exported_at]
+ * @property {string} [docking_number]
+ * @property {string} [imo]
+ * @property {number} [bl_count]      Solo en el listado, viene de un COUNT
+ * @property {string} [carrier_ivu]   Lo adjunta la ruta de exportación
+ */
+
+/**
+ * Fila de `bills_of_lading`: los campos del archivo más lo que agrega la base y
+ * completa el operador.
+ * @typedef {ParsedBL & {
+ *   id: number,
+ *   manifest_id: number,
+ *   status: string,
+ *   notes?: string,
+ *   modified_at?: string,
+ *   hacienda_item_code?: string,
+ *   hacienda_tariff?: string,
+ *   containers?: string[],
+ *   cargoItems?: CargoItemRow[]
+ * }} BLRow
+ */
+
+/**
+ * Fila de `containers`.
+ * @typedef {object} ContainerRow
+ * @property {number} id
+ * @property {number} manifest_id
+ * @property {string} container_no
+ * @property {string} container_type
+ * @property {string} package_code
+ * @property {number} amount
+ * @property {number} gross_weight
+ * @property {number} net_weight
+ * @property {string} seal_no1
+ * @property {string} [size]   Requerido por SISCOMMATE (BOLCONT); lo elige el operador
+ */
+
+/**
+ * Fila de `container_bl`, la tabla que vincula B/L con contenedores.
+ * @typedef {object} ContainerBLRow
+ * @property {string} container_no
+ * @property {string} bl_no
+ * @property {number} manifest_id
+ */
+
+/**
+ * Fila de `bl_cargo_items`. A diferencia de ParsedCargoItem, aquí sí existen los
+ * campos de Hacienda: los llena el operador desde el editor, nunca el parser.
+ * @typedef {object} CargoItemRow
+ * @property {number} id
+ * @property {number} bl_id
+ * @property {number} manifest_id
+ * @property {string|null} container_no  null = aplica a todos los contenedores del B/L
+ * @property {string} goods_name
+ * @property {number} gross_weight
+ * @property {string|null} hacienda_item_code
+ * @property {string|null} hacienda_tariff
+ * @property {number} seq
+ */
+
+/**
+ * Fila de `clients`, el catálogo de consignatarios.
+ * @typedef {object} ClientRow
+ * @property {number} id
+ * @property {string} name
+ * @property {string} ss      SS/EIN de 9 dígitos
+ * @property {string} [taxid]
+ * @property {string} [add1]
+ * @property {string} [add2]
+ * @property {string} [phone1]
+ * @property {string} [ivu]   No. de comerciante de Hacienda
+ */
+
+/**
+ * Payload que se envía al bridge de SISCOMMATE.
+ * @typedef {object} BridgeContainer
+ * @property {string} bl_no
+ * @property {string} container_no
+ * @property {string} size
+ * @property {string} type   Siempre 'R' (RORO)
+ */
+
 module.exports = {};

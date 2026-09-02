@@ -4,6 +4,9 @@
 
 const express = require('express');
 const db = require('../db/connection');
+
+/** @typedef {import('../types').BLRow} BLRow */
+/** @typedef {import('../types').CargoItemRow} CargoItemRow */
 const { generateTxtLine1, generateTxtLine2 } = require('../services/txtGenerator');
 
 const router = express.Router();
@@ -35,6 +38,7 @@ router.put('/api/bl/:id', (req, res) => {
 
 // ── ELIMINAR UN B/L (y sus items y vínculos de contenedor) ───────────────────
 router.delete('/api/bl/:id', (req, res) => {
+  /** @type {BLRow} */
   const bl = db.prepare('SELECT * FROM bills_of_lading WHERE id=?').get(req.params.id);
   if (!bl) return res.status(404).json({ error: 'B/L no encontrado' });
 

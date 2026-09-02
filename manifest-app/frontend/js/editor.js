@@ -514,16 +514,31 @@ function positionDrop(inputEl, dropEl){
 // ═══════════════════════════════════════════════════════════════
 // GUARDAR — autosave con debounce
 // ═══════════════════════════════════════════════════════════════
+// Los cambios se acumulan y se envían juntos tras 600 ms de inactividad.
+// Si se cambia de B/L con cambios pendientes, se envían antes de acumular los
+// del nuevo — así nunca terminan aplicados al B/L equivocado.
 function updateBL(field, value){
   if(!currentBL) return;
   currentBL[field]=value;
-  clearTimeout(saveTimer);
-  saveTimer=setTimeout(async()=>{
-    try{
-      await api(`/api/bl/${currentBL.id}`,{method:'PUT',body:JSON.stringify({[field]:value})});
-      setStatus(`Guardado`,new Date().toLocaleTimeString('es-PR'));
-    }catch(e){ toast('Error guardando: '+e.message,'err'); }
-  },600);
+
+  if(pendingBL.id !== null && pendingBL.id !== currentBL.id) flushBL();
+
+  pendingBL.id = currentBL.id;
+  pendingBL.campos[field] = value;
+
+  clearTimeout(blSaveTimer);
+  blSaveTimer = setTimeout(flushBL, 600);
+}
+
+async function flushBL(){
+  clearTimeout(blSaveTimer);
+  const { id, campos } = pendingBL;
+  if(id === null || !Object.keys(campos).length) return;
+  pendingBL = { id: null, campos: {} };   // limpiar antes de await, por si llega otro cambio
+  try{
+    await api(`/api/bl/${id}`,{method:'PUT',body:JSON.stringify(campos)});
+    setStatus(`Guardado`,new Date().toLocaleTimeString('es-PR'));
+  }catch(e){ toast('Error guardando: '+e.message,'err'); }
 }
 
 async function updateContainerSize(containerId, size){
@@ -536,16 +551,31 @@ async function updateContainerSize(containerId, size){
   }catch(e){ toast('Error guardando tamaño: '+e.message,'err'); }
 }
 
+// Mismo esquema que updateBL. Importa especialmente aquí: al elegir un buque se
+// llama cuatro veces seguidas (vessel_code, vessel_name, imo, carrier_code) y
+// antes solo sobrevivía la última.
 function updateManifest(field, value){
   if(!currentManifestData) return;
   currentManifestData.manifest[field]=value;
-  clearTimeout(saveTimer);
-  saveTimer=setTimeout(async()=>{
-    try{
-      await api(`/api/manifests/${currentManifestId}`,{method:'PUT',body:JSON.stringify({[field]:value})});
-      setStatus(`Manifiesto actualizado`,new Date().toLocaleTimeString('es-PR'));
-    }catch(e){ toast('Error guardando manifiesto: '+e.message,'err'); }
-  },600);
+
+  if(pendingManifest.id !== null && pendingManifest.id !== currentManifestId) flushManifest();
+
+  pendingManifest.id = currentManifestId;
+  pendingManifest.campos[field] = value;
+
+  clearTimeout(manifestSaveTimer);
+  manifestSaveTimer = setTimeout(flushManifest, 600);
+}
+
+async function flushManifest(){
+  clearTimeout(manifestSaveTimer);
+  const { id, campos } = pendingManifest;
+  if(id === null || !Object.keys(campos).length) return;
+  pendingManifest = { id: null, campos: {} };
+  try{
+    await api(`/api/manifests/${id}`,{method:'PUT',body:JSON.stringify(campos)});
+    setStatus(`Manifiesto actualizado`,new Date().toLocaleTimeString('es-PR'));
+  }catch(e){ toast('Error guardando manifiesto: '+e.message,'err'); }
 }
 
 async function markValidated(blId){

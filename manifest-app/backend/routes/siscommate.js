@@ -4,6 +4,13 @@
 
 const express = require('express');
 const db = require('../db/connection');
+
+/** @typedef {import('../types').ManifestRow} ManifestRow */
+/** @typedef {import('../types').BLRow} BLRow */
+/** @typedef {import('../types').ContainerRow} ContainerRow */
+/** @typedef {import('../types').ContainerBLRow} ContainerBLRow */
+/** @typedef {import('../types').CargoItemRow} CargoItemRow */
+/** @typedef {import('../types').BridgeContainer} BridgeContainer */
 const { getBridgeStatus, getLote, pushManifest } = require('../services/siscommateClient');
 const { validateForSubmission } = require('../services/blValidation');
 
@@ -17,9 +24,11 @@ router.get('/api/bridge/status', async (req, res) => {
 // ── PUSH AL SISCOMMATE ───────────────────────────────────────────────────────
 router.post('/api/manifests/:id/push-siscommate', async (req, res) => {
   try {
+    /** @type {ManifestRow} */
     const manifest = db.prepare('SELECT * FROM manifests WHERE id=?').get(req.params.id);
     if (!manifest) return res.status(404).json({ error: 'No encontrado' });
 
+    /** @type {BLRow[]} */
     const allBls = db.prepare('SELECT * FROM bills_of_lading WHERE manifest_id=? ORDER BY bl_no').all(req.params.id);
 
     // Mismas validaciones que la exportación TXT. Antes este camino solo
@@ -27,8 +36,11 @@ router.post('/api/manifests/:id/push-siscommate', async (req, res) => {
     const { validBls, errors } = validateForSubmission(manifest, allBls);
     if (errors.length) return res.status(400).json({ error: errors.join(' | ') });
 
+    /** @type {ContainerBLRow[]} */
     const container_bl = db.prepare('SELECT * FROM container_bl WHERE manifest_id=?').all(req.params.id);
+    /** @type {ContainerRow[]} */
     const containers   = db.prepare('SELECT * FROM containers WHERE manifest_id=?').all(req.params.id);
+    /** @type {CargoItemRow[]} */
     const cargoItems   = db.prepare('SELECT * FROM bl_cargo_items WHERE manifest_id=? ORDER BY bl_id, seq').all(req.params.id);
 
     // Adjuntar tamaño del contenedor a container_bl (para BOLCONT.size)

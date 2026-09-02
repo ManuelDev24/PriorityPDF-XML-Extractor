@@ -22,6 +22,11 @@ const BRIDGE_TIMEOUT_MS = Number(process.env.BRIDGE_TIMEOUT_MS) || 30000;
 
 // La configuración vive en la tabla settings (editable desde /admin.html),
 // con las variables de entorno como respaldo.
+/**
+ * Host y puerto del bridge. Vive en la tabla settings (editable desde
+ * /admin.html), con las variables de entorno como respaldo.
+ * @returns {{host: string, port: string|number}}
+ */
 function getBridgeConfig() {
   const rows = db.prepare(
     `SELECT key, value FROM settings WHERE key IN ('bridge_host','bridge_port')`
@@ -34,6 +39,14 @@ function getBridgeConfig() {
   return cfg;
 }
 
+/**
+ * Petición HTTP al bridge de SISCOMMATE.
+ * @param {string} method
+ * @param {string} path
+ * @param {object|null} [body]
+ * @returns {Promise<any>} La respuesta parseada, o {raw} si no es JSON válido
+ * @throws {Error} Si no conecta o si supera BRIDGE_TIMEOUT_MS
+ */
 function bridgeRequest(method, path, body) {
   return new Promise((resolve, reject) => {
     const { host, port } = getBridgeConfig();
@@ -72,6 +85,13 @@ function bridgeRequest(method, path, body) {
 // En algunas versiones de Node los errores de socket llegan con .message vacío
 // y la información útil en .code. El Admin muestra este texto, así que se
 // arma un mensaje legible en vez de dejarlo en blanco.
+/**
+ * Arma un mensaje legible para errores de socket sin .message.
+ * @param {NodeJS.ErrnoException} err
+ * @param {string} host
+ * @param {string|number} port
+ * @returns {Error}
+ */
 function describirError(err, host, port) {
   if (err && err.message) return err;
   const destino = `${host}:${port}`;
@@ -86,6 +106,10 @@ function describirError(err, host, port) {
 }
 
 // ── Operaciones de negocio ───────────────────────────────────────────────────
+/**
+ * ¿Está vivo el bridge? Nunca lanza: devuelve el estado.
+ * @returns {Promise<{online: boolean, error?: string}>}
+ */
 async function getBridgeStatus() {
   try {
     const data = await bridgeRequest('GET', '/health', null);
@@ -96,11 +120,21 @@ async function getBridgeStatus() {
 }
 
 // Lote actual de SISCOMMATE. No bloquea el push si el bridge no responde.
+/**
+ * Número de lote actual de SISCOMMATE. No bloquea el push si el bridge no
+ * responde: devuelve nulos.
+ * @returns {Promise<{lote: number|null, siguiente: number|null}>}
+ */
 async function getLote() {
   try { return await bridgeRequest('GET', '/lote', null); }
   catch (_) { return { lote: null, siguiente: null }; }
 }
 
+/**
+ * Envía el manifiesto al bridge para que lo escriba en las tablas DBF.
+ * @param {{manifest: import('../types').ManifestRow, bls: import('../types').BLRow[], containers: import('../types').BridgeContainer[]}} payload
+ * @returns {Promise<any>}
+ */
 function pushManifest({ manifest, bls, containers }) {
   return bridgeRequest('POST', '/guardar', { manifest, bls, containers });
 }

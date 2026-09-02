@@ -23,18 +23,32 @@ const BACKUP_KEEP = Number(process.env.BACKUP_KEEP) || 30;
 const PREFIJO = 'manifest-';
 const SUFIJO  = '.db';
 
+/**
+ * Marca de tiempo YYYYMMDD-HHMMSS para el nombre del archivo. El formato
+ * ordena alfabéticamente igual que cronológicamente, de lo que depende la rotación.
+ * @returns {string}
+ */
 function marcaDeTiempo() {
   const d = new Date();
   const p = n => String(n).padStart(2, '0');
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
 }
 
+/**
+ * @param {number} bytes
+ * @returns {string}
+ */
 function mb(bytes) {
   return (bytes / 1024 / 1024).toFixed(2) + ' MB';
 }
 
 // Borra los respaldos más viejos, conservando los BACKUP_KEEP más recientes.
 // Solo toca archivos con el patrón propio; ignora cualquier otra cosa.
+/**
+ * Borra los respaldos más viejos conservando los BACKUP_KEEP más recientes.
+ * Solo toca archivos con el patrón propio.
+ * @returns {{conservados: number, eliminados: number}}
+ */
 function rotar() {
   const propios = fs.readdirSync(BACKUP_DIR)
     .filter(f => f.startsWith(PREFIJO) && f.endsWith(SUFIJO))

@@ -19,6 +19,25 @@
 //  - La descripción se trunca a 121 caracteres en el TXT: avisar antes
 const DESC_MAX = 121;
 
+/** @typedef {import('../types').ManifestRow} ManifestRow */
+/** @typedef {import('../types').BLRow} BLRow */
+
+/**
+ * Resultado de validar un manifiesto antes de entregarlo.
+ * @typedef {object} ResultadoValidacion
+ * @property {BLRow[]} validBls Los B/L que se pueden entregar (status 'validado')
+ * @property {string[]} errors  Vacío si todo está en orden
+ */
+
+/**
+ * Decide si un manifiesto se puede entregar, y con qué B/L.
+ *
+ * La usan tanto la exportación del TXT de Hacienda como el push a SISCOMMATE,
+ * para que no puedan volver a divergir.
+ * @param {ManifestRow} manifest
+ * @param {BLRow[]} allBls Todos los B/L del manifiesto, validados o no
+ * @returns {ResultadoValidacion}
+ */
 function validateForSubmission(manifest, allBls) {
   const errors = [];
 
