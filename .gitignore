@@ -12,6 +12,12 @@ manifest-app/manifest.db
 # Respaldos generados por "npm run backup" — nunca se versionan
 backups/
 
+# Salida del build de Vite: se genera con "npm run build", no se versiona.
+# El instalador de produccion la genera en el servidor (Node 20 sobre Windows 10
+# es plataforma Tier 1 y Vite 8 pide Node 20.19+, ambos verificados).
+manifest-app/frontend/assets/
+manifest-app/frontend/admin-vue.html
+
 # Node.js binary packages & installation zips
 node20/
 *.zip

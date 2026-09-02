@@ -11,7 +11,9 @@
     "test": "node --test",
     "typecheck": "tsc --noEmit",
     "backup": "node backend/scripts/backup.js",
-    "init-db": "node db/init.js"
+    "init-db": "node db/init.js",
+    "build": "vite build",
+    "typecheck:front": "vue-tsc --noEmit -p frontend-src/tsconfig.json"
   },
   "dependencies": {
     "better-sqlite3": "^9.4.3",
@@ -24,6 +26,10 @@
   },
   "devDependencies": {
     "@types/node": "^26.4.1",
-    "typescript": "^7.0.2"
+    "@vitejs/plugin-vue": "^6.0.8",
+    "typescript": "~5.9",
+    "vite": "^8.2.2",
+    "vue": "^3.5.42",
+    "vue-tsc": "^3.3.11"
   }
 }

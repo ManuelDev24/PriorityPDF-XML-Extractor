@@ -68,14 +68,30 @@ if not exist "%APP_DEST%\.env" (
 )
 
 :: Instalar dependencias npm
+:: Se instalan TODAS (no solo --production) porque el frontend en Vue se compila
+:: aqui con Vite, que es una dependencia de desarrollo. Node 20 sobre Windows 10
+:: es plataforma Tier 1 y Vite 8 requiere Node 20.19+; ambos verificados.
 echo [4/6] Instalando dependencias npm...
 cd /d "%APP_DEST%"
-npm install --production
+npm install
 if errorlevel 1 (
     echo [ERROR] Fallo npm install
     pause & exit /b 1
 )
 echo [OK] Dependencias instaladas
+
+:: Compilar el frontend en Vue
+echo      Compilando frontend...
+npm run build
+if errorlevel 1 (
+    echo.
+    echo [ERROR] Fallo la compilacion del frontend ^(npm run build^).
+    echo         La aplicacion actual seguira funcionando: el build solo agrega
+    echo         archivos, no borra los existentes. Revisa el error de arriba.
+    echo.
+    pause & exit /b 1
+)
+echo [OK] Frontend compilado
 
 :: Verificar que el modulo nativo cargue con ESTE Node.
 :: better-sqlite3 se compila contra la version de Node que ejecuta npm install.
