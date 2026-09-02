@@ -10,7 +10,16 @@
 
 const pdfParse = require('pdf-parse');
 
+/** @typedef {import('../types').ParsedManifest} ParsedManifest */
+/** @typedef {import('../types').ParsedBL} ParsedBL */
+/** @typedef {import('../types').PdfParty} PdfParty */
+
 // Normaliza fechas DD/MM/YYYY, DD-MM-YYYY o YYYY-MM-DD → YYYY-MM-DD
+/**
+ * Normaliza DD/MM/YYYY, DD-MM-YYYY o YYYY-MM-DD a YYYY-MM-DD.
+ * @param {string|null|undefined} s
+ * @returns {string} Cadena vacía si no reconoce el formato
+ */
 function normalizePdfDate(s) {
   if (!s) return '';
   s = String(s).trim();
@@ -25,6 +34,12 @@ function normalizePdfDate(s) {
 }
 
 // Números con separador de miles: "1,234.56" o "1.234,56" → float
+/**
+ * Convierte un número con separador de miles a float, aceptando formato
+ * americano (1,234.56) y europeo (1.234,56).
+ * @param {string|null|undefined} s
+ * @returns {number} 0 si no es convertible
+ */
 function parsePdfNum(s) {
   if (!s) return 0;
   s = String(s).trim();
@@ -40,6 +55,12 @@ function parsePdfNum(s) {
 }
 
 // Busca la primera etiqueta que haga match y devuelve el grupo capturado
+/**
+ * Devuelve el primer grupo capturado por la primera expresión que haga match.
+ * @param {string} text
+ * @param {RegExp[]} regexes Etiquetas alternativas, en orden de preferencia
+ * @returns {string} Cadena vacía si ninguna coincide
+ */
 function grabPdf(text, regexes) {
   for (const re of regexes) {
     const m = text.match(re);
@@ -49,6 +70,11 @@ function grabPdf(text, regexes) {
 }
 
 // B/L con todos los campos que espera el INSERT (better-sqlite3 no acepta undefined)
+/**
+ * B/L con todos los campos que espera el INSERT inicializados.
+ * better-sqlite3 no acepta undefined, por eso no se pueden omitir.
+ * @returns {ParsedBL}
+ */
 function emptyPdfBL() {
   return {
     bl_no:'', bl_type:'', transit_type:'', unloading_port_code:'',
@@ -76,10 +102,21 @@ function emptyPdfBL() {
 // Los pesos (pares KG,LBS) aparecen agrupados al inicio de cada página, en el
 // mismo orden que las entradas.
 
+/**
+ * ¿El texto parece un contenedor? Sirve para no confundir un número de B/L
+ * con uno de contenedor: en ISO 6346 la cuarta letra solo puede ser U, J o Z.
+ * @param {string} s
+ * @returns {boolean}
+ */
 function isIsoContainer(s) {
   return /^[A-Z]{3}[UJZ]\d{6,7}$/i.test(s) || /^(PRRU|MXRU|CRSU|GVTU|MCLU|CAXU|TGHU|TEMU|SEGU|MSKU)\d+$/i.test(s);
 }
 
+/**
+ * Une un número de contenedor partido por el PDF: "PRRU 201010-6" a "PRRU2010106".
+ * @param {string|null|undefined} raw
+ * @returns {string}
+ */
 function normContainerNo(raw) {
   if (!raw) return '';
   const m = raw.match(/^([A-Z]{4})\s*(\d{6})\s*-?\s*(\d)?$/);
@@ -87,6 +124,11 @@ function normContainerNo(raw) {
   return raw.replace(/\s+/g, '');
 }
 
+/**
+ * ¿La línea es un teléfono y no parte de una dirección?
+ * @param {string} l
+ * @returns {boolean}
+ */
 function isPhoneNumber(l) {
   const clean = l.trim();
   const digits = clean.replace(/\D/g, '');
@@ -95,6 +137,11 @@ function isPhoneNumber(l) {
 }
 
 // Bloque de dirección → { name, street, city, zip, tel, email, document_no, document_type }
+/**
+ * Convierte un bloque de dirección en sus campos.
+ * @param {string[]|null|undefined} blockLines
+ * @returns {PdfParty} Campos vacíos si el bloque no existe, nunca undefined
+ */
 function parsePdfParty(blockLines) {
   const p = { name:'', street:'', city:'', zip:'', tel:'', email:'', document_no:'', document_type:'' };
   if (!blockLines || !blockLines.length) return p;
@@ -183,6 +230,12 @@ function parsePdfParty(blockLines) {
 }
 
 // Los 3 bloques de dirección que preceden a la línea del B/L (hacia atrás)
+/**
+ * Recolecta hacia atrás los 3 bloques de dirección que preceden a la línea del B/L.
+ * @param {string[]} lines Líneas de la página
+ * @param {number} blIdx Índice de la línea del B/L
+ * @returns {Array<string[]|null>} [shipper, consignee, notify]; null si falta alguno
+ */
 function collectPartyBlocks(lines, blIdx) {
   const blocks = [];
   let cur = [];
@@ -204,6 +257,14 @@ function collectPartyBlocks(lines, blIdx) {
   return blocks;  // [shipper, consignee, notify]
 }
 
+/**
+ * Parsea el formato US Customs 1302 (cargo manifest de Priority RORO).
+ *
+ * Es el único parser que produce cargoItems: genera una entrada por cada línea
+ * del manifiesto, lo que permite varios ítems o vehículos por un mismo B/L.
+ * @param {string} text Texto extraído del PDF
+ * @returns {ParsedManifest}
+ */
 function parseCustoms1302(text) {
   const header = {
     voyage_no:'', vessel_code:'', vessel_name:'', biz_company_code:'',
@@ -418,6 +479,11 @@ function parseCustoms1302(text) {
 }
 
 // ¿El texto corresponde al formato US Customs 1302 de Priority RORO?
+/**
+ * ¿El texto corresponde al formato US Customs 1302 de Priority RORO?
+ * @param {string} text
+ * @returns {boolean}
+ */
 function isCustoms1302(text) {
   return /Name of Ship/i.test(text) && (
     /N[uú]mero de recibo/i.test(text) ||
@@ -430,6 +496,13 @@ function isCustoms1302(text) {
 // ── Parser genérico de manifiestos DGA en PDF ────────────────────────────────
 // Extracción heurística por expresiones regulares, para PDF digitales que no
 // siguen el formato US Customs 1302.
+/**
+ * Parser genérico de manifiestos DGA en PDF, por expresiones regulares.
+ * Para PDF digitales que no siguen el formato US Customs 1302.
+ * @param {string} text Texto extraído del PDF
+ * @returns {ParsedManifest} Sin cargoItems
+ * @throws {Error} Si no encuentra ningún B/L reconocible
+ */
 function parseGenericDga(text) {
   const header = {
     voyage_no: grabPdf(text, [
@@ -514,6 +587,12 @@ function parseGenericDga(text) {
 }
 
 // Punto de entrada: extrae el texto del PDF y elige el parser según el formato.
+/**
+ * Punto de entrada: extrae el texto del PDF y elige el parser según el formato.
+ * @param {Buffer} buffer Contenido del archivo PDF
+ * @returns {Promise<ParsedManifest>}
+ * @throws {Error} Si el PDF no tiene texto extraíble (escaneo) o no se reconoce
+ */
 async function parsePdfManifest(buffer) {
   const data = await pdfParse(buffer);
   const text = (data.text || '').replace(/ /g, ' ');

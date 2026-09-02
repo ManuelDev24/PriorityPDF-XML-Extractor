@@ -1,0 +1,28 @@
+{
+  // Verificacion de tipos SIN build step.
+  //
+  // El codigo sigue siendo JavaScript plano y se despliega tal cual por xcopy:
+  // "noEmit" significa que TypeScript solo revisa, nunca genera archivos. Los
+  // tipos se declaran con JSDoc en comentarios.
+  //
+  // Ejecutar:  npm run typecheck
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+
+    "target": "ES2022",
+    "module": "commonjs",
+    "lib": ["ES2022"],
+    "types": ["node"],
+
+    // Se arranca permisivo a proposito: el objetivo es ir tipando modulo por
+    // modulo sin que el proyecto entero quede en rojo. Endurecer posteriormente.
+    "strict": false,
+    "noImplicitAny": false,
+    "resolveJsonModule": true,
+    "skipLibCheck": true
+  },
+  "include": ["backend/**/*.js"],
+  "exclude": ["node_modules", "backend/**/*.test.js"]
+}

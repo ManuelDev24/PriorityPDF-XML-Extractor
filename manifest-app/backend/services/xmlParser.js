@@ -5,13 +5,27 @@
 
 const xml2js = require('xml2js');
 
-// Devuelve el primer valor de un nodo xml2js (que siempre entrega arrays)
+/** @typedef {import('../types').ParsedManifest} ParsedManifest */
+
+/**
+ * Devuelve el primer valor de un nodo xml2js, que siempre entrega arrays.
+ * @param {Record<string, any>|null|undefined} obj
+ * @param {string} key
+ * @returns {string} Cadena vacía si el nodo no existe
+ */
 function v(obj, key) {
   if (!obj || !obj[key]) return '';
   const val = obj[key];
   return Array.isArray(val) ? (val[0] || '') : val;
 }
 
+/**
+ * Parsea un manifiesto XML de la DGA.
+ *
+ * No produce `cargoItems`: el XML trae un solo bloque de mercancía por B/L.
+ * @param {string} xmlText Contenido del archivo XML
+ * @returns {Promise<ParsedManifest>}
+ */
 function parseXmlManifest(xmlText) {
   return new Promise((resolve, reject) => {
     xml2js.parseString(xmlText, { explicitArray: true, trim: true }, (err, result) => {

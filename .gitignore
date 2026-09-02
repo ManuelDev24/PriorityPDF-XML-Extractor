@@ -9,6 +9,9 @@ node_modules/
 *.sqlite
 manifest-app/manifest.db
 
+# Respaldos generados por "npm run backup" — nunca se versionan
+backups/
+
 # Node.js binary packages & installation zips
 node20/
 *.zip

@@ -5,14 +5,108 @@
 //
 // Extraído de server.js (paso 2 de la separación backend/frontend).
 // Módulo puro: recibe datos, devuelve strings. No toca Express ni la base.
+//
+// Tipado con JSDoc — verificar con: npm run typecheck
+
+/**
+ * Manifiesto tal como llega desde la tabla `manifests`, más `carrier_ivu` que
+ * la ruta de exportación adjunta desde el catálogo de carriers.
+ * @typedef {object} Manifest
+ * @property {string} [carrier_code]    Código del carrier (por defecto MPRIORO)
+ * @property {string} [manifest_no]     No. de manifiesto de Hacienda
+ * @property {string} [vessel_name]
+ * @property {string} [voyage_no]
+ * @property {string|number} [imo]
+ * @property {string} [departure_date]  YYYY-MM-DD
+ * @property {string} [arrival_date]    YYYY-MM-DD
+ * @property {string|number} [docking_number] Número de atraque, obligatorio
+ * @property {string} [loading_port]
+ * @property {string} [unloading_port]
+ * @property {string} [carrier_ivu]     Respaldo del IVU si el consignatario no tiene
+ */
+
+/**
+ * Item de carga individual de `bl_cargo_items`. Cuando existe, reemplaza los
+ * campos del B/L en la línea 2.
+ * @typedef {object} CargoItem
+ * @property {string} [goods_name]
+ * @property {number|string} [gross_weight]
+ * @property {string} [hacienda_item_code]
+ * @property {string} [hacienda_tariff]
+ * @property {number|string} [package_qty]
+ * @property {string|null} [container_no]
+ */
+
+/**
+ * B/L de la tabla `bills_of_lading`. `containers` y `cargoItems` los adjunta la
+ * ruta de exportación antes de generar el TXT.
+ * @typedef {object} BL
+ * @property {string} [bl_no]
+ * @property {string} [consignee_name]
+ * @property {string} [consignor_name]
+ * @property {string} [consignee_document_no]
+ * @property {string} [hacienda_client_ss]
+ * @property {string} [hacienda_client_ivu]
+ * @property {string} [hacienda_item_code]
+ * @property {string} [hacienda_tariff]   '040' libre arancel | '045' carga general
+ * @property {string} [hacienda_container_no]
+ * @property {string} [goods_name]
+ * @property {number|string} [package_qty]
+ * @property {number|string} [gross_weight]
+ * @property {number|string} [value]      Valor FOB en USD
+ * @property {string[]} [containers]      Contenedores del B/L
+ * @property {CargoItem[]|null} [cargoItems]
+ */
 
 // ─── HELPERS DE RELLENO ──────────────────────────────────────────────────────
+
+/**
+ * Recorta a n caracteres y rellena con espacios a la derecha.
+ * @param {string|number|null|undefined} s
+ * @param {number} n Ancho exacto del campo
+ * @returns {string} Siempre de longitud n
+ */
 function pad(s, n)  { return String(s || '').substring(0, n).padEnd(n, ' '); }
+
+/**
+ * Recorta a n caracteres y rellena con espacios a la izquierda.
+ * @param {string|number|null|undefined} s
+ * @param {number} n Ancho exacto del campo
+ * @returns {string} Siempre de longitud n
+ */
 function padL(s, n) { return String(s || '').substring(0, n).padStart(n, ' '); }
+
+/**
+ * Rellena con ceros a la izquierda hasta n caracteres.
+ * @param {string|number|null|undefined} s
+ * @param {number} n Ancho exacto del campo
+ * @returns {string} Siempre de longitud n
+ */
 function padZ(s, n) { return String(s || '').padStart(n, '0').substring(0, n); }
+
+/**
+ * Convierte a número tanto lo que llega como texto (el frontend manda los
+ * inputs numéricos como string) como lo que ya viene numérico de SQLite.
+ *
+ * Antes se usaba parseFloat() directo, que solo acepta texto y funcionaba por
+ * coerción implícita de JavaScript. El chequeo de tipos lo detectó.
+ * @param {string|number|null|undefined} v
+ * @returns {number} 0 si no es convertible
+ */
+function toNum(v) {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
+  const n = parseFloat(String(v ?? ''));
+  return Number.isFinite(n) ? n : 0;
+}
 
 // SS/EIN: exactamente 9 dígitos. Devuelve null si no tiene exactamente 9 para
 // que la validación de export-txt pueda detectar valores inválidos.
+/**
+ * SS/EIN a exactamente 9 dígitos, rellenando con ceros a la IZQUIERDA para
+ * preservar el EIN real. Si viene con más de 9 dígitos, conserva los últimos 9.
+ * @param {string|number|null|undefined} ss
+ * @returns {string} Siempre 9 dígitos
+ */
 function sanitizeSS(ss) {
   const digits = String(ss || '').replace(/[^0-9]/g, '');
   if (digits.length === 0) return '000000000';
@@ -21,6 +115,12 @@ function sanitizeSS(ss) {
 }
 
 // Puerto XML/DGA → código SISCOMMATE (fuente: ports.dbf de SISCOMMATE)
+/**
+ * Traduce un código de puerto XML/DGA al código de 3 letras de SISCOMMATE.
+ * Los desconocidos se recortan a 3 caracteres; sin código asume San Juan.
+ * @param {string|null|undefined} code
+ * @returns {string} Código de 3 caracteres
+ */
 function toSiscommatePort(code) {
   const map = {
     // San Juan, PR
@@ -83,6 +183,12 @@ function toSiscommatePort(code) {
 //  [181:183] 2 espacios
 //  [183:191] arrival_date YYYYMMDD (8)
 //  [191:205] 14 espacios
+/**
+ * Línea 0 — encabezado del manifiesto.
+ * @param {Manifest} manifest
+ * @param {number} blCount Total de pares B/L-contenedor del archivo
+ * @returns {string} Exactamente 205 caracteres
+ */
 function generateTxtLine0(manifest, blCount) {
   const carrier = pad(manifest.carrier_code || 'MPRIORO', 7);
   const manNo   = pad(manifest.manifest_no || '', 7);
@@ -144,13 +250,20 @@ function generateTxtLine0(manifest, blCount) {
 //            consignatario no tiene IVU registrado, SISCOMMATE usa el IVU
 //            del carrier como respaldo (visto en los TXT reales).
 //  [201:205] 4 espacios
+/**
+ * Línea 1 — datos del B/L y del consignatario.
+ * @param {BL} bl
+ * @param {Manifest} manifest
+ * @param {string} [containerNo] Contenedor de esta línea; si se omite usa el del B/L
+ * @returns {string} Exactamente 205 caracteres
+ */
 function generateTxtLine1(bl, manifest, containerNo) {
   const ss9      = sanitizeSS(bl.hacienda_client_ss || bl.consignee_document_no);
   const loadPort = toSiscommatePort(manifest.loading_port || 'DRP');
   const discPort = toSiscommatePort(manifest.unloading_port || 'SJU');
   const tariff   = bl.hacienda_tariff;
   // Libre arancel (040): SISCOMMATE requiere valor FOB = 0
-  const fobValue = (tariff === '040') ? 0 : (parseFloat(bl.value) || 0);
+  const fobValue = (tariff === '040') ? 0 : toNum(bl.value);
   const valCents = padZ(Math.round(fobValue * 100), 9);
   // tariff+R: '040R', '045R', o 4 espacios si es libre arancel / tránsito
   const tariffR  = tariff ? `${pad(tariff, 3)}R` : '    ';
@@ -197,10 +310,18 @@ function generateTxtLine1(bl, manifest, containerNo) {
 // containerCount: total de contenedores del B/L — divide el peso entre ellos
 // item: objeto { goods_name, gross_weight, hacienda_item_code, hacienda_tariff, package_qty }
 //       si null, usa los campos del bl directamente
+/**
+ * Línea 2 — detalle de carga.
+ * @param {BL} bl
+ * @param {string} [containerNo]
+ * @param {number} [containerCount] Contenedores del B/L: reparte el peso entre ellos
+ * @param {CargoItem|null} [item] Si viene, sus campos reemplazan los del B/L
+ * @returns {string} Exactamente 205 caracteres
+ */
 function generateTxtLine2(bl, containerNo, containerCount, item) {
   const src       = item || bl;
   const tariff    = pad(src.hacienda_tariff || bl.hacienda_tariff || '   ', 3);
-  const totalWeight = parseFloat(src.gross_weight) || 0;
+  const totalWeight = toNum(src.gross_weight);
   const weightPerCont = (!item && containerCount > 1) ? totalWeight / containerCount : totalWeight;
   const weightG   = padZ(Math.round(weightPerCont * 100), 7);
   const goodsDesc = pad((src.goods_name || '').replace(/[\r\n]+/g, ' '), 121);
@@ -226,6 +347,13 @@ function generateTxtLine2(bl, containerNo, containerCount, item) {
 }
 
 // bl.containers: lista de container_no; bl.cargoItems: lista de cargo items
+/**
+ * Arma el TXT completo: una línea 0, y por cada contenedor de cada B/L un par
+ * línea 1 + línea 2. Separador CRLF.
+ * @param {Manifest} manifest
+ * @param {BL[]} bls Solo los B/L validados
+ * @returns {string}
+ */
 function generateFullTxt(manifest, bls) {
   const lines = [];
   const pairCount = bls.reduce((sum, bl) => sum + (bl.containers && bl.containers.length ? bl.containers.length : 1), 0);

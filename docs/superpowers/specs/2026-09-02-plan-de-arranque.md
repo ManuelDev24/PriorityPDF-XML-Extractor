@@ -51,17 +51,26 @@ confirmarlo.
 opción de framework moderno corre sin `@vitejs/plugin-legacy`. Bloquea el spec
 de migración.
 
-### B2. ¿Quién debe poder entrar a la aplicación?
+### B2. ¿Quién debe poder entrar a la aplicación? — DECIDIDO: se pospone
 
-Hoy **no hay autenticación**. Cualquiera en la red puede borrar manifiestos,
-editar SS/EIN de consignatarios o disparar el push a SISCOMMATE. El README
-documenta el acceso en red (`http://[IP]:3000`).
+**Resuelto el 2026-09-02: se continúa sin autenticación por ahora; se creará un
+login más adelante.** Deja de ser bloqueante.
 
-No se implementó a propósito: definir el mecanismo y las credenciales es una
-decisión del equipo, y hacerlo mal deja a la gente afuera.
+Queda registrado el riesgo asumido: cualquiera con acceso a la red puede borrar
+manifiestos, editar SS/EIN de consignatarios o disparar el push a SISCOMMATE, y
+el README documenta el acceso en red (`http://[IP]:3000`).
 
-**Opciones:** allowlist por IP (lo más simple), usuario/clave básico, o
-integración con el dominio Windows.
+Mitigación barata disponible mientras tanto, que no requiere decidir nada sobre
+credenciales ni deja a nadie afuera: **restringir CORS**. Hoy el servidor usa
+`app.use(cors())` sin restricción de origen. Como el frontend se sirve desde el
+mismo origen que la API, CORS no hace falta para que la app funcione — pero
+abierto permite que cualquier sitio web que alguien del equipo visite haga
+peticiones a la API y lea o borre datos desde su navegador. Antes de aplicarlo
+hay que confirmar que ninguna otra herramienta interna consuma esta API desde
+otro origen.
+
+**Opciones para el login futuro:** allowlist por IP (lo más simple),
+usuario/clave básico, o integración con el dominio Windows.
 
 ### B3. ¿Qué columnas tienen realmente BOL.DBF y BOLITEM.DBF?
 

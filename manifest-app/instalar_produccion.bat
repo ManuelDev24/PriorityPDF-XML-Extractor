@@ -77,6 +77,25 @@ if errorlevel 1 (
 )
 echo [OK] Dependencias instaladas
 
+:: Verificar que el modulo nativo cargue con ESTE Node.
+:: better-sqlite3 se compila contra la version de Node que ejecuta npm install.
+:: Si el servicio despues corre con otra version mayor, falla en el arranque con
+:: un error críptico de NODE_MODULE_VERSION. Mejor detectarlo aqui.
+%NODE_EXE% -e "require('better-sqlite3')" 2>nul
+if errorlevel 1 (
+    echo.
+    echo [ERROR] El modulo nativo better-sqlite3 no carga con este Node.
+    echo.
+    echo   Causa habitual: npm install se ejecuto con una version de Node
+    echo   distinta a la que va a correr la aplicacion.
+    echo.
+    echo   Solucion: borra la carpeta node_modules y vuelve a ejecutar este
+    echo   script con la MISMA version de Node que usara el servicio.
+    echo.
+    pause & exit /b 1
+)
+echo [OK] Modulo nativo better-sqlite3 verificado
+
 :: Inicializar base de datos (solo si no existe)
 echo [5/6] Inicializando base de datos...
 if not exist "%APP_DEST%\manifest.db" (

@@ -164,6 +164,41 @@ test('un cargo item no reparte el peso: usa el suyo tal cual', () => {
   assert.strictEqual(l2.substring(164, 179), padZ('820000', 15), 'código del item');
 });
 
+// ── Números que llegan como texto o como número ──────────────────────────────
+// El frontend manda los inputs numéricos como string; SQLite los devuelve como
+// número. Ambos caminos deben producir exactamente el mismo TXT.
+test('el peso da igual venga como texto o como número', () => {
+  const comoTexto  = { ...bl, gross_weight: '12500.50' };
+  const comoNumero = { ...bl, gross_weight: 12500.5 };
+  assert.strictEqual(
+    generateTxtLine2(comoTexto,  'PRRU2010106', 1, null),
+    generateTxtLine2(comoNumero, 'PRRU2010106', 1, null)
+  );
+  assert.strictEqual(generateTxtLine2(comoTexto, 'PRRU2010106', 1, null).substring(28, 35), '1250050');
+});
+
+test('el valor FOB da igual venga como texto o como número', () => {
+  const comoTexto  = { ...bl, value: '1234.56' };
+  const comoNumero = { ...bl, value: 1234.56 };
+  assert.strictEqual(
+    generateTxtLine1(comoTexto,  manifest, 'PRRU2010106'),
+    generateTxtLine1(comoNumero, manifest, 'PRRU2010106')
+  );
+  assert.strictEqual(generateTxtLine1(comoTexto, manifest, 'PRRU2010106').substring(153, 162), '000123456');
+});
+
+test('un valor vacío o basura cuenta como cero, no rompe la línea', () => {
+  for (const malo of ['', null, undefined, 'abc', NaN]) {
+    const roto = { ...bl, gross_weight: malo, value: malo, hacienda_tariff: '045' };
+    const l1 = generateTxtLine1(roto, manifest, 'PRRU2010106');
+    const l2 = generateTxtLine2(roto, 'PRRU2010106', 1, null);
+    assert.strictEqual(l1.length, 205, `línea 1 con ${String(malo)}`);
+    assert.strictEqual(l2.length, 205, `línea 2 con ${String(malo)}`);
+    assert.strictEqual(l1.substring(153, 162), '000000000', `FOB con ${String(malo)}`);
+    assert.strictEqual(l2.substring(28, 35),   '0000000',   `peso con ${String(malo)}`);
+  }
+});
+
 // ── sanitizeSS ───────────────────────────────────────────────────────────────
 test('sanitizeSS rellena con ceros a la izquierda preservando el EIN', () => {
   assert.strictEqual(sanitizeSS('12345'), '000012345');

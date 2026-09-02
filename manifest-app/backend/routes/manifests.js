@@ -109,10 +109,15 @@ router.post('/api/manifests/upload', upload.single('xml'), async (req, res) => {
         const blId = blIdMap[ci.bl_no];
         if (blId) {
           seqMap[blId] = (seqMap[blId] || 0) + 1;
+          // hacienda_item_code y hacienda_tariff entran siempre en NULL: ningún
+          // parser los produce (el archivo del transportista no trae códigos de
+          // Hacienda). Los llena el operador después, desde el editor.
+          // Antes se leían de `ci`, dando a entender que podían venir del
+          // archivo; el chequeo de tipos mostró que esas propiedades no existen.
           insCargo.run(
             blId, manifestId, ci.container_no || null, ci.goods_name || '',
-            parseFloat(ci.gross_weight) || 0, ci.hacienda_item_code || null,
-            ci.hacienda_tariff || null, seqMap[blId]
+            Number(ci.gross_weight) || 0, null,
+            null, seqMap[blId]
           );
         }
       });
