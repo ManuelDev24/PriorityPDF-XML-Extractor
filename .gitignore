@@ -15,8 +15,13 @@ backups/
 # Salida del build de Vite: se genera con "npm run build", no se versiona.
 # El instalador de produccion la genera en el servidor (Node 20 sobre Windows 10
 # es plataforma Tier 1 y Vite 8 pide Node 20.19+, ambos verificados).
+#
+# index.html y admin.html PASARON a ser salida del build (antes eran fuente
+# escrita a mano). Las versiones originales se conservan como index.legacy.html
+# y admin.legacy.html, esas SI se versionan.
 manifest-app/frontend/assets/
-manifest-app/frontend/*-vue.html
+manifest-app/frontend/index.html
+manifest-app/frontend/admin.html
 
 # Node.js binary packages & installation zips
 node20/

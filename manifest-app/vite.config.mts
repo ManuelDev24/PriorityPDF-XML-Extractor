@@ -5,12 +5,14 @@ import { resolve } from 'node:path';
 // Build del frontend en Vue. El código fuente vive en frontend-src/ y la salida
 // va a frontend/, que es lo que Express sirve como estático.
 //
-// emptyOutDir: false es CRÍTICO — frontend/ contiene la aplicación actual, que
-// tiene que seguir funcionando durante toda la migración. El build solo agrega
-// sus propios archivos, nunca borra los que ya están.
+// emptyOutDir: false es CRÍTICO — frontend/ contiene index.legacy.html y
+// admin.legacy.html (las versiones originales, conservadas como referencia y
+// respaldo, nunca borradas) además de css/ y js/, que index.legacy.html y
+// admin.legacy.html todavía usan. El build solo agrega sus propios archivos.
 //
-// Durante el piloto la pantalla nueva se publica como admin-vue.html, para
-// poder compararla lado a lado con la original antes de reemplazarla.
+// index.html y admin.html ahora SON la salida del build: fueron probados de
+// punta a punta (fidelidad visual pixel a pixel, exportación real del TXT de
+// Hacienda) antes de reemplazar a las versiones escritas a mano.
 export default defineConfig({
   root: resolve(__dirname, 'frontend-src'),
   plugins: [vue()],
@@ -19,8 +21,8 @@ export default defineConfig({
     emptyOutDir: false,
     rollupOptions: {
       input: {
-        'admin-vue':  resolve(__dirname, 'frontend-src/admin-vue.html'),
-        'editor-vue': resolve(__dirname, 'frontend-src/editor-vue.html'),
+        admin: resolve(__dirname, 'frontend-src/admin.html'),
+        index: resolve(__dirname, 'frontend-src/index.html'),
       },
     },
   },
