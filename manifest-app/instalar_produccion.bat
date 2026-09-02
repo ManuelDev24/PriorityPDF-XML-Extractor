@@ -100,7 +100,7 @@ if not errorlevel 1 (
     nssm stop ManifestApp >nul 2>&1
     nssm remove ManifestApp confirm >nul 2>&1
 )
-nssm install ManifestApp "%NODE_EXE%" "server.js"
+nssm install ManifestApp "%NODE_EXE%" "backend\server.js"
 nssm set ManifestApp AppDirectory "%APP_DEST%"
 nssm set ManifestApp DisplayName "Priority Global — Manifest App"
 nssm set ManifestApp Description "Editor de Manifiestos DGA para Hacienda PR"

@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Priority Global — Manifiestos</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/tablericons/2.47.0/iconfont/tabler-icons.min.css"/>
+<link rel="stylesheet" href="css/app.css"/>
+</head>
+<body>
+
+<!-- TOPBAR -->
+<div class="topbar">
+  <div class="topbar-logo">Priority Global <span>Manifiestos DGA → Hacienda PR</span></div>
+  <div id="bridge-pill" class="offline" title="Estado de SiscommateBridge">
+    <span class="bridge-dot"></span><span id="bridge-txt">Bridge offline</span>
+  </div>
+  <div class="spacer"></div>
+  <div id="stats-top" style="font-size:11px;color:var(--text2)"></div>
+  <a href="/admin.html" target="_blank" class="btn" title="Configuración del sistema">&#9881; Admin</a>
+  <button class="btn" onclick="openUpload()"><i class="ti ti-upload"></i> Cargar XML/PDF</button>
+  <input type="file" id="xml-input" accept=".xml,.pdf" style="display:none" onchange="uploadXml(this)"/>
+</div>
+
+<div class="app-body">
+
+  <!-- SIDEBAR -->
+  <div class="sidebar">
+    <div class="sidebar-tabs">
+      <div class="sidebar-tab active" id="tab-active" onclick="switchTab('active')">En curso</div>
+      <div class="sidebar-tab" id="tab-completed" onclick="switchTab('completed')">Completados</div>
+    </div>
+    <div class="sidebar-search">
+      <i class="ti ti-search" style="color:var(--text3);font-size:14px"></i>
+      <input id="sidebar-search-input" placeholder="Buscar viaje o B/L..." oninput="onSidebarSearch(this.value)"/>
+    </div>
+    <div id="bl-search-results" class="bl-search-results" style="display:none"></div>
+    <div class="manifest-list" id="manifest-list">
+      <div style="padding:24px;text-align:center;color:var(--text3);font-size:12px">
+        <i class="ti ti-file-import" style="font-size:32px;display:block;margin-bottom:8px"></i>
+        Carga un XML o PDF para comenzar
+      </div>
+    </div>
+  </div>
+
+  <!-- MAIN -->
+  <div class="main">
+    <!-- toolbar que aparece cuando hay manifiesto seleccionado -->
+    <div class="main-toolbar" id="main-toolbar" style="display:none">
+      <i class="ti ti-ship" style="color:var(--accent)"></i>
+      <span class="voy-label" id="toolbar-voyage"></span>
+      <span id="toolbar-vessel" style="font-size:11px;color:var(--text3)"></span>
+      <span class="spacer"></span>
+      <button class="btn sm" onclick="showTxtPreview(currentBL?.id)" id="btn-preview" disabled>
+        <i class="ti ti-eye"></i> Ver TXT
+      </button>
+      <button class="btn sm accent" onclick="exportTxt()" id="btn-export">
+        <i class="ti ti-file-export"></i> Exportar TXT
+      </button>
+      <button class="btn sm purple" onclick="pushSiscommate()" id="btn-push">
+        <i class="ti ti-database-import"></i> Guardar en SISCOMMATE
+      </button>
+    </div>
+
+    <div id="editor" class="editor">
+      <div class="empty-state">
+        <i class="ti ti-ship"></i>
+        <p style="font-size:15px;color:var(--text2)">Selecciona un manifiesto</p>
+        <p style="font-size:12px">o carga un XML o PDF de la DGA</p>
+        <div class="drop-zone" id="drop-zone" onclick="openUpload()"
+             ondragover="event.preventDefault();this.classList.add('drag')"
+             ondragleave="this.classList.remove('drag')"
+             ondrop="handleDrop(event)">
+          <i class="ti ti-file-upload" style="font-size:28px;display:block;margin-bottom:8px"></i>
+          Arrastra el XML o PDF aquí o haz clic para seleccionar
+        </div>
+      </div>
+    </div>
+
+    <div class="statusbar">
+      <span id="status-msg">Listo</span>
+      <span id="status-right"></span>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<!-- ── MÓDULOS ──────────────────────────────────────────────────────────────
+     El orden importa: cada archivo define funciones globales que usan los
+     siguientes. app.js va de último porque arranca la aplicación. -->
+<script src="js/util.js"></script>
+<script src="js/api.js"></script>
+<script src="js/state.js"></script>
+<script src="js/modal.js"></script>
+<script src="js/manifests.js"></script>
+<script src="js/cargoItems.js"></script>
+<script src="js/clients.js"></script>
+<script src="js/editor.js"></script>
+<script src="js/siscommate.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

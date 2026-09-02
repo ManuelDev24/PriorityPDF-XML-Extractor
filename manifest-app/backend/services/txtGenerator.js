@@ -1,0 +1,260 @@
+// services/txtGenerator.js — Generación del TXT oficial de Hacienda PR
+//
+// Formato verificado contra archivos TXT reales del sistema SISCOMMATE.
+// Todas las líneas tienen exactamente 205 caracteres.
+//
+// Extraído de server.js (paso 2 de la separación backend/frontend).
+// Módulo puro: recibe datos, devuelve strings. No toca Express ni la base.
+
+// ─── HELPERS DE RELLENO ──────────────────────────────────────────────────────
+function pad(s, n)  { return String(s || '').substring(0, n).padEnd(n, ' '); }
+function padL(s, n) { return String(s || '').substring(0, n).padStart(n, ' '); }
+function padZ(s, n) { return String(s || '').padStart(n, '0').substring(0, n); }
+
+// SS/EIN: exactamente 9 dígitos. Devuelve null si no tiene exactamente 9 para
+// que la validación de export-txt pueda detectar valores inválidos.
+function sanitizeSS(ss) {
+  const digits = String(ss || '').replace(/[^0-9]/g, '');
+  if (digits.length === 0) return '000000000';
+  // Rellenar con ceros a la izquierda (no derecha) para preservar el EIN real
+  return digits.padStart(9, '0').substring(digits.length > 9 ? digits.length - 9 : 0);
+}
+
+// Puerto XML/DGA → código SISCOMMATE (fuente: ports.dbf de SISCOMMATE)
+function toSiscommatePort(code) {
+  const map = {
+    // San Juan, PR
+    'PRSJU':'XSJ', 'SJU':'XSJ', 'SJX':'XSJ',
+    // Mayagüez, PR
+    'MGE':'MGE', 'PRMGE':'MGE', 'MAZ':'MAZ', 'PRMAZ':'MAZ',
+    // Santo Domingo / Caucedo, DO
+    'DRP':'DRP', 'DOSDQ':'DRP', 'DOSDO':'DRP', 'SDQ':'DRP', 'RPX':'DRP',
+    // Río Haina, DO
+    'RHA':'RHA', 'DORHA':'RHA',
+    // St. Thomas, USVI
+    'STT':'STT', 'STH':'STT', 'VISTT':'STT',
+    // St. Croix, USVI
+    'STX':'STX', 'CRX':'STX', 'VISTX':'STX',
+    // St. Maarten / St. Martin
+    'SXM':'SXM', 'STM':'SXM', 'MST':'SXM', 'SFG':'SFG',
+    // Tortola, BVI
+    'TOR':'TOR', 'VGTOR':'TOR',
+    // Saint Kitts
+    'SKB':'SKB',
+    // Antigua
+    'ANU':'ANU',
+    // USA
+    'MIA':'MIA', 'USMIA':'MIA',
+    'FLL':'FLL', 'USFLL':'FLL',
+    'PEV':'PEV', 'PEG':'PEV', 'USPEV':'PEV',
+    'JAX':'JAX', 'USJAX':'JAX',
+    'TAP':'TAP', 'USTAP':'TAP',
+    'MCO':'MCO', 'NAP':'NAP', 'LAX':'LAX', 'PEN':'PEN',
+    'NY':'NY', 'NYC':'NY', 'USNYC':'NY',
+    // México
+    'MXI':'MXI', 'MXVER':'MXI',
+    // China
+    'TSI':'TSI', 'CNTAO':'TSI',
+  };
+  return map[(code || '').toUpperCase()] || (code || 'XSJ').toUpperCase().substring(0, 3);
+}
+
+// ── LÍNEA 0 — Encabezado del manifiesto (205 chars) ──────────────────────────
+// Posiciones verificadas (0-indexed):
+//  [0]      tipo '0'
+//  [1:17]   16 espacios
+//  [17:24]  carrier (7)
+//  [24]     espacio
+//  [25:32]  manifest_no (7)
+//  [32:36]  bl_count (4, zero-padded)
+//  [36:44]  arrival_date YYYYMMDD (8)
+//  [44:60]  vessel_name (16)
+//  [60:66]  voyage_no (6)
+//  [66:74]  departure_date YYYYMMDD (8)
+//  [74:82]  arrival_date YYYYMMDD (8)
+//  [82:87]  'N1800'
+//  [87:94]  carrier (7)
+//  [94]     espacio
+//  [95:101] voyage_no (6)
+//  [101:165] 64 espacios (reservado SISCOMMATE)
+//  [165:173] docking_number (8, número de atraque — obligatorio)
+//  [173]    espacio
+//  [174:181] imo (7)
+//  [181:183] 2 espacios
+//  [183:191] arrival_date YYYYMMDD (8)
+//  [191:205] 14 espacios
+function generateTxtLine0(manifest, blCount) {
+  const carrier = pad(manifest.carrier_code || 'MPRIORO', 7);
+  const manNo   = pad(manifest.manifest_no || '', 7);
+  const vessel  = pad(manifest.vessel_name || '', 16);
+  const voyNo   = pad(manifest.voyage_no || '', 6);
+  const imo     = padZ(manifest.imo || '0', 7);
+  const dep     = (manifest.departure_date || '').replace(/-/g, '').substring(0, 8).padEnd(8, ' ');
+  const arr     = (manifest.arrival_date || '').replace(/-/g, '').substring(0, 8).padEnd(8, ' ');
+  const cnt     = padZ(blCount, 4);
+  return (
+    '0' +                    // [0]      tipo
+    pad('', 16) +            // [1:17]   16 espacios
+    carrier +                // [17:24]  carrier
+    ' ' +                    // [24]     espacio
+    manNo +                  // [25:32]  manifest_no
+    cnt +                    // [32:36]  bl_count
+    arr +                    // [36:44]  arrival_date
+    vessel +                 // [44:60]  vessel
+    voyNo +                  // [60:66]  voyage
+    dep +                    // [66:74]  departure_date
+    arr +                    // [74:82]  arrival_date (repetido)
+    'N1800' +                // [82:87]
+    carrier +                // [87:94]  carrier (repetido)
+    ' ' +                    // [94]
+    voyNo +                  // [95:101] voyage (repetido)
+    pad('', 64) +            // [101:165] reservado
+    padZ(manifest.docking_number || '0', 8) + // [165:173] docking_number
+    ' ' +                    // [173]
+    imo +                    // [174:181] IMO
+    '  ' +                   // [181:183]
+    arr +                    // [183:191] arrival_date
+    pad('', 14)              // [191:205] trailing
+  );
+}
+
+// ── LÍNEA 1 — Datos del B/L y consignatario (205 chars) ──────────────────────
+// Posiciones verificadas (0-indexed):
+//  [0]       tipo '1'
+//  [1:17]    bl_no (16)
+//  [17:19]   'AM'
+//  [19:37]   container_no (18)
+//  [37:67]   consignee_name (30)
+//  [67:76]   ss_ein (9)
+//  [76:83]   type_code (7) = 'C      ' o referencia de cliente
+//  [83:143]  consignor_name (60)
+//  [143:146] orig_port (3)
+//  [146:149] disc_port (3)
+//  [149:152] dest_port (3)
+//  [152]     'C'
+//  [153:162] fob_value_cents (9)
+//  [162]     'C'
+//  [163:175] 12 espacios
+//  [175]     'V'
+//  [176:186] 10 ceros
+//  [186:190] tariff+'R' (4) o 4 espacios si libre arancel
+//  [190:201] IVU/No. comerciante del CONSIGNATARIO (11) — verificado contra
+//            archivos reales SISCOMMATE: este campo varía por B/L según el
+//            IVU del consignatario, NO es el código arancelario. Si el
+//            consignatario no tiene IVU registrado, SISCOMMATE usa el IVU
+//            del carrier como respaldo (visto en los TXT reales).
+//  [201:205] 4 espacios
+function generateTxtLine1(bl, manifest, containerNo) {
+  const ss9      = sanitizeSS(bl.hacienda_client_ss || bl.consignee_document_no);
+  const loadPort = toSiscommatePort(manifest.loading_port || 'DRP');
+  const discPort = toSiscommatePort(manifest.unloading_port || 'SJU');
+  const tariff   = bl.hacienda_tariff;
+  // Libre arancel (040): SISCOMMATE requiere valor FOB = 0
+  const fobValue = (tariff === '040') ? 0 : (parseFloat(bl.value) || 0);
+  const valCents = padZ(Math.round(fobValue * 100), 9);
+  // tariff+R: '040R', '045R', o 4 espacios si es libre arancel / tránsito
+  const tariffR  = tariff ? `${pad(tariff, 3)}R` : '    ';
+  const ivu11    = bl.hacienda_client_ivu || manifest.carrier_ivu || '';
+  return (
+    '1' +
+    pad(bl.bl_no, 16) +          // [1:17]
+    'AM' +                        // [17:19]
+    pad(containerNo !== undefined ? containerNo : (bl.hacienda_container_no || ''), 18) + // [19:37]
+    pad(bl.consignee_name, 30) +  // [37:67]
+    ss9 +                         // [67:76]
+    'C      ' +                   // [76:83] tipo C + 6 espacios
+    pad(bl.consignor_name, 60) +  // [83:143]
+    pad(loadPort, 3) +            // [143:146]
+    pad(discPort, 3) +            // [146:149]
+    pad(discPort, 3) +            // [149:152]
+    'C' +                         // [152]
+    valCents +                    // [153:162]
+    'C' +                         // [162]
+    pad('', 12) +                 // [163:175]
+    'V' +                         // [175]
+    padZ(0, 10) +                 // [176:186]
+    tariffR +                     // [186:190]
+    pad(ivu11, 11) +              // [190:201] IVU consignatario (fallback: IVU carrier)
+    '    '                        // [201:205]
+  );
+}
+
+// ── LÍNEA 2 — Detalle de carga (205 chars) ────────────────────────────────────
+// Posiciones verificadas contra TXT reales de SISCOMMATE (3309577.TXT / K1305):
+//  [0]       tipo '2'
+//  [1:17]    bl_no (16)
+//  [17:22]   qty (5)
+//  [22:28]   unit_type (6) — 'BOX   ' si tiene contenedor, 'LSE   ' si no
+//  [28:35]   weight (7) = gross_weight_kg × 100
+//  [35:38]   tariff (3)
+//  [38:159]  goods_description (121)
+//  [159:164] qty_repeat (5)
+//  [164:179] hacienda_item_code (15) zero-padded izquierda
+//  [179:181] 2 espacios
+//  [181:201] 20 ceros
+//  [201:203] 'KF'
+//  [203:205] 2 espacios
+// containerCount: total de contenedores del B/L — divide el peso entre ellos
+// item: objeto { goods_name, gross_weight, hacienda_item_code, hacienda_tariff, package_qty }
+//       si null, usa los campos del bl directamente
+function generateTxtLine2(bl, containerNo, containerCount, item) {
+  const src       = item || bl;
+  const tariff    = pad(src.hacienda_tariff || bl.hacienda_tariff || '   ', 3);
+  const totalWeight = parseFloat(src.gross_weight) || 0;
+  const weightPerCont = (!item && containerCount > 1) ? totalWeight / containerCount : totalWeight;
+  const weightG   = padZ(Math.round(weightPerCont * 100), 7);
+  const goodsDesc = pad((src.goods_name || '').replace(/[\r\n]+/g, ' '), 121);
+  const qty       = padZ(src.package_qty || bl.package_qty || 0, 5);
+  const itemCode  = padZ(parseInt(src.hacienda_item_code || bl.hacienda_item_code) || 0, 15);
+  const hasContainer = !!(containerNo !== undefined ? containerNo : bl.hacienda_container_no || '').trim();
+  const unitType  = pad(hasContainer ? 'BOX' : 'LSE', 6);
+  return (
+    '2' +
+    pad(bl.bl_no, 16) +
+    qty +
+    unitType +
+    weightG +
+    tariff +
+    goodsDesc +
+    qty +
+    itemCode +
+    '  ' +
+    padZ(0, 20) +
+    'KF' +
+    '  '
+  );
+}
+
+// bl.containers: lista de container_no; bl.cargoItems: lista de cargo items
+function generateFullTxt(manifest, bls) {
+  const lines = [];
+  const pairCount = bls.reduce((sum, bl) => sum + (bl.containers && bl.containers.length ? bl.containers.length : 1), 0);
+  lines.push(generateTxtLine0(manifest, pairCount));
+  bls.forEach(bl => {
+    const containerNos = (bl.containers && bl.containers.length) ? bl.containers : [bl.hacienda_container_no || ''];
+    const cargoItems = bl.cargoItems && bl.cargoItems.length ? bl.cargoItems : null;
+    containerNos.forEach(containerNo => {
+      lines.push(generateTxtLine1(bl, manifest, containerNo));
+      if (cargoItems) {
+        // Filtrar items del contenedor o items sin contenedor asignado (aplican a todos)
+        const items = cargoItems.filter(ci => !ci.container_no || ci.container_no === containerNo);
+        if (items.length) {
+          items.forEach(item => lines.push(generateTxtLine2(bl, containerNo, 1, item)));
+        } else {
+          lines.push(generateTxtLine2(bl, containerNo, containerNos.length, null));
+        }
+      } else {
+        lines.push(generateTxtLine2(bl, containerNo, containerNos.length, null));
+      }
+    });
+  });
+  return lines.join('\r\n');
+}
+
+module.exports = {
+  pad, padL, padZ,
+  sanitizeSS,
+  toSiscommatePort,
+  generateTxtLine0, generateTxtLine1, generateTxtLine2,
+  generateFullTxt,
+};

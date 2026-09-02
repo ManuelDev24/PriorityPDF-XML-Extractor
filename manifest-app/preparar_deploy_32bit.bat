@@ -62,10 +62,10 @@ mkdir "%DEST%"
 
 :: Copiar archivos del proyecto (sin node_modules)
 echo [2/4] Copiando archivos del proyecto...
-xcopy "%APP_DIR%\server.js"          "%DEST%\" /q
+xcopy "%APP_DIR%\backend\*"          "%DEST%\backend\" /s /q
 xcopy "%APP_DIR%\package.json"       "%DEST%\" /q
 xcopy "%APP_DIR%\.env.produccion"    "%DEST%\.env" /q
-xcopy "%APP_DIR%\public\*"           "%DEST%\public\" /s /q
+xcopy "%APP_DIR%\frontend\*"         "%DEST%\frontend\" /s /q
 xcopy "%APP_DIR%\db\*"               "%DEST%\db\" /s /q
 xcopy "%APP_DIR%\bridge\*"           "%DEST%\bridge\" /s /q
 xcopy "%APP_DIR%\instalar_produccion.bat" "%DEST%\" /q

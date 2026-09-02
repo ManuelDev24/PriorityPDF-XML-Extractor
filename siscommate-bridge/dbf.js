@@ -1,6 +1,22 @@
 /**
  * dbf.js - Wrapper ADODB / VFP OLE DB para SISCOMMATE
  *
+ * ⚠️ ARCHIVO INACTIVO — NO FORMA PARTE DEL CAMINO DE EJECUCIÓN ACTUAL.
+ *
+ * Hoy manifest-app NO requiere este módulo: la escritura en SISCOMMATE pasa
+ * por HTTP contra SiscommateBridge.exe (C#), ver
+ * manifest-app/backend/services/siscommateClient.js.
+ *
+ * Se conserva porque es la base prevista para la Fase B: escribir directo a
+ * los DBF desde Node, ya que el bridge C# no puede modificarse ni
+ * redesplegarse desde nuestro lado y hoy descarta cuatro campos que el
+ * operador sí llena (docking_number, hacienda_tariff, hacienda_client_ss/ivu
+ * y el detalle de bl_cargo_items).
+ *
+ * Prerrequisito antes de usarlo: leer el esquema real de BOL.DBF / BOLITEM.DBF
+ * para saber qué columnas existen. Ver
+ * docs/superpowers/specs/2026-09-02-separacion-frontend-backend-design.md
+ *
  * Provider: VFPOLEDB.1 (Visual FoxPro OLE DB Provider)
  * Instalar desde: https://aka.ms/vfpoledb  (vfpoledb.exe ~3 MB)
  * Requiere: Windows 32-bit o 64-bit con VFP OLE DB instalado

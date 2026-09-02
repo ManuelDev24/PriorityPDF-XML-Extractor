@@ -2,9 +2,10 @@
   "name": "manifest-editor",
   "version": "1.0.0",
   "description": "Editor DGA XML → TXT Hacienda PR",
-  "main": "server.js",
+  "main": "backend/server.js",
   "scripts": {
-    "start": "node server.js",
+    "start": "node backend/server.js",
+    "test": "node --test",
     "init-db": "node db/init.js"
   },
   "dependencies": {
