@@ -19,7 +19,8 @@ export default defineConfig({
     emptyOutDir: false,
     rollupOptions: {
       input: {
-        'admin-vue': resolve(__dirname, 'frontend-src/admin-vue.html'),
+        'admin-vue':  resolve(__dirname, 'frontend-src/admin-vue.html'),
+        'editor-vue': resolve(__dirname, 'frontend-src/editor-vue.html'),
       },
     },
   },

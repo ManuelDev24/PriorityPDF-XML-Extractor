@@ -16,7 +16,7 @@ backups/
 # El instalador de produccion la genera en el servidor (Node 20 sobre Windows 10
 # es plataforma Tier 1 y Vite 8 pide Node 20.19+, ambos verificados).
 manifest-app/frontend/assets/
-manifest-app/frontend/admin-vue.html
+manifest-app/frontend/*-vue.html
 
 # Node.js binary packages & installation zips
 node20/

@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Priority Global — Manifiestos</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/tablericons/2.47.0/iconfont/tabler-icons.min.css"/>
+<!-- Ruta absoluta: el MISMO css/app.css que usa la version actual, sin copias -->
+<link rel="stylesheet" href="/css/app.css"/>
+<style>
+/* El body del editor es un contenedor flex de altura completa, y sus hijos
+   directos (.topbar y .app-body) dependen de eso. Vue necesita montar sobre un
+   div, que se interpondria en esa cadena y romperia el alto.
+   display:contents hace que ese div desaparezca del layout: sus hijos pasan a
+   ser hijos directos del body, como en la version original.
+   Va aqui y no en app.css a proposito: app.css es compartido con la version
+   actual y no se toca. */
+#app { display: contents; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script type="module" src="/editor/main.ts"></script>
+</body>
+</html>
