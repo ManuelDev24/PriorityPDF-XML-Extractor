@@ -8,7 +8,7 @@ import { ref, computed, watch } from 'vue';
 import { api, type ItemHacienda, type Cliente } from '../editor/api';
 import {
   datosManifiesto, blActual, carriers, puertos, buques, contenedoresDelBL, tamanosValidos,
-  actualizarBL, actualizarManifiesto, setEstado, toast,
+  actualizarBL, actualizarManifiesto, cerrarBL, setEstado, toast,
 } from '../editor/store';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -16,8 +16,7 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem, SelectGroup, SelectLabel } from '@/components/ui/select';
-import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
-import { Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem } from '@/components/ui/command';
+import { Combobox, ComboboxAnchor, ComboboxInput, ComboboxList, ComboboxEmpty, ComboboxGroup, ComboboxItem } from '@/components/ui/combobox';
 import CargoItems from './CargoItems.vue';
 import StatusBadge from './StatusBadge.vue';
 import { Check, Eye, X, Sparkles, Box } from '@lucide/vue';
@@ -72,6 +71,16 @@ function alCambiarBuque(code: string) {
 }
 function alCambiarDocking(valor: string) { actualizarManifiesto('docking_number', valor.replace(/[^0-9]/g, '')); }
 
+// Combobox: al enfocar con un valor ya elegido, selecciona todo el texto
+// para que escribir lo reemplace en vez de insertarse en medio. Diferido con
+// setTimeout porque en el momento del evento focus el valor mostrado (el
+// código/ss ya elegido) todavía no terminó de pintarse — seleccionar antes
+// de eso no selecciona nada, y lo tipeado se inserta sobre el valor viejo.
+function seleccionarTextoInput(e: FocusEvent) {
+  const el = e.target as HTMLInputElement;
+  window.setTimeout(() => el.select(), 0);
+}
+
 async function alCambiarTamano(id: number | null, size: string) {
   if (!id) return;
   try {
@@ -118,6 +127,13 @@ function elegirItem(it: ItemHacienda) {
   sugerencias.value = [];
   descItem.value = it.description;
 }
+// El Combobox nativo emite el `value` del item elegido (el código, un
+// string), no el objeto completo — se busca en itemsHallados para reusar
+// elegirItem tal cual, igual que las sugerencias.
+function alElegirCodigo(codigo: string) {
+  const it = itemsHallados.value.find(i => i.code === codigo);
+  if (it) elegirItem(it);
+}
 async function cargarDescItem(code: string) {
   if (!code) { descItem.value = ''; return; }
   try {
@@ -160,6 +176,17 @@ function elegirCliente(c: Cliente) {
 }
 function aplicarCliente(c: Cliente) { elegirCliente(c); }
 defineExpose({ aplicarCliente });
+// Igual que alElegirCodigo: el Combobox entrega el `value` (id como string),
+// más el caso especial "crear-nuevo" que antes vivía como CommandItem aparte.
+function alElegirClienteValor(valor: string) {
+  if (valor === 'crear-nuevo') {
+    clienteAbierto.value = false;
+    emit('crearCliente', busquedaCliente.value);
+    return;
+  }
+  const c = clientesHallados.value.find(x => String(x.id) === valor);
+  if (c) elegirCliente(c);
+}
 
 watch(() => bl.value?.id, () => {
   itemAbierto.value = false; clienteAbierto.value = false;
@@ -298,6 +325,7 @@ watch(() => bl.value?.id, () => {
       <Button v-if="bl.status === 'validado'" variant="outline" size="sm" @click="marcar('pendiente')"><X class="size-3.5" />Desvalidar</Button>
       <Button v-else variant="outline" size="sm" class="border-status-validated text-status-validated hover:bg-status-validated-soft hover:text-status-validated" @click="marcar('validado')"><Check class="size-3.5" />Validado</Button>
       <Button variant="outline" size="sm" @click="emit('vistaPrevia', bl.id)"><Eye class="size-3.5" />Ver TXT</Button>
+      <Button variant="outline" size="sm" title="Cerrar B/L actual" aria-label="Cerrar B/L actual" @click="cerrarBL"><X class="size-3.5" />Cerrar B/L</Button>
     </div>
 
     <!-- ── HACIENDA PR ── -->
@@ -306,30 +334,41 @@ watch(() => bl.value?.id, () => {
       <CardContent class="flex flex-col gap-2.5">
         <!-- Fila 1 = clasificación arancelaria · Fila 3 = consignatario -->
         <div class="grid grid-cols-12 gap-x-3 gap-y-2.5">
-          <!-- Fila 1: Código arancelario (8) · Tarifa (4) -->
-          <div class="col-span-12 md:col-span-8 flex flex-col gap-1">
+          <!-- Fila 1: Código arancelario (6) · Tarifa (4) — antes era 8/4:
+               con el Combobox nativo el campo solo muestra el código corto
+               elegido (ej. "2715"), no la descripción larga; a 8 columnas
+               (medido: 300px de contenido real dentro de una caja de ~600px)
+               quedaba un hueco enorme que se veía roto. -->
+          <div class="col-span-12 md:col-span-6 flex flex-col gap-1">
             <Label class="text-xs">Código arancelario — Items Hacienda <span class="text-danger">*</span></Label>
-            <Popover v-model:open="itemAbierto">
-              <PopoverTrigger as-child>
-                <Button variant="outline" role="combobox" class="h-9 justify-start bg-paper-raised font-mono text-xs font-normal">
-                  {{ bl.hacienda_item_code || 'Buscar por código o descripción...' }}
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent class="w-96 p-0" align="start">
-                <Command>
-                  <CommandInput placeholder="Buscar..." @update:model-value="(v: string) => buscarItem(v)" />
-                  <CommandList>
-                    <CommandEmpty>Sin resultados</CommandEmpty>
-                    <CommandGroup>
-                      <CommandItem v-for="it in itemsHallados" :key="it.code" :value="it.code" @select="elegirItem(it)">
-                        <span class="flex-1 truncate">{{ it.description }}</span>
-                        <span class="font-mono text-xs text-ink-faint">{{ it.code }}</span>
-                      </CommandItem>
-                    </CommandGroup>
-                  </CommandList>
-                </Command>
-              </PopoverContent>
-            </Popover>
+            <!-- Combobox nativo (reka-ui): el input real es el trigger — un
+                 clic y ya se puede escribir, sin el paso extra de abrir un
+                 botón primero. ignore-filter porque filtramos server-side
+                 (buscarItem ya hace el debounce + la llamada a la API). -->
+            <Combobox
+              :model-value="bl.hacienda_item_code || ''"
+              @update:model-value="(v) => alElegirCodigo(String(v))"
+              v-model:open="itemAbierto"
+              ignore-filter
+              open-on-click
+              open-on-focus
+              :display-value="(v: unknown) => String(v ?? '')"
+            >
+              <ComboboxAnchor as-child>
+                <ComboboxInput placeholder="Buscar por código o descripción..." class="h-9 bg-paper-raised font-mono text-xs"
+                  @update:model-value="(v: string) => buscarItem(v)"
+                  @focus="seleccionarTextoInput" />
+              </ComboboxAnchor>
+              <ComboboxList>
+                <ComboboxEmpty>Sin resultados</ComboboxEmpty>
+                <ComboboxGroup>
+                  <ComboboxItem v-for="it in itemsHallados" :key="it.code" :value="it.code">
+                    <span class="flex-1 truncate">{{ it.description }}</span>
+                    <span class="font-mono text-xs text-ink-faint">{{ it.code }}</span>
+                  </ComboboxItem>
+                </ComboboxGroup>
+              </ComboboxList>
+            </Combobox>
             <p v-if="descItem" class="text-xs text-status-validated">{{ descItem }}</p>
           </div>
           <div class="col-span-12 md:col-span-4 flex flex-col gap-1">
@@ -365,30 +404,33 @@ watch(() => bl.value?.id, () => {
         <div class="grid grid-cols-12 gap-x-3 gap-y-2.5">
           <div class="col-span-12 md:col-span-5 flex flex-col gap-1">
             <Label class="text-xs">SS / EIN consignatario <span class="text-danger">*</span></Label>
-            <Popover v-model:open="clienteAbierto">
-              <PopoverTrigger as-child>
-                <Button variant="outline" role="combobox" class="h-9 justify-start bg-paper-raised font-mono text-xs font-normal">
-                  {{ bl.hacienda_client_ss || bl.consignee_document_no || 'Buscar por nombre o EIN...' }}
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent class="w-96 p-0" align="start">
-                <Command>
-                  <CommandInput placeholder="Buscar..." @update:model-value="(v: string) => buscarCliente(v)" />
-                  <CommandList>
-                    <CommandEmpty>Sin resultados</CommandEmpty>
-                    <CommandGroup>
-                      <CommandItem v-for="c in clientesHallados" :key="c.id" :value="String(c.id)" @select="elegirCliente(c)">
-                        <span class="flex-1 truncate">{{ c.name }}</span>
-                        <span class="font-mono text-xs text-ink-faint">{{ c.ss || '—' }}</span>
-                      </CommandItem>
-                      <CommandItem value="crear-nuevo" class="text-accent" @select="clienteAbierto = false; emit('crearCliente', busquedaCliente)">
-                        + Crear nuevo consignatario…
-                      </CommandItem>
-                    </CommandGroup>
-                  </CommandList>
-                </Command>
-              </PopoverContent>
-            </Popover>
+            <Combobox
+              :model-value="bl.hacienda_client_ss || ''"
+              @update:model-value="(v) => alElegirClienteValor(String(v))"
+              v-model:open="clienteAbierto"
+              ignore-filter
+              open-on-click
+              open-on-focus
+              :display-value="(v: unknown) => String(v ?? '')"
+            >
+              <ComboboxAnchor as-child>
+                <ComboboxInput placeholder="Buscar por nombre o EIN..." class="h-9 bg-paper-raised font-mono text-xs"
+                  @update:model-value="(v: string) => buscarCliente(v)"
+                  @focus="seleccionarTextoInput" />
+              </ComboboxAnchor>
+              <ComboboxList>
+                <ComboboxEmpty>Sin resultados</ComboboxEmpty>
+                <ComboboxGroup>
+                  <ComboboxItem v-for="c in clientesHallados" :key="c.id" :value="String(c.id)">
+                    <span class="flex-1 truncate">{{ c.name }}</span>
+                    <span class="font-mono text-xs text-ink-faint">{{ c.ss || '—' }}</span>
+                  </ComboboxItem>
+                  <ComboboxItem value="crear-nuevo" class="text-accent">
+                    + Crear nuevo consignatario…
+                  </ComboboxItem>
+                </ComboboxGroup>
+              </ComboboxList>
+            </Combobox>
             <p v-if="nombreCliente" class="flex items-center gap-1 text-xs text-status-validated">
               <Check class="size-3" />{{ nombreCliente }}
               <button class="text-accent underline" @click="emit('editarCliente', clienteId || 0, bl.hacienda_client_ss || '', nombreCliente)">Editar</button>

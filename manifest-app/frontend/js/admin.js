@@ -72,7 +72,7 @@ async function loadContainerTypes() {
   renderCT();
 }
 
-const SIZE_OPTS = ['20','40','40HC','45','RORO'];
+const SIZE_OPTS = ['20','40','40HC','45','48','RORO'];
 
 function renderCT() {
   document.getElementById('ct-count').textContent = `${ctRows.length} registros`;

@@ -12,7 +12,7 @@ import { api, type Manifiesto, type DatosManifiesto, type BL,
 export const carriers = ref<Carrier[]>([]);
 export const puertos  = ref<Puerto[]>([]);
 export const buques   = ref<Buque[]>([]);
-const FALLBACK_TAMANOS = ['20', '40', '40HC', '45', 'RORO'];
+const FALLBACK_TAMANOS = ['20', '40', '40HC', '45', '48', 'RORO'];
 export const tamanosValidos = ref<string[]>(FALLBACK_TAMANOS);
 
 // ── Listado y seleccion ──────────────────────────────────────────────────────
@@ -160,6 +160,15 @@ export async function seleccionarManifiesto(id: number) {
 export function seleccionarBL(id: number) {
   const bl = datosManifiesto.value?.bls.find(b => b.id === id);
   if (bl) blActual.value = bl;
+}
+
+export function cerrarBL() {
+  blActual.value = null;
+}
+
+export function salirDelManifiesto() {
+  blActual.value = null;
+  datosManifiesto.value = null;
 }
 
 /** Contenedores vinculados al B/L abierto, con su tamaño. */

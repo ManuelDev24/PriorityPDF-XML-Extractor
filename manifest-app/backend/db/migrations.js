@@ -82,6 +82,7 @@ function runMigrations({
     ['7','20','20ft Open Top'],['8','40','40ft Open Top'],
     ['9','40','40ft Standard'],['10','20','20ft Flat Rack'],
     ['11','40','40ft Flat Rack'],['12','45','45ft Standard'],
+    ['13','48','48ft Standard'],
     ['R','RORO','Roll-On Roll-Off'],['P','RORO','RORO/Plataforma'],
   ];
   const insCT = db.prepare(`INSERT OR IGNORE INTO container_type_map VALUES (?,?,?)`);

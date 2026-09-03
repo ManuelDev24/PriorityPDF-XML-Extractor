@@ -15,6 +15,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import StatusBadge from './StatusBadge.vue';
 import { Trash2, ChevronRight, ChevronDown, Search } from '@lucide/vue';
 
+defineProps<{ abierto: boolean }>();
 const emit = defineEmits<{ confirmar: [titulo: string, cuerpo: string, accion: () => void] }>();
 
 const busqueda = ref('');
@@ -99,7 +100,10 @@ function pedirBorrarBL(blId: number, blNo: string) {
 </script>
 
 <template>
-  <aside class="flex w-72 shrink-0 flex-col border-r border-border bg-paper-raised">
+  <aside
+    class="flex shrink-0 flex-col overflow-hidden border-border bg-paper-raised transition-[width] duration-200 ease-in-out"
+    :class="abierto ? 'w-72 border-r' : 'w-0 border-r-0'"
+  >
     <div class="p-2">
       <Tabs :model-value="pestana" @update:model-value="(v) => cambiarPestana(String(v))">
         <TabsList class="w-full">
@@ -136,7 +140,7 @@ function pedirBorrarBL(blId: number, blNo: string) {
               <ChevronDown v-if="expandidos.has(m.id)" class="size-3.5" />
               <ChevronRight v-else class="size-3.5" />
             </button>
-            <button class="min-w-0 flex-1 truncate text-left text-sm font-medium" @click="seleccionarManifiesto(m.id)">
+            <button class="min-w-0 flex-1 truncate text-left text-sm font-medium" @click="alternar(m.id)">
               Viaje {{ m.voyage_no }}
             </button>
             <StatusBadge :status="m.status" />
@@ -146,7 +150,7 @@ function pedirBorrarBL(blId: number, blNo: string) {
               @click.stop="pedirBorrarManifiesto(m.id, m.voyage_no)"
             ><Trash2 class="size-3.5" /></button>
           </div>
-          <button class="block w-full px-2 pb-2 pl-8 text-left text-xs text-ink-muted" @click="seleccionarManifiesto(m.id)">
+          <button class="block w-full px-2 pb-2 pl-8 text-left text-xs text-ink-muted" @click="alternar(m.id)">
             {{ m.vessel_name || m.vessel_code || '' }} · {{ m.bl_count }} B/L
             <span class="block text-ink-faint">{{ (m.arrival_date || '').substring(0, 10) }}</span>
           </button>

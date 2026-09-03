@@ -7,7 +7,7 @@ import { api, type Cliente, type VistaPreviaTxt } from '../editor/api';
 import {
   datosManifiesto, blActual, stats, estado, estadoDerecha, toastMsg, toastTipo,
   cargarCatalogos, cargarManifiestos, seleccionarManifiesto, cargarStats,
-  guardarPendientes, toast, setEstado,
+  guardarPendientes, salirDelManifiesto, toast, setEstado,
 } from '../editor/store';
 import Sidebar from './Sidebar.vue';
 import EditorPanel from './EditorPanel.vue';
@@ -15,12 +15,20 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { Upload, Settings, Ship, Eye, FileOutput, DatabaseZap, Loader2, FileUp, X } from '@lucide/vue';
+import { Upload, Settings, Ship, Eye, FileOutput, DatabaseZap, Loader2, FileUp, X, PanelLeftClose, PanelLeftOpen } from '@lucide/vue';
 
 const bridgeOnline = ref(false);
 const archivoInput = ref<HTMLInputElement | null>(null);
 const arrastrando = ref(false);
 const editorRef = ref<InstanceType<typeof EditorPanel> | null>(null);
+
+// Sidebar colapsable: se recuerda entre recargas (misma idea que un IDE).
+const SIDEBAR_KEY = 'priority-sidebar-abierto';
+const sidebarAbierto = ref(localStorage.getItem(SIDEBAR_KEY) !== '0');
+function alternarSidebar() {
+  sidebarAbierto.value = !sidebarAbierto.value;
+  localStorage.setItem(SIDEBAR_KEY, sidebarAbierto.value ? '1' : '0');
+}
 
 const modal = ref<{ titulo: string; cuerpo: string; botones: Array<{ label: string; variant: string; accion: () => void }> } | null>(null);
 function cerrarModal() { modal.value = null; }
@@ -161,6 +169,11 @@ onMounted(async () => {
   <div class="flex h-screen flex-col">
     <!-- TOPBAR -->
     <header class="flex h-12 shrink-0 items-center gap-3 border-b border-border bg-paper-raised px-4">
+      <Button variant="ghost" size="icon" class="size-7 shrink-0" :title="sidebarAbierto ? 'Ocultar panel de viajes' : 'Mostrar panel de viajes'" @click="alternarSidebar">
+        <PanelLeftClose v-if="sidebarAbierto" class="size-4" />
+        <PanelLeftOpen v-else class="size-4" />
+      </Button>
+      <div class="h-4 w-px shrink-0 bg-border"></div>
       <span class="text-sm font-semibold text-accent">Priority Global</span>
       <span class="text-xs text-ink-faint">Manifiestos DGA → Hacienda PR</span>
       <span
@@ -171,17 +184,20 @@ onMounted(async () => {
         {{ bridgeOnline ? 'Bridge activo' : 'Bridge offline' }}
       </span>
       <div class="flex-1"></div>
-      <span class="text-xs text-ink-muted">
-        <b>{{ stats.manifests }}</b> viajes · <b>{{ stats.bls }}</b> B/L ·
-        <span class="text-status-pending"><b>{{ stats.pending }}</b> pendientes</span>
-      </span>
+      <div class="hidden items-center gap-2 rounded-lg border border-border bg-paper px-3 py-1.5 text-xs text-ink-muted sm:flex">
+        <span><b class="text-ink">{{ stats.manifests }}</b> viajes</span>
+        <span class="text-ink-faint">·</span>
+        <span><b class="text-ink">{{ stats.bls }}</b> B/L</span>
+        <span class="text-ink-faint">·</span>
+        <span class="font-medium text-status-pending"><b>{{ stats.pending }}</b> pendientes</span>
+      </div>
       <Button variant="outline" size="sm" as-child><a href="/admin.html" target="_blank"><Settings class="size-3.5" />Admin</a></Button>
       <Button size="sm" @click="abrirSubida"><Upload class="size-3.5" />Cargar XML/PDF</Button>
       <input type="file" ref="archivoInput" accept=".xml,.pdf" class="hidden" @change="subir(($event.target as HTMLInputElement).files?.[0])" />
     </header>
 
     <div class="flex flex-1 overflow-hidden">
-      <Sidebar @confirmar="confirmar" />
+      <Sidebar :abierto="sidebarAbierto" @confirmar="confirmar" />
 
       <main class="flex flex-1 flex-col overflow-hidden">
         <div v-if="datosManifiesto" class="flex h-11 shrink-0 items-center gap-3 border-b border-border bg-paper-raised px-4">
@@ -190,6 +206,7 @@ onMounted(async () => {
           <span class="text-xs text-ink-faint">{{ datosManifiesto.manifest.vessel_name || '' }}</span>
           <div class="flex-1"></div>
           <Button variant="outline" size="sm" :disabled="!blActual" @click="blActual && verTxt(blActual.id)"><Eye class="size-3.5" />Ver TXT</Button>
+          <Button variant="outline" size="sm" title="Salir del viaje actual" aria-label="Salir del viaje actual" @click="salirDelManifiesto"><X class="size-3.5" />Salir del viaje</Button>
           <Button size="sm" @click="exportarTxt"><FileOutput class="size-3.5" />Exportar TXT</Button>
           <Button size="sm" variant="outline" class="border-status-siscommate text-status-siscommate hover:bg-status-siscommate-soft hover:text-status-siscommate" :disabled="enviando" @click="pushSiscommate">
             <Loader2 v-if="enviando" class="size-3.5 animate-spin" /><DatabaseZap v-else class="size-3.5" />
@@ -197,8 +214,13 @@ onMounted(async () => {
           </Button>
         </div>
 
+        <!-- Ancho máximo centrado (mismo criterio que admin-redesign): en
+             pantallas grandes las tarjetas del grid de 12 columnas no se
+             estiran a más de max-w-5xl, para que sigan siendo fáciles de
+             escanear en vez de ocupar todo el monitor. -->
         <div class="flex-1 overflow-y-auto p-4">
-          <div v-if="previa" class="mb-4 overflow-hidden rounded-lg border-2 border-accent">
+          <div class="mx-auto flex min-h-full w-full max-w-5xl flex-col gap-4">
+          <div v-if="previa" class="overflow-hidden rounded-lg border-2 border-accent">
             <div class="flex items-center gap-2 bg-accent-soft px-3 py-2 text-sm font-medium text-accent">
               Vista previa TXT — B/L {{ blActual?.bl_no || '' }}
               <Button variant="ghost" size="icon" class="ml-auto size-6" @click="previa = null"><X class="size-3.5" /></Button>
@@ -224,7 +246,7 @@ onMounted(async () => {
             <p>Este manifiesto no tiene B/L</p>
           </div>
 
-          <div v-else class="flex h-full flex-col items-center justify-center gap-3 text-ink-faint">
+          <div v-else class="flex min-h-full w-full flex-col items-center justify-center gap-3 text-center text-ink-faint">
             <Ship class="size-10" />
             <p class="text-base text-ink-muted">Selecciona un manifiesto</p>
             <p class="text-xs">o carga un XML o PDF de la DGA</p>
@@ -236,6 +258,7 @@ onMounted(async () => {
               <FileUp class="mx-auto mb-2 size-6" />
               Arrastra el XML o PDF aquí o haz clic para seleccionar
             </div>
+          </div>
           </div>
         </div>
 
