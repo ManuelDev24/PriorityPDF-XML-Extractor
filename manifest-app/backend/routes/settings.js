@@ -3,9 +3,31 @@
 // Extraído de server.js (paso 5 de la separación backend/frontend).
 
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
 const db = require('../db/connection');
 
 const router = express.Router();
+const BRIDGE_CONFIG_PATH = process.env.SISCOMMATE_BRIDGE_CONFIG ||
+  process.env.BRIDGE_CONFIG_PATH ||
+  path.join(__dirname, '..', '..', 'bridge', 'siscommate-bridge.config');
+
+function publishBridgeDbfPath(value) {
+  try {
+    fs.writeFileSync(BRIDGE_CONFIG_PATH, `dbf_path=${value || ''}\r\n`, { encoding: 'utf8' });
+  } catch (err) {
+    // SQLite sigue siendo la fuente de verdad; el bridge puede configurarse
+    // por SISCOMMATE_DBF_PATH si el proceso no tiene permisos de escritura aquí.
+    console.warn('[settings] no se pudo publicar configuración del bridge:', err.message);
+  }
+}
+
+// Sincroniza configuraciones antiguas al arrancar, incluso si nadie vuelve a
+// abrir Administración después de actualizar la aplicación.
+try {
+  const configured = db.prepare(`SELECT value FROM settings WHERE key='dbf_path'`).get();
+  if (configured) publishBridgeDbfPath(configured.value);
+} catch (_) { /* migración pendiente; el arranque continúa */ }
 
 // ── SETTINGS ─────────────────────────────────────────────────────────────────
 router.get('/api/settings', (req, res) => {
@@ -22,7 +44,11 @@ router.put('/api/settings', (req, res) => {
      ON CONFLICT(key) DO UPDATE SET value=excluded.value`
   );
   allowed.forEach(k => {
-    if (req.body[k] !== undefined) upd.run(k, String(req.body[k]).trim());
+    if (req.body[k] !== undefined) {
+      const value = String(req.body[k]).trim();
+      upd.run(k, value);
+      if (k === 'dbf_path') publishBridgeDbfPath(value);
+    }
   });
   res.json({ ok: true });
 });

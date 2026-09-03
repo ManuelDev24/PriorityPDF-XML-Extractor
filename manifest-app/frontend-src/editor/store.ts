@@ -12,6 +12,8 @@ import { api, type Manifiesto, type DatosManifiesto, type BL,
 export const carriers = ref<Carrier[]>([]);
 export const puertos  = ref<Puerto[]>([]);
 export const buques   = ref<Buque[]>([]);
+const FALLBACK_TAMANOS = ['20', '40', '40HC', '45', 'RORO'];
+export const tamanosValidos = ref<string[]>(FALLBACK_TAMANOS);
 
 // ── Listado y seleccion ──────────────────────────────────────────────────────
 export const manifiestos     = ref<Manifiesto[]>([]);
@@ -126,8 +128,11 @@ export async function cargarStats() {
 
 export async function cargarCatalogos() {
   try {
-    const [c, p, b] = await Promise.all([api.carriers(), api.puertos(), api.buques()]);
+    const [c, p, b, sizes] = await Promise.all([
+      api.carriers(), api.puertos(), api.buques(), api.tamanosContenedor(),
+    ]);
     carriers.value = c; puertos.value = p; buques.value = b;
+    tamanosValidos.value = sizes.length ? sizes : FALLBACK_TAMANOS;
   } catch (e) { console.warn('Error cargando catálogos', e); }
 }
 

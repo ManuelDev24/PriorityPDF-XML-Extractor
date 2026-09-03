@@ -12,9 +12,45 @@ using System.Web.Script.Serialization;
 
 class SiscommateBridge
 {
-    const string DBF_PATH = @"\\192.168.6.2\c$\Projects\MXRS\sismatedata\SisMate\Data";
-    const string CONN_STR = "Provider=VFPOLEDB.1;Data Source=" + DBF_PATH + ";Collating Sequence=machine;";
+    // Rutas anteriores, comentadas — no eliminadas por si hay que volver a alguna:
+    // const string DBF_PATH = @"\\192.168.6.2\c$\Projects\MXRS\sismatedata\SisMate\Data"; // ambiente MXRS (hardcodeado, el que usaba este bridge)
+    // const string DBF_PATH = @"\\SDQSERVER\c$\Projects\PYRR\SiscomPriority\Sismate\DATA"; // ambiente PYRR (el configurado en Admin, que este bridge no llegaba a leer)
+
+    // La ruta se comparte con el backend mediante variable de entorno o el
+    // archivo siscommate-bridge.config junto al ejecutable. El fallback solo
+    // conserva compatibilidad con instalaciones anteriores.
+    const string DEFAULT_DBF_PATH = @"C:\Users\ecolon\Desktop\Sisom\DATA";
     const int    PORT     = 5001;
+
+    static string GetDbfPath()
+    {
+        string fromEnv = Environment.GetEnvironmentVariable("SISCOMMATE_DBF_PATH");
+        if (String.IsNullOrEmpty(fromEnv))
+            fromEnv = Environment.GetEnvironmentVariable("DBF_PATH");
+        if (!String.IsNullOrEmpty(fromEnv)) return fromEnv.Trim();
+
+        string configPath = Environment.GetEnvironmentVariable("SISCOMMATE_BRIDGE_CONFIG");
+        if (String.IsNullOrEmpty(configPath))
+            configPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "siscommate-bridge.config");
+        if (File.Exists(configPath))
+        {
+            foreach (string raw in File.ReadAllLines(configPath))
+            {
+                string line = (raw ?? "").Trim();
+                if (line.StartsWith("dbf_path=", StringComparison.OrdinalIgnoreCase))
+                {
+                    string value = line.Substring("dbf_path=".Length).Trim();
+                    if (!String.IsNullOrEmpty(value)) return value;
+                }
+            }
+        }
+        return DEFAULT_DBF_PATH;
+    }
+
+    static string GetConnectionString()
+    {
+        return "Provider=VFPOLEDB.1;Data Source=" + GetDbfPath() + ";Collating Sequence=machine;";
+    }
 
     static void Main(string[] args)
     {
@@ -42,7 +78,9 @@ class SiscommateBridge
                 {
                     if (method == "GET" && path == "/health")
                     {
-                        Send(resp, 200, "{\"ok\":true,\"msg\":\"SiscommateBridge activo\"}");
+                        var health = GetHealthStatus();
+                        Send(resp, health["ok"].Equals(true) ? 200 : 503,
+                            new JavaScriptSerializer().Serialize(health));
                     }
                     else if (method == "GET" && path == "/lote")
                     {
@@ -97,6 +135,63 @@ class SiscommateBridge
                         .Replace("\r", "").Replace("\n", " ");
     }
 
+    static Dictionary<string, object> GetHealthStatus()
+    {
+        string dbfPath = GetDbfPath();
+        bool providerRegistered = false;
+        bool dbfPathAccessible = Directory.Exists(dbfPath);
+        bool dbfQuerySuccessful = false;
+        string error = "";
+
+        try
+        {
+            var providers = new OleDbEnumerator().GetElements();
+            foreach (System.Data.DataRow row in providers.Rows)
+            {
+                if (String.Equals(row["SOURCES_NAME"].ToString(), "VFPOLEDB.1",
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    providerRegistered = true;
+                    break;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+
+        if (providerRegistered && dbfPathAccessible)
+        {
+            try
+            {
+                using (var conn = new OleDbConnection(GetConnectionString()))
+                {
+                    conn.Open();
+                    using (var cmd = new OleDbCommand("SELECT MAX(lotnum) FROM MANIFEST", conn))
+                    {
+                        cmd.ExecuteScalar();
+                        dbfQuerySuccessful = true;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+            }
+        }
+
+        var result = new Dictionary<string, object>();
+        result["ok"] = providerRegistered && dbfPathAccessible && dbfQuerySuccessful;
+        result["process"] = true;
+        result["provider_registered"] = providerRegistered;
+        result["dbf_path"] = dbfPath;
+        result["dbf_path_accessible"] = dbfPathAccessible;
+        result["dbf_query_successful"] = dbfQuerySuccessful;
+        if (!String.IsNullOrEmpty(error)) result["error"] = error;
+        return result;
+    }
+
     // ── Helpers para leer diccionarios ────────────────────────────────────────
     static string GetStr(Dictionary<string, object> d, string k)
     {
@@ -112,7 +207,7 @@ class SiscommateBridge
     // ── Lote ──────────────────────────────────────────────────────────────────
     static int ObtenerUltimoLote()
     {
-        using (var conn = new OleDbConnection(CONN_STR))
+        using (var conn = new OleDbConnection(GetConnectionString()))
         {
             conn.Open();
             using (var cmd = new OleDbCommand("SELECT MAX(lotnum) FROM MANIFEST", conn))
@@ -151,7 +246,7 @@ class SiscommateBridge
             foreach (var item in (System.Collections.ArrayList)data["container_bl"])
                 contList.Add(js.Deserialize<Dictionary<string, object>>(js.Serialize(item)));
 
-        using (var conn = new OleDbConnection(CONN_STR))
+        using (var conn = new OleDbConnection(GetConnectionString()))
         {
             conn.Open();
 

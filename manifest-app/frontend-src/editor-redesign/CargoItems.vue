@@ -101,8 +101,8 @@ async function eliminar(id: number) {
       <span class="flex-1 text-xs text-ink-faint">Si hay items, reemplazan la descripción general en el TXT</span>
       <Button size="sm" variant="outline" @click="abrirAgregar(null)">+ Agregar item</Button>
     </div>
-    <div v-if="items.length" class="flex flex-col gap-1.5">
-      <div v-for="item in items" :key="item.id" class="flex items-start gap-2 rounded-md border border-border bg-paper px-2.5 py-2 text-sm">
+    <div v-if="items.length" class="flex flex-col gap-1">
+      <div v-for="item in items" :key="item.id" class="flex items-start gap-2 rounded-md border border-slate-200 bg-white px-2.5 py-2 text-sm shadow-sm">
         <div class="min-w-0 flex-1">
           <p class="font-medium">{{ item.goods_name }}</p>
           <p class="mt-0.5 flex flex-wrap gap-3 text-xs text-ink-faint">
@@ -126,35 +126,36 @@ async function eliminar(id: number) {
       <Button v-if="!todosTienen" size="sm" variant="outline" title="Crear un item inicial por contenedor con los datos del B/L" @click="inicializarPorContenedor"><Zap class="size-3.5" />Inicializar por contenedor</Button>
     </div>
 
-    <div v-for="cno in cnos" :key="cno" class="mb-2 overflow-hidden rounded-md border border-border">
-      <div class="flex items-center gap-2 border-b border-border bg-paper px-2.5 py-1.5">
+    <div v-for="cno in cnos" :key="cno" class="mb-2 overflow-hidden rounded-md border border-slate-200 bg-white">
+      <div class="flex items-center gap-2 border-b border-slate-200 bg-slate-50 px-2.5 py-1.5">
         <span class="size-1.5 rounded-full" :class="itemsDe(cno).length ? 'bg-status-validated' : 'bg-status-pending'" />
         <span class="font-mono text-xs font-semibold text-accent">{{ cno }}</span>
-        <span class="flex-1 text-xs text-ink-faint">{{ itemsDe(cno).length ? itemsDe(cno).length + ' item(s) propios' : 'usando descripción general del B/L' }}</span>
+        <span v-if="itemsDe(cno).length" class="rounded-full bg-accent-soft px-2 py-0.5 text-[11px] font-medium text-accent">{{ itemsDe(cno).length }} item(s) propios</span>
+        <span class="flex-1 text-xs text-ink-faint">{{ itemsDe(cno).length ? '' : 'usando descripción general del B/L' }}</span>
         <Button size="sm" variant="outline" class="h-6 text-xs" @click="abrirAgregar(cno)">+ Item</Button>
       </div>
-      <Table v-if="itemsDe(cno).length">
+      <Table v-if="itemsDe(cno).length" class="table-fixed">
         <TableHeader>
           <TableRow>
-            <TableHead>Descripción</TableHead>
-            <TableHead class="w-24">Peso (kg)</TableHead>
-            <TableHead class="w-32">Código</TableHead>
-            <TableHead class="w-24">Tarifa</TableHead>
-            <TableHead class="w-10"></TableHead>
+            <TableHead class="w-5/12">Descripción</TableHead>
+            <TableHead class="w-2/12">Peso (kg)</TableHead>
+            <TableHead class="w-2/12">Código</TableHead>
+            <TableHead class="w-2/12">Tarifa</TableHead>
+            <TableHead class="w-1/12"></TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           <TableRow v-for="item in itemsDe(cno)" :key="item.id">
-            <TableCell><Textarea :model-value="item.goods_name" rows="1" class="min-h-8 text-xs" @change="(e:Event) => guardarCampo(item.id,'goods_name',(e.target as HTMLTextAreaElement).value)" /></TableCell>
-            <TableCell><Input type="number" step="0.01" :model-value="item.gross_weight || 0" class="h-8 text-xs" @change="(e:Event) => guardarCampo(item.id,'gross_weight',(e.target as HTMLInputElement).value)" /></TableCell>
-            <TableCell><Input :model-value="item.hacienda_item_code || ''" placeholder="código" class="h-8 font-mono text-xs" @change="(e:Event) => guardarCampo(item.id,'hacienda_item_code',(e.target as HTMLInputElement).value)" /></TableCell>
-            <TableCell>
+            <TableCell class="w-5/12"><Textarea :model-value="item.goods_name" rows="1" class="min-h-9 text-xs" @change="(e:Event) => guardarCampo(item.id,'goods_name',(e.target as HTMLTextAreaElement).value)" /></TableCell>
+            <TableCell class="w-2/12"><Input type="number" step="0.01" :model-value="item.gross_weight || 0" class="h-9 text-xs" @change="(e:Event) => guardarCampo(item.id,'gross_weight',(e.target as HTMLInputElement).value)" /></TableCell>
+            <TableCell class="w-2/12"><Input :model-value="item.hacienda_item_code || ''" placeholder="código" class="h-9 font-mono text-xs" @change="(e:Event) => guardarCampo(item.id,'hacienda_item_code',(e.target as HTMLInputElement).value)" /></TableCell>
+            <TableCell class="w-2/12">
               <Select :model-value="item.hacienda_tariff || ''" @update:model-value="(v) => guardarCampo(item.id,'hacienda_tariff',String(v))">
-                <SelectTrigger class="h-8 text-xs"><SelectValue placeholder="—" /></SelectTrigger>
+                <SelectTrigger class="h-9 text-xs"><SelectValue placeholder="—" /></SelectTrigger>
                 <SelectContent><SelectItem value="040">040</SelectItem><SelectItem value="045">045</SelectItem></SelectContent>
               </Select>
             </TableCell>
-            <TableCell><Button variant="ghost" size="icon" class="size-7 text-destructive" @click="eliminar(item.id)"><Trash2 class="size-3.5" /></Button></TableCell>
+            <TableCell class="w-1/12"><Button variant="ghost" size="icon" class="size-7 text-destructive" @click="eliminar(item.id)"><Trash2 class="size-3.5" /></Button></TableCell>
           </TableRow>
         </TableBody>
       </Table>
@@ -165,25 +166,25 @@ async function eliminar(id: number) {
     <DialogContent>
       <DialogHeader><DialogTitle>{{ modalTitulo }}</DialogTitle></DialogHeader>
       <div class="flex flex-col gap-3">
-        <div class="flex flex-col gap-1.5">
+        <div class="flex flex-col gap-1">
           <Label class="text-xs">Descripción de mercancía <span class="text-danger">*</span></Label>
-          <Textarea v-model="fGoods" rows="3" />
+          <Textarea v-model="fGoods" rows="3" class="text-xs" />
         </div>
         <div class="grid grid-cols-3 gap-3">
-          <div class="flex flex-col gap-1.5"><Label class="text-xs">Peso bruto (kg)</Label><Input type="number" step="0.01" v-model.number="fPeso" /></div>
-          <div class="flex flex-col gap-1.5"><Label class="text-xs">Código arancelario</Label><Input v-model="fCodigo" class="font-mono" /></div>
-          <div class="flex flex-col gap-1.5">
+          <div class="flex flex-col gap-1"><Label class="text-xs">Peso bruto (kg)</Label><Input type="number" step="0.01" v-model.number="fPeso" class="h-9 text-xs" /></div>
+          <div class="flex flex-col gap-1"><Label class="text-xs">Código arancelario</Label><Input v-model="fCodigo" class="h-9 font-mono text-xs" /></div>
+          <div class="flex flex-col gap-1">
             <Label class="text-xs">Tarifa</Label>
             <Select v-model="fTarifa">
-              <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+              <SelectTrigger class="h-9 text-xs"><SelectValue placeholder="—" /></SelectTrigger>
               <SelectContent><SelectItem value="040">040</SelectItem><SelectItem value="045">045</SelectItem></SelectContent>
             </Select>
           </div>
         </div>
-        <div v-if="multi && editandoId === null" class="flex flex-col gap-1.5">
+        <div v-if="multi && editandoId === null" class="flex flex-col gap-1">
           <Label class="text-xs">Contenedor</Label>
           <Select v-model="fCont">
-            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectTrigger class="h-9 text-xs"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem v-if="!contForzado" value="">Todos los contenedores</SelectItem>
               <SelectItem v-for="c in cnos" :key="c" :value="c">{{ c }}</SelectItem>

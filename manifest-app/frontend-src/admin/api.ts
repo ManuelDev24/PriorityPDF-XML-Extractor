@@ -43,6 +43,7 @@ export const api = {
   getBridgeStatus: () => pedir<BridgeStatus>('/api/bridge/status'),
 
   getContainerTypes: () => pedir<ContainerType[]>('/api/catalogs/container-types'),
+  getContainerSizes: () => pedir<string[]>('/api/catalogs/container-sizes'),
 
   saveContainerType: (xmlType: string, size: string, label: string) =>
     pedir<{ ok: true }>(

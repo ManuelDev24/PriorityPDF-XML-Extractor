@@ -11,6 +11,7 @@ export interface Manifiesto {
   vessel_name: string;
   loading_port: string;
   unloading_port: string;
+  discharge_port?: string;
   departure_date: string;
   arrival_date: string;
   manifest_no: string;
@@ -183,6 +184,7 @@ export const api = {
   puertos: () => pedir<Puerto[]>('/api/catalogs/ports'),
   carriers: () => pedir<Carrier[]>('/api/catalogs/carriers'),
   buques: () => pedir<Buque[]>('/api/catalogs/vessels'),
+  tamanosContenedor: () => pedir<string[]>('/api/catalogs/container-sizes'),
 
   // Otros
   estadisticas: () => pedir<Estadisticas>('/api/stats'),

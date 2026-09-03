@@ -22,12 +22,12 @@ if %CSC%=="" (
 
 echo Usando: %CSC%
 
-%CSC% SiscommateBridge.cs ^
+%CSC% /target:exe ^
+    /out:SiscommateBridge.exe ^
     /r:System.Data.dll ^
     /r:System.Web.Extensions.dll ^
     /r:System.Net.dll ^
-    /target:exe ^
-    /out:SiscommateBridge.exe
+    SiscommateBridge.cs
 
 if %ERRORLEVEL%==0 (
     echo.

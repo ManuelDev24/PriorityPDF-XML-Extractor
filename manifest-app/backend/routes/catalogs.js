@@ -4,6 +4,7 @@
 
 const express = require('express');
 const db = require('../db/connection');
+const { VESSELS, PORT_MAPPINGS, VALID_CONTAINER_SIZES } = require('../db/catalogDefaults');
 
 const router = express.Router();
 
@@ -61,6 +62,29 @@ router.get('/api/catalogs/ports', (req, res) => {
   res.json(db.prepare('SELECT * FROM ports ORDER BY country,description').all());
 });
 
+router.get('/api/catalogs/port-mappings', (req, res) => {
+  try {
+    res.json(db.prepare(
+      'SELECT dga_code, siscommate_code, label FROM port_mappings ORDER BY dga_code'
+    ).all());
+  } catch (err) {
+    console.warn('[catalogs/port-mappings] SQLite unavailable:', err.message);
+    res.json(PORT_MAPPINGS.map(([dga_code, siscommate_code]) => ({
+      dga_code, siscommate_code, label: '',
+    })));
+  }
+});
+
+// Valores válidos para BOLCONT.size. Se derivan del catálogo editable para
+// que editor y administración no mantengan listas divergentes.
+router.get('/api/catalogs/container-sizes', (req, res) => {
+  const configured = db.prepare(
+    `SELECT DISTINCT size FROM container_type_map
+     WHERE size IS NOT NULL AND trim(size) <> '' ORDER BY size`
+  ).all().map(row => row.size);
+  res.json([...new Set([...VALID_CONTAINER_SIZES, ...configured])]);
+});
+
 router.get('/api/catalogs/carriers', (req, res) => {
   res.json(db.prepare('SELECT * FROM carriers').all());
 });
@@ -112,13 +136,19 @@ router.put('/api/catalogs/clients/:id', (req, res) => {
 });
 
 // ── BUQUES ───────────────────────────────────────────────────────────────────
-// Hardcoded del SISCOMMATE. Candidato a mover a tabla, como container_type_map.
 router.get('/api/catalogs/vessels', (req, res) => {
-  res.json([
-    { code:'EMVS20170336', name:'KYDON',           imo:'8916607', carrier:'MMARINEX', scac:'MXS' },
-    { code:'EMVS20190966', name:'LYKTOS',          imo:'8401145', carrier:'MMARINEX', scac:'MXS' },
-    { code:'EMVS20190510', name:'CARIBBEAN FORCE', imo:'9335161', carrier:'MMARINEX', scac:'MXS' },
-  ]);
+  try {
+    res.json(db.prepare(
+      // rowid conserva el orden histórico del catálogo sembrado; no cambia la
+      // forma de respuesta de la API ni impide agregar buques posteriormente.
+      'SELECT code, name, imo, carrier, scac FROM vessels ORDER BY rowid'
+    ).all());
+  } catch (err) {
+    // Permite arrancar durante una actualización en la que aún no se aplicó
+    // la migración, sin volver a introducir el catálogo como fuente primaria.
+    console.warn('[catalogs/vessels] SQLite unavailable:', err.message);
+    res.json(VESSELS);
+  }
 });
 
 module.exports = router;

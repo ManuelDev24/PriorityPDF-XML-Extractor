@@ -4,9 +4,22 @@
 // Todas las líneas tienen exactamente 205 caracteres.
 //
 // Extraído de server.js (paso 2 de la separación backend/frontend).
-// Módulo puro: recibe datos, devuelve strings. No toca Express ni la base.
+// Recibe datos y devuelve strings. Lee catálogos/configuración de SQLite cuando
+// están disponibles, pero conserva fallbacks para tests y actualizaciones.
 //
 // Tipado con JSDoc — verificar con: npm run typecheck
+
+const db = require('../db/connection');
+const { PORT_MAPPINGS } = require('../db/catalogDefaults');
+
+function setting(key, fallback) {
+  try {
+    const row = db.prepare('SELECT value FROM settings WHERE key=?').get(key);
+    return row && row.value !== '' ? row.value : fallback;
+  } catch (_) {
+    return fallback;
+  }
+}
 
 /**
  * Manifiesto tal como llega desde la tabla `manifests`, más `carrier_ivu` que
@@ -122,7 +135,7 @@ function sanitizeSS(ss) {
  * @returns {string} Código de 3 caracteres
  */
 function toSiscommatePort(code) {
-  const map = {
+  const fallbackMap = {
     // San Juan, PR
     'PRSJU':'XSJ', 'SJU':'XSJ', 'SJX':'XSJ',
     // Mayagüez, PR
@@ -156,7 +169,22 @@ function toSiscommatePort(code) {
     // China
     'TSI':'TSI', 'CNTAO':'TSI',
   };
-  return map[(code || '').toUpperCase()] || (code || 'XSJ').toUpperCase().substring(0, 3);
+  const normalized = (code || '').toUpperCase();
+  let mapped;
+  let mappingsAvailable = false;
+  try {
+    mapped = db.prepare(
+      'SELECT siscommate_code FROM port_mappings WHERE dga_code=?'
+    ).get(normalized);
+    mappingsAvailable = true;
+  } catch (_) { /* migración todavía no aplicada */ }
+  if (mapped && mapped.siscommate_code) return mapped.siscommate_code;
+  if (mappingsAvailable) {
+    return (code || 'XSJ').toUpperCase().substring(0, 3);
+  }
+  const fallback = PORT_MAPPINGS.find(([dga]) => dga === normalized);
+  return (fallback ? fallback[1] : fallbackMap[normalized] ||
+    (code || 'XSJ').toUpperCase().substring(0, 3));
 }
 
 // ── LÍNEA 0 — Encabezado del manifiesto (205 chars) ──────────────────────────
@@ -190,7 +218,7 @@ function toSiscommatePort(code) {
  * @returns {string} Exactamente 205 caracteres
  */
 function generateTxtLine0(manifest, blCount) {
-  const carrier = pad(manifest.carrier_code || 'MPRIORO', 7);
+  const carrier = pad(manifest.carrier_code || setting('default_carrier_code', 'MPRIORO'), 7);
   const manNo   = pad(manifest.manifest_no || '', 7);
   const vessel  = pad(manifest.vessel_name || '', 16);
   const voyNo   = pad(manifest.voyage_no || '', 6);
@@ -259,8 +287,8 @@ function generateTxtLine0(manifest, blCount) {
  */
 function generateTxtLine1(bl, manifest, containerNo) {
   const ss9      = sanitizeSS(bl.hacienda_client_ss || bl.consignee_document_no);
-  const loadPort = toSiscommatePort(manifest.loading_port || 'DRP');
-  const discPort = toSiscommatePort(manifest.unloading_port || 'SJU');
+  const loadPort = toSiscommatePort(manifest.loading_port || setting('default_loading_port', 'DRP'));
+  const discPort = toSiscommatePort(manifest.unloading_port || setting('default_unloading_port', 'SJU'));
   const tariff   = bl.hacienda_tariff;
   // Libre arancel (040): SISCOMMATE requiere valor FOB = 0
   const fobValue = (tariff === '040') ? 0 : toNum(bl.value);

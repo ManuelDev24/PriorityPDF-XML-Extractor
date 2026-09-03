@@ -67,6 +67,13 @@ DB_PATH=\\\\SERVIDOR\\ManifiestosDGA\\manifest.db
 > - Activa el modo WAL (ya está configurado en el código).
 > - No recomendado si más de 3 usuarios editan al mismo tiempo.
 
+La ruta `dbf_path` guardada en Administración se publica también en
+`bridge\siscommate-bridge.config` (formato `dbf_path=...`) para que
+`SiscommateBridge.exe` pueda consumirla sin leer SQLite. Si el servicio corre
+en otra carpeta, use `SISCOMMATE_BRIDGE_CONFIG` para indicar el archivo; también
+se admite `SISCOMMATE_DBF_PATH` (o `DBF_PATH`) como variable de entorno del
+servicio. La variable tiene prioridad sobre el archivo.
+
 ### Opción C — Migrar a SQL Server (para uso intensivo)
 
 Si ya tienen SQL Server en Priority Global, podemos migrar fácilmente.

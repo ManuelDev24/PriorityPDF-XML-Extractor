@@ -5,11 +5,13 @@
 const props = defineProps<{ status: string }>();
 
 const ESTILOS: Record<string, string> = {
+  borrador: 'bg-status-draft-soft text-status-draft',
+  pendiente: 'bg-status-pending-soft text-status-pending',
   siscommate: 'bg-status-siscommate-soft text-status-siscommate',
   exportado: 'bg-status-exported-soft text-status-exported',
   validado: 'bg-status-validated-soft text-status-validated',
 };
-const ESTILO_DEFECTO = 'bg-status-pending-soft text-status-pending'; // pendiente/borrador
+const ESTILO_DEFECTO = 'bg-status-draft-soft text-status-draft';
 
 const clase = ESTILOS[props.status] || ESTILO_DEFECTO;
 </script>

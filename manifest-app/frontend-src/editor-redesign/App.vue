@@ -259,9 +259,9 @@ onMounted(async () => {
       <DialogContent v-if="cliente">
         <DialogHeader><DialogTitle>{{ cliente.id !== null ? 'Editar consignatario' : 'Nuevo consignatario — Hacienda PR' }}</DialogTitle></DialogHeader>
         <div class="flex flex-col gap-3">
-          <div class="flex flex-col gap-1.5"><Label class="text-xs">Nombre / Razón social <span class="text-danger">*</span></Label><Input v-model="cliente.name" placeholder="Ej. LANCO MANUFACTURING CORP" /></div>
+          <div class="flex flex-col gap-1"><Label class="text-xs">Nombre / Razón social <span class="text-danger">*</span></Label><Input v-model="cliente.name" placeholder="Ej. LANCO MANUFACTURING CORP" /></div>
           <div class="grid grid-cols-2 gap-3">
-            <div class="flex flex-col gap-1.5">
+            <div class="flex flex-col gap-1">
               <Label class="text-xs">SS / EIN (9 dígitos) <span class="text-danger">*</span></Label>
               <Input v-model="cliente.ss" placeholder="660123456" maxlength="11" class="font-mono" @input="cliente.ss = cliente.ss.replace(/[^0-9-]/g,'')" />
               <p class="text-xs" :class="ssDigitos.length === 9 ? 'text-status-validated' : 'text-status-pending'">
@@ -269,11 +269,11 @@ onMounted(async () => {
                 <template v-else-if="ssDigitos.length">{{ ssDigitos.length }}/9 dígitos</template>
               </p>
             </div>
-            <div class="flex flex-col gap-1.5"><Label class="text-xs">IVU / No. comerciante</Label><Input v-model="cliente.ivu" placeholder="Opcional" class="font-mono" /></div>
+            <div class="flex flex-col gap-1"><Label class="text-xs">IVU / No. comerciante</Label><Input v-model="cliente.ivu" placeholder="Opcional" class="font-mono" /></div>
           </div>
-          <div class="flex flex-col gap-1.5"><Label class="text-xs">Dirección línea 1</Label><Input v-model="cliente.add1" placeholder="Ej. URB. APONTE #5" /></div>
-          <div class="flex flex-col gap-1.5"><Label class="text-xs">Dirección línea 2</Label><Input v-model="cliente.add2" placeholder="Ej. SAN LORENZO, PR 00754" /></div>
-          <div class="flex flex-col gap-1.5"><Label class="text-xs">Teléfono</Label><Input v-model="cliente.phone1" placeholder="787-000-0000" class="font-mono" /></div>
+          <div class="flex flex-col gap-1"><Label class="text-xs">Dirección línea 1</Label><Input v-model="cliente.add1" placeholder="Ej. URB. APONTE #5" /></div>
+          <div class="flex flex-col gap-1"><Label class="text-xs">Dirección línea 2</Label><Input v-model="cliente.add2" placeholder="Ej. SAN LORENZO, PR 00754" /></div>
+          <div class="flex flex-col gap-1"><Label class="text-xs">Teléfono</Label><Input v-model="cliente.phone1" placeholder="787-000-0000" class="font-mono" /></div>
           <p v-if="clienteError" class="text-xs text-danger">{{ clienteError }}</p>
         </div>
         <DialogFooter>

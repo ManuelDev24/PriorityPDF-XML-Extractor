@@ -33,28 +33,30 @@
   --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Code", monospace;
 
-  /* Base — gris-azulado frío de papel, no crema */
-  --color-paper: #F4F5F7;
+  /* Base — slate frío de papel, no crema */
+  --color-paper: #F8FAFC;
   --color-paper-raised: #FFFFFF;
-  --color-paper-sunken: #E8EAED;
-  --color-ink: #1B2430;
-  --color-ink-muted: #5B6472;
-  --color-ink-faint: #8A93A0;
+  --color-paper-sunken: #F1F5F9;
+  --color-ink: #0F172A;
+  --color-ink-muted: #475569;
+  --color-ink-faint: #94A3B8;
 
-  /* Acento — azul aduana, específico, no el azul de cualquier dashboard */
-  --color-accent: #1E3A5F;
-  --color-accent-hover: #16293F;
-  --color-accent-soft: #E6ECF2;
+  /* Acento — royal blue para acciones y navegación */
+  --color-accent: #1D4ED8;
+  --color-accent-hover: #1E40AF;
+  --color-accent-soft: #DBEAFE;
 
-  /* Estados de negocio — deliberados, no candy-SaaS */
-  --color-status-pending: #B7791F;
-  --color-status-pending-soft: #FBF1E1;
-  --color-status-validated: #2F6844;
-  --color-status-validated-soft: #E7F1EA;
-  --color-status-exported: #2C5F7C;
-  --color-status-exported-soft: #E5EEF2;
-  --color-status-siscommate: #6B4C7A;
-  --color-status-siscommate-soft: #EFE9F1;
+  /* Estados de negocio — deliberados y distinguibles */
+  --color-status-draft: #475569;
+  --color-status-draft-soft: #F1F5F9;
+  --color-status-pending: #B45309;
+  --color-status-pending-soft: #FEF3C7;
+  --color-status-validated: #047857;
+  --color-status-validated-soft: #D1FAE5;
+  --color-status-exported: #0E7490;
+  --color-status-exported-soft: #CFFAFE;
+  --color-status-siscommate: #6D28D9;
+  --color-status-siscommate-soft: #EDE9FE;
 
   /* Peligro/requerido — terracota controlado, no rojo de alarma */
   --color-danger: #B23A2E;
@@ -78,8 +80,8 @@
   --accent: var(--color-accent-soft);
   --accent-foreground: var(--color-accent);
   --destructive: var(--color-danger);
-  --border: #DADEE3;
-  --input: #DADEE3;
+  --border: #CBD5E1;
+  --input: #CBD5E1;
   --ring: var(--color-accent);
 }
 
@@ -96,6 +98,8 @@
   --color-accent: var(--color-accent);
   --color-accent-hover: var(--color-accent-hover);
   --color-accent-soft: var(--color-accent-soft);
+  --color-status-draft: var(--color-status-draft);
+  --color-status-draft-soft: var(--color-status-draft-soft);
   --color-status-pending: var(--color-status-pending);
   --color-status-pending-soft: var(--color-status-pending-soft);
   --color-status-validated: var(--color-status-validated);
@@ -144,4 +148,3 @@
     @apply bg-background text-foreground font-sans;
   }
 }
-

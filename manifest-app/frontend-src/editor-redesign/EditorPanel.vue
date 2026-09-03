@@ -7,7 +7,7 @@
 import { ref, computed, watch } from 'vue';
 import { api, type ItemHacienda, type Cliente } from '../editor/api';
 import {
-  datosManifiesto, blActual, carriers, puertos, buques, contenedoresDelBL,
+  datosManifiesto, blActual, carriers, puertos, buques, contenedoresDelBL, tamanosValidos,
   actualizarBL, actualizarManifiesto, setEstado, toast,
 } from '../editor/store';
 import { Button } from '@/components/ui/button';
@@ -20,7 +20,7 @@ import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover
 import { Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem } from '@/components/ui/command';
 import CargoItems from './CargoItems.vue';
 import StatusBadge from './StatusBadge.vue';
-import { Check, Eye, X } from '@lucide/vue';
+import { Check, Eye, X, Sparkles, Box } from '@lucide/vue';
 
 const emit = defineEmits<{
   vistaPrevia: [blId: number];
@@ -46,6 +46,12 @@ const puertoOrigen = computed({
 const puertoDestino = computed({
   get: () => m.value.unloading_port || 'XSJ',
   set: (v: string) => actualizarManifiesto('unloading_port', v),
+});
+// Puerto de descarga: distinto del destino final para carga en tránsito, sin
+// valor por defecto (a diferencia de origen/destino, es opcional).
+const puertoDescarga = computed({
+  get: () => m.value.discharge_port || '',
+  set: (v: string) => actualizarManifiesto('discharge_port', v),
 });
 const tarifa = computed({
   get: () => bl.value.hacienda_tariff || '040',
@@ -74,6 +80,12 @@ async function alCambiarTamano(id: number | null, size: string) {
     if (c) c.size = size;
     setEstado('Tamaño guardado', new Date().toLocaleTimeString('es-PR'));
   } catch (e) { toast('Error guardando tamaño: ' + (e as Error).message, 'err'); }
+}
+
+function opcionesTamano(size: string) {
+  return tamanosValidos.value.includes(size)
+    ? tamanosValidos.value
+    : [...tamanosValidos.value, size];
 }
 
 async function marcar(estado: 'validado' | 'pendiente') {
@@ -161,58 +173,52 @@ watch(() => bl.value?.id, () => {
   <div class="flex flex-col gap-5">
     <!-- ── MANIFIESTO ── -->
     <Card>
-      <CardHeader class="flex-row items-center justify-between">
-        <CardTitle>Manifiesto — Viaje {{ m.voyage_no }}</CardTitle>
-        <StatusBadge :status="m.status" />
+      <CardHeader class="flex-row items-center gap-2">
+        <CardTitle class="flex items-center gap-2">
+          <span>Manifiesto</span>
+          <span>— Viaje {{ m.voyage_no }}</span>
+          <StatusBadge :status="m.status" />
+        </CardTitle>
       </CardHeader>
-      <CardContent class="flex flex-col gap-4">
-        <!-- Buque flexible, IMO angosto — antes eran fracciones iguales -->
-        <div class="grid grid-cols-[1fr_140px] gap-3">
-          <div class="flex flex-col gap-1.5">
+      <CardContent class="flex flex-col gap-2.5">
+        <!-- Grid único de 12 columnas. Fila 1 = quién transporta · Fila 2 =
+             de dónde a dónde · Fila 3 = cuándo y bajo qué código. -->
+        <div class="grid grid-cols-12 gap-x-3 gap-y-2.5">
+          <!-- Fila 1: Buque (5) · IMO (3) · Carrier Hacienda PR (4) —
+               IMO subió de 2→3: a 2 el valor de 7 dígitos (8916607) se
+               cortaba, medido en el navegador (61.8px de caja vs 77px que
+               necesita el texto). -->
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-5">
             <Label class="text-xs">Buque</Label>
             <Select :model-value="m.vessel_code" @update:model-value="(v) => alCambiarBuque(String(v))">
-              <SelectTrigger class="w-full"><SelectValue placeholder="— selecciona —" /></SelectTrigger>
+              <SelectTrigger class="h-9 w-full text-xs"><SelectValue placeholder="— selecciona —" /></SelectTrigger>
               <SelectContent>
                 <SelectItem v-for="v in buques" :key="v.code" :value="v.code">{{ v.name }} — IMO {{ v.imo }}</SelectItem>
               </SelectContent>
             </Select>
           </div>
-          <div class="flex flex-col gap-1.5">
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-3">
             <Label class="text-xs">IMO</Label>
-            <Input :model-value="m.imo || imoDelBuque(m.vessel_code) || ''" placeholder="Número IMO" class="font-mono"
+            <Input :model-value="m.imo || imoDelBuque(m.vessel_code) || ''" placeholder="Número IMO" class="h-9 font-mono text-xs"
               @change="(e:Event) => actualizarManifiesto('imo', (e.target as HTMLInputElement).value)" />
           </div>
-        </div>
-
-        <div class="grid grid-cols-[1fr_180px_160px] gap-3">
-          <div class="flex flex-col gap-1.5">
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-4">
             <Label class="text-xs">Carrier Hacienda PR</Label>
             <Select :model-value="m.carrier_code || 'MPRIORO'" @update:model-value="(v) => actualizarManifiesto('carrier_code', String(v))">
-              <SelectTrigger class="w-full"><SelectValue /></SelectTrigger>
+              <SelectTrigger class="h-9 w-full text-xs"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem v-for="c in carriers" :key="c.code" :value="c.code">{{ c.name }} ({{ c.scac }})</SelectItem>
               </SelectContent>
             </Select>
           </div>
-          <div class="flex flex-col gap-1.5">
-            <Label class="text-xs">No. manifiesto Hacienda <span class="text-danger">*</span></Label>
-            <Input :model-value="m.manifest_no || ''" placeholder="ej. 3309468" :class="!m.manifest_no && 'border-status-pending bg-status-pending-soft'"
-              @change="(e:Event) => actualizarManifiesto('manifest_no', (e.target as HTMLInputElement).value)" />
-          </div>
-          <div class="flex flex-col gap-1.5">
-            <Label class="text-xs">Docking Number <span class="text-danger">*</span></Label>
-            <Input :model-value="m.docking_number || ''" placeholder="ej. 20262342" maxlength="8" inputmode="numeric"
-              class="font-mono" :class="!m.docking_number && 'border-status-pending bg-status-pending-soft'"
-              @input="(e:Event) => { const el = e.target as HTMLInputElement; el.value = el.value.replace(/[^0-9]/g,''); }"
-              @change="(e:Event) => alCambiarDocking((e.target as HTMLInputElement).value)" />
-          </div>
-        </div>
 
-        <div class="grid grid-cols-2 gap-3">
-          <div class="flex flex-col gap-1.5">
+          <!-- Fila 2: Puerto origen (4) · Puerto descarga (4) · Puerto destino (4) —
+               descarga es el puerto intermedio para carga en tránsito, distinto
+               del destino final. Pedido explícito 2026-09-03. -->
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-4">
             <Label class="text-xs">Puerto origen (DGA)</Label>
             <Select v-model="puertoOrigen">
-              <SelectTrigger class="w-full"><SelectValue /></SelectTrigger>
+              <SelectTrigger class="h-9 w-full text-xs"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectGroup v-for="pais in paises" :key="pais">
                   <SelectLabel>{{ PAISES[pais] || pais }}</SelectLabel>
@@ -221,10 +227,10 @@ watch(() => bl.value?.id, () => {
               </SelectContent>
             </Select>
           </div>
-          <div class="flex flex-col gap-1.5">
-            <Label class="text-xs">Puerto destino (PR)</Label>
-            <Select v-model="puertoDestino">
-              <SelectTrigger class="w-full"><SelectValue /></SelectTrigger>
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-4">
+            <Label class="text-xs">Puerto de descarga</Label>
+            <Select v-model="puertoDescarga">
+              <SelectTrigger class="h-9 w-full text-xs"><SelectValue placeholder="— opcional —" /></SelectTrigger>
               <SelectContent>
                 <SelectGroup v-for="pais in paises" :key="pais">
                   <SelectLabel>{{ PAISES[pais] || pais }}</SelectLabel>
@@ -232,19 +238,53 @@ watch(() => bl.value?.id, () => {
                 </SelectGroup>
               </SelectContent>
             </Select>
+          </div>
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-4">
+            <Label class="text-xs">Puerto destino (PR)</Label>
+            <Select v-model="puertoDestino">
+              <SelectTrigger class="h-9 w-full text-xs"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectGroup v-for="pais in paises" :key="pais">
+                  <SelectLabel>{{ PAISES[pais] || pais }}</SelectLabel>
+                  <SelectItem v-for="p in puertosDe(pais)" :key="p.code" :value="p.code">{{ p.code }} — {{ p.description }}</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </div>
+
+        </div>
+
+        <!-- Fila 3: Fecha salida (6) · Fecha llegada (6) — un date picker
+             nativo necesita ~145px mínimos (medido) para no cortar el ícono
+             de calendario; a col-span-2 en esta fila (~62px) el "08/18/2026"
+             se veía cortado en "08/". No caben 2 fechas + 2 campos más en
+             una sola fila de 12, así que quedan en su propia fila. -->
+        <div class="grid grid-cols-12 gap-x-3 gap-y-2.5">
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-6">
+            <Label class="text-xs">Fecha salida</Label>
+            <Input type="date" :model-value="(m.departure_date || '').substring(0,10)" class="h-9 text-xs"
+              @change="(e:Event) => actualizarManifiesto('departure_date', (e.target as HTMLInputElement).value)" />
+          </div>
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-6">
+            <Label class="text-xs">Fecha llegada</Label>
+            <Input type="date" :model-value="(m.arrival_date || '').substring(0,10)" class="h-9 text-xs"
+              @change="(e:Event) => actualizarManifiesto('arrival_date', (e.target as HTMLInputElement).value)" />
           </div>
         </div>
 
-        <div class="grid grid-cols-2 gap-3">
-          <div class="flex flex-col gap-1.5">
-            <Label class="text-xs">Fecha salida</Label>
-            <Input type="date" :model-value="(m.departure_date || '').substring(0,10)"
-              @change="(e:Event) => actualizarManifiesto('departure_date', (e.target as HTMLInputElement).value)" />
+        <!-- Fila 4: No. manifiesto (6) · Docking Number (6) -->
+        <div class="grid grid-cols-12 gap-x-3 gap-y-2.5">
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-6">
+            <Label class="text-xs">No. manifiesto Hacienda <span class="text-danger">*</span></Label>
+            <Input :model-value="m.manifest_no || ''" placeholder="ej. 3309468" class="h-9 text-xs" :class="!m.manifest_no && 'border-status-pending bg-status-pending-soft'"
+              @change="(e:Event) => actualizarManifiesto('manifest_no', (e.target as HTMLInputElement).value)" />
           </div>
-          <div class="flex flex-col gap-1.5">
-            <Label class="text-xs">Fecha llegada</Label>
-            <Input type="date" :model-value="(m.arrival_date || '').substring(0,10)"
-              @change="(e:Event) => actualizarManifiesto('arrival_date', (e.target as HTMLInputElement).value)" />
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-6">
+            <Label class="text-xs">Docking Number <span class="text-danger">*</span></Label>
+            <Input :model-value="m.docking_number || ''" placeholder="ej. 20262342" maxlength="8" inputmode="numeric"
+              class="h-9 font-mono text-xs" :class="!m.docking_number && 'border-status-pending bg-status-pending-soft'"
+              @input="(e:Event) => { const el = e.target as HTMLInputElement; el.value = el.value.replace(/[^0-9]/g,''); }"
+              @change="(e:Event) => alCambiarDocking((e.target as HTMLInputElement).value)" />
           </div>
         </div>
       </CardContent>
@@ -261,15 +301,17 @@ watch(() => bl.value?.id, () => {
     </div>
 
     <!-- ── HACIENDA PR ── -->
-    <Card class="border-status-pending/40 bg-status-pending-soft/30">
-      <CardHeader><CardTitle class="text-status-pending">Hacienda PR — campos requeridos para el TXT</CardTitle></CardHeader>
-      <CardContent class="flex flex-col gap-4">
-        <div class="grid grid-cols-[1fr_180px] gap-3">
-          <div class="flex flex-col gap-1.5">
+    <Card>
+      <CardHeader><CardTitle class="text-accent">Hacienda PR — campos requeridos para el TXT</CardTitle></CardHeader>
+      <CardContent class="flex flex-col gap-2.5">
+        <!-- Fila 1 = clasificación arancelaria · Fila 3 = consignatario -->
+        <div class="grid grid-cols-12 gap-x-3 gap-y-2.5">
+          <!-- Fila 1: Código arancelario (8) · Tarifa (4) -->
+          <div class="col-span-12 md:col-span-8 flex flex-col gap-1">
             <Label class="text-xs">Código arancelario — Items Hacienda <span class="text-danger">*</span></Label>
             <Popover v-model:open="itemAbierto">
               <PopoverTrigger as-child>
-                <Button variant="outline" role="combobox" class="justify-start bg-paper-raised font-mono font-normal">
+                <Button variant="outline" role="combobox" class="h-9 justify-start bg-paper-raised font-mono text-xs font-normal">
                   {{ bl.hacienda_item_code || 'Buscar por código o descripción...' }}
                 </Button>
               </PopoverTrigger>
@@ -290,10 +332,10 @@ watch(() => bl.value?.id, () => {
             </Popover>
             <p v-if="descItem" class="text-xs text-status-validated">{{ descItem }}</p>
           </div>
-          <div class="flex flex-col gap-1.5">
+          <div class="col-span-12 md:col-span-4 flex flex-col gap-1">
             <Label class="text-xs">Tarifa (arbitrio)</Label>
             <Select v-model="tarifa">
-              <SelectTrigger class="w-full bg-paper-raised"><SelectValue /></SelectTrigger>
+              <SelectTrigger class="h-9 w-full bg-paper-raised text-xs"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="040">040 — Libre arancel</SelectItem>
                 <SelectItem value="045">045 — Carga general</SelectItem>
@@ -303,21 +345,29 @@ watch(() => bl.value?.id, () => {
           </div>
         </div>
 
-        <div v-if="sugerencias.length" class="rounded-md border border-status-pending/50 bg-paper-raised p-2.5">
-          <p class="text-xs font-medium text-status-pending">Sugerido para: "{{ (bl.goods_name || '').substring(0,60) }}"</p>
-          <div class="mt-1.5 flex flex-wrap gap-1.5">
-            <button v-for="it in sugerencias" :key="it.code" class="rounded-full border border-status-pending/50 bg-paper px-2.5 py-1 text-xs hover:bg-status-pending hover:text-white" @click="elegirItem(it)">
-              <span class="font-mono font-semibold">{{ it.code }}</span> {{ it.description.substring(0,35) }}
+        <div v-if="sugerencias.length" class="w-full flex flex-col gap-2 rounded-lg border border-blue-200 bg-blue-50/60 p-3">
+          <p class="flex items-center gap-1.5 text-xs font-medium text-blue-900">
+            <Sparkles class="size-3.5" />
+            <span>Sugerido para: <strong>"{{ (bl.goods_name || '').substring(0,60) }}"</strong></span>
+          </p>
+          <div class="flex flex-wrap gap-1.5">
+            <button v-for="it in sugerencias" :key="it.code" type="button"
+              class="group inline-flex items-center gap-2 rounded-full border border-blue-200 bg-white px-3 py-1.5 text-xs font-medium text-blue-900 shadow-sm transition-colors hover:bg-blue-600 hover:text-white"
+              @click="elegirItem(it)">
+              <span class="font-mono font-bold text-blue-700 group-hover:text-white">{{ it.code }}</span>
+              <span class="text-ink-faint">|</span>
+              <span>{{ it.description.substring(0,35) }}</span>
             </button>
           </div>
         </div>
 
-        <div class="grid grid-cols-[1fr_140px_1fr] gap-3">
-          <div class="flex flex-col gap-1.5">
+        <!-- Fila 3: SS/EIN consignatario (5) · IVU (3) · Notas internas (4) -->
+        <div class="grid grid-cols-12 gap-x-3 gap-y-2.5">
+          <div class="col-span-12 md:col-span-5 flex flex-col gap-1">
             <Label class="text-xs">SS / EIN consignatario <span class="text-danger">*</span></Label>
             <Popover v-model:open="clienteAbierto">
               <PopoverTrigger as-child>
-                <Button variant="outline" role="combobox" class="justify-start bg-paper-raised font-mono font-normal">
+                <Button variant="outline" role="combobox" class="h-9 justify-start bg-paper-raised font-mono text-xs font-normal">
                   {{ bl.hacienda_client_ss || bl.consignee_document_no || 'Buscar por nombre o EIN...' }}
                 </Button>
               </PopoverTrigger>
@@ -344,33 +394,40 @@ watch(() => bl.value?.id, () => {
               <button class="text-accent underline" @click="emit('editarCliente', clienteId || 0, bl.hacienda_client_ss || '', nombreCliente)">Editar</button>
             </p>
           </div>
-          <div class="flex flex-col gap-1.5">
+          <div class="col-span-12 md:col-span-3 flex flex-col gap-1">
             <Label class="text-xs">IVU consignatario</Label>
-            <Input :model-value="bl.hacienda_client_ivu || ''" placeholder="ej. 01406530016" maxlength="11" class="bg-paper-raised font-mono"
+            <Input :model-value="bl.hacienda_client_ivu || ''" placeholder="ej. 01406530016" maxlength="11" class="h-9 bg-paper-raised font-mono text-xs"
               @input="(e:Event) => { const el = e.target as HTMLInputElement; el.value = el.value.replace(/[^0-9]/g,''); }"
               @change="(e:Event) => actualizarBL('hacienda_client_ivu', (e.target as HTMLInputElement).value)" />
           </div>
-          <div class="flex flex-col gap-1.5">
+          <div class="col-span-12 md:col-span-4 flex flex-col gap-1">
             <Label class="text-xs">Notas internas</Label>
-            <Input :model-value="bl.notes || ''" placeholder="Observaciones..." class="bg-paper-raised"
+            <Input :model-value="bl.notes || ''" placeholder="Observaciones..." class="h-9 bg-paper-raised text-xs"
               @change="(e:Event) => actualizarBL('notes', (e.target as HTMLInputElement).value)" />
           </div>
         </div>
 
-        <div class="flex flex-col gap-1.5">
-          <Label class="text-xs">No. contenedor (Hacienda)</Label>
-          <Input :model-value="contenedorHacienda" placeholder="ej. TCKU1234567" class="max-w-sm bg-paper-raised font-mono"
-            @change="(e:Event) => actualizarBL('hacienda_container_no', (e.target as HTMLInputElement).value)" />
-          <div v-if="contenedoresDelBL.length" class="mt-1 flex flex-col gap-1.5">
-            <div v-for="c in contenedoresDelBL" :key="c.container_no" class="flex items-center gap-2">
-              <button class="rounded border border-accent/30 bg-accent-soft px-2 py-0.5 font-mono text-xs text-accent" @click="actualizarBL('hacienda_container_no', c.container_no)">{{ c.container_no }}</button>
-              <Select :model-value="c.size" :disabled="!c.id" @update:model-value="(v) => alCambiarTamano(c.id, String(v))">
-                <SelectTrigger class="h-7 w-40 text-xs" :class="!c.size && 'border-danger bg-danger-soft'"><SelectValue placeholder="— tamaño —" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem v-for="s in ['20','40','40HC','45','53']" :key="s" :value="s">{{ s }}</SelectItem>
-                </SelectContent>
-              </Select>
-              <span class="text-xs text-ink-faint">Tipo: R (RORO)</span>
+        <div class="grid grid-cols-12 gap-x-3 gap-y-2.5">
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-3">
+            <Label class="text-xs">No. contenedor (Hacienda)</Label>
+            <Input :model-value="contenedorHacienda" placeholder="ej. TCKU1234567" class="h-9 bg-paper-raised font-mono text-xs"
+              @change="(e:Event) => actualizarBL('hacienda_container_no', (e.target as HTMLInputElement).value)" />
+          </div>
+          <div v-if="contenedoresDelBL.length" class="col-span-12 flex flex-col gap-1.5">
+            <Label class="flex items-center gap-1.5 text-xs text-ink-muted"><Box class="size-3.5" />Contenedores asociados</Label>
+            <div class="grid grid-cols-1 gap-1 sm:grid-cols-2">
+              <div v-for="c in contenedoresDelBL" :key="c.container_no"
+                class="flex items-center justify-between gap-1.5 rounded-md border border-border bg-paper-raised p-1.5 text-xs"
+                :class="c.container_no === contenedorHacienda && 'border-accent/50 bg-accent-soft'">
+                <button type="button" class="rounded border border-accent/30 bg-accent-soft px-1.5 py-0.5 font-mono text-xs font-semibold text-accent" @click="actualizarBL('hacienda_container_no', c.container_no)">{{ c.container_no }}</button>
+                <Select :model-value="c.size" :disabled="!c.id" @update:model-value="(v) => alCambiarTamano(c.id, String(v))">
+                  <SelectTrigger class="h-7 w-24 text-xs" :class="!c.size && 'border-danger bg-danger-soft'"><SelectValue placeholder="— tamaño —" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem v-for="s in opcionesTamano(c.size)" :key="s" :value="s">{{ s }}</SelectItem>
+                  </SelectContent>
+                </Select>
+                <span class="whitespace-nowrap text-[11px] text-ink-faint">Tipo: <span class="text-ink">R (RORO)</span></span>
+              </div>
             </div>
           </div>
         </div>
@@ -380,37 +437,39 @@ watch(() => bl.value?.id, () => {
     <!-- ── CARGA ── -->
     <Card>
       <CardHeader><CardTitle>Carga</CardTitle></CardHeader>
-      <CardContent class="flex flex-col gap-4">
-        <div class="grid grid-cols-[140px_160px_1fr] gap-3">
-          <div class="flex flex-col gap-1.5">
+      <CardContent class="flex flex-col gap-2.5">
+        <!-- Cabecera: cantidad (2) · peso (3) · FOB (3) · puerto (2) ·
+             empaque (2). La descripción ocupa una fila completa. -->
+        <div class="grid grid-cols-12 gap-x-3 gap-y-2.5">
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-2">
             <Label class="text-xs">Cantidad bultos</Label>
-            <Input type="number" :model-value="bl.package_qty || 0" @change="(e:Event) => actualizarBL('package_qty', (e.target as HTMLInputElement).value)" />
+            <Input type="number" :model-value="bl.package_qty || 0" class="h-9 text-xs" @change="(e:Event) => actualizarBL('package_qty', (e.target as HTMLInputElement).value)" />
           </div>
-          <div class="flex flex-col gap-1.5">
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-3">
             <Label class="text-xs">Peso bruto (kg)</Label>
-            <Input type="number" step="0.01" :model-value="bl.gross_weight || 0" @change="(e:Event) => actualizarBL('gross_weight', (e.target as HTMLInputElement).value)" />
+            <Input type="number" step="0.01" :model-value="bl.gross_weight || 0" class="h-9 text-xs" @change="(e:Event) => actualizarBL('gross_weight', (e.target as HTMLInputElement).value)" />
           </div>
-          <div class="flex flex-col gap-1.5">
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-3">
             <Label class="text-xs">Valor FOB (USD)</Label>
-            <Input type="number" step="0.01" :model-value="bl.value || 0" :class="libreArancel && 'opacity-50'"
+            <Input type="number" step="0.01" :model-value="bl.value || 0" class="h-9 text-xs" :class="libreArancel && 'opacity-50'"
               :title="libreArancel ? '040 Libre arancel — se fuerza a 0 en el TXT' : ''"
               @change="(e:Event) => actualizarBL('value', (e.target as HTMLInputElement).value)" />
           </div>
-        </div>
-        <div class="flex flex-col gap-1.5">
-          <Label class="text-xs">Descripción de mercancía (DGA) — máx. 121 caracteres en TXT</Label>
-          <Textarea :model-value="bl.goods_name || ''" class="min-h-16" @input="(e:Event) => alCambiarDescripcion((e.target as HTMLTextAreaElement).value)" />
-          <p class="text-xs" :class="(bl.goods_name||'').length > 121 ? 'text-danger' : 'text-ink-faint'">{{ (bl.goods_name || '').length }}/121 caracteres</p>
-        </div>
-        <div class="grid grid-cols-2 gap-3">
-          <div class="flex flex-col gap-1.5">
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-2">
             <Label class="text-xs">Puerto descarga (DGA)</Label>
-            <Input :model-value="bl.unloading_port_code || ''" @change="(e:Event) => actualizarBL('unloading_port_code', (e.target as HTMLInputElement).value)" />
+            <Input :model-value="bl.unloading_port_code || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('unloading_port_code', (e.target as HTMLInputElement).value)" />
           </div>
-          <div class="flex flex-col gap-1.5">
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-2">
             <Label class="text-xs">Código empaque (DGA)</Label>
-            <Input :model-value="bl.package_unit_code || ''" @change="(e:Event) => actualizarBL('package_unit_code', (e.target as HTMLInputElement).value)" />
+            <Input :model-value="bl.package_unit_code || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('package_unit_code', (e.target as HTMLInputElement).value)" />
           </div>
+        </div>
+        <div class="flex w-full flex-col gap-1">
+          <div class="flex items-center justify-between">
+            <Label class="text-xs">Descripción de mercancía (DGA) — máx. 121 caracteres en TXT</Label>
+            <span class="font-mono text-[11px]" :class="(bl.goods_name||'').length > 121 ? 'font-bold text-danger' : 'text-ink-faint'">{{ (bl.goods_name || '').length }}/121</span>
+          </div>
+          <Textarea :model-value="bl.goods_name || ''" class="min-h-16 w-full text-xs" @input="(e:Event) => alCambiarDescripcion((e.target as HTMLTextAreaElement).value)" />
         </div>
         <div class="border-t border-border pt-4"><CargoItems /></div>
       </CardContent>
@@ -419,34 +478,39 @@ watch(() => bl.value?.id, () => {
     <!-- ── CONSIGNADOR / CONSIGNATARIO ── -->
     <Card>
       <CardHeader><CardTitle><span class="rounded bg-status-validated-soft px-1.5 py-0.5 text-status-validated">Consignador</span> — Shipper (República Dominicana)</CardTitle></CardHeader>
-      <CardContent class="flex flex-col gap-3">
-        <div class="flex flex-col gap-1.5"><Label class="text-xs">Nombre / Razón social</Label><Input :model-value="bl.consignor_name || ''" @change="(e:Event) => actualizarBL('consignor_name', (e.target as HTMLInputElement).value)" /></div>
-        <div class="grid grid-cols-[1fr_160px] gap-3">
-          <div class="flex flex-col gap-1.5"><Label class="text-xs">No. documento (RNC / Cédula)</Label><Input :model-value="bl.consignor_document_no || ''" @change="(e:Event) => actualizarBL('consignor_document_no', (e.target as HTMLInputElement).value)" /></div>
-          <div class="flex flex-col gap-1.5"><Label class="text-xs">Tipo documento</Label><Input :model-value="bl.consignor_document_type || ''" @change="(e:Event) => actualizarBL('consignor_document_type', (e.target as HTMLInputElement).value)" /></div>
+      <CardContent class="flex flex-col gap-2.5">
+        <div class="flex flex-col gap-1"><Label class="text-xs">Nombre / Razón social</Label><Input :model-value="bl.consignor_name || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('consignor_name', (e.target as HTMLInputElement).value)" /></div>
+        <!-- Fila 2: documento (3) · tipo (4) · espacio restante (5) -->
+        <div class="grid grid-cols-12 gap-x-3 gap-y-2.5">
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-3"><Label class="text-xs">No. documento (RNC / Cédula)</Label><Input :model-value="bl.consignor_document_no || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('consignor_document_no', (e.target as HTMLInputElement).value)" /></div>
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-4"><Label class="text-xs">Tipo documento</Label><Input :model-value="bl.consignor_document_type || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('consignor_document_type', (e.target as HTMLInputElement).value)" /></div>
+          <div class="hidden md:block md:col-span-5" aria-hidden="true" />
         </div>
-        <div class="flex flex-col gap-1.5"><Label class="text-xs">Dirección</Label><Input :model-value="bl.consignor_street || ''" @change="(e:Event) => actualizarBL('consignor_street', (e.target as HTMLInputElement).value)" /></div>
-        <div class="grid grid-cols-3 gap-3">
-          <div class="flex flex-col gap-1.5"><Label class="text-xs">Ciudad</Label><Input :model-value="bl.consignor_city || ''" @change="(e:Event) => actualizarBL('consignor_city', (e.target as HTMLInputElement).value)" /></div>
-          <div class="flex flex-col gap-1.5"><Label class="text-xs">Teléfono</Label><Input :model-value="bl.consignor_tel || ''" class="font-mono" @change="(e:Event) => actualizarBL('consignor_tel', (e.target as HTMLInputElement).value)" /></div>
-          <div class="flex flex-col gap-1.5"><Label class="text-xs">Email</Label><Input type="email" :model-value="bl.consignor_email || ''" @change="(e:Event) => actualizarBL('consignor_email', (e.target as HTMLInputElement).value)" /></div>
+        <div class="flex flex-col gap-1"><Label class="text-xs">Dirección</Label><Input :model-value="bl.consignor_street || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('consignor_street', (e.target as HTMLInputElement).value)" /></div>
+        <!-- Fila 4: ciudad (4) · contacto (8) -->
+        <div class="grid grid-cols-12 gap-x-3 gap-y-2.5">
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-4"><Label class="text-xs">Ciudad</Label><Input :model-value="bl.consignor_city || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('consignor_city', (e.target as HTMLInputElement).value)" /></div>
+          <div class="col-span-12 grid grid-cols-2 gap-x-3 md:col-span-8">
+            <div class="flex flex-col gap-1"><Label class="text-xs">Teléfono</Label><Input :model-value="bl.consignor_tel || ''" class="h-9 font-mono text-xs" @change="(e:Event) => actualizarBL('consignor_tel', (e.target as HTMLInputElement).value)" /></div>
+            <div class="flex flex-col gap-1"><Label class="text-xs">Email</Label><Input type="email" :model-value="bl.consignor_email || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('consignor_email', (e.target as HTMLInputElement).value)" /></div>
+          </div>
         </div>
       </CardContent>
     </Card>
 
     <Card>
       <CardHeader><CardTitle><span class="rounded bg-accent-soft px-1.5 py-0.5 text-accent">Consignatario</span> — Consignee (Puerto Rico)</CardTitle></CardHeader>
-      <CardContent class="flex flex-col gap-3">
-        <div class="grid grid-cols-[1fr_160px_160px] gap-3">
-          <div class="flex flex-col gap-1.5"><Label class="text-xs">Nombre / Razón social</Label><Input :model-value="bl.consignee_name || ''" @change="(e:Event) => actualizarBL('consignee_name', (e.target as HTMLInputElement).value)" /></div>
-          <div class="flex flex-col gap-1.5"><Label class="text-xs">EIN / SS (PR)</Label><Input :model-value="bl.consignee_document_no || ''" class="font-mono" @change="(e:Event) => actualizarBL('consignee_document_no', (e.target as HTMLInputElement).value)" /></div>
-          <div class="flex flex-col gap-1.5"><Label class="text-xs">Teléfono</Label><Input :model-value="bl.consignee_tel || ''" class="font-mono" @change="(e:Event) => actualizarBL('consignee_tel', (e.target as HTMLInputElement).value)" /></div>
+      <CardContent class="flex flex-col gap-2.5">
+        <div class="grid grid-cols-12 gap-x-3 gap-y-2.5">
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-6"><Label class="text-xs">Nombre / Razón social</Label><Input :model-value="bl.consignee_name || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('consignee_name', (e.target as HTMLInputElement).value)" /></div>
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-3"><Label class="text-xs">EIN / SS (PR)</Label><Input :model-value="bl.consignee_document_no || ''" class="h-9 font-mono text-xs" @change="(e:Event) => actualizarBL('consignee_document_no', (e.target as HTMLInputElement).value)" /></div>
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-3"><Label class="text-xs">Teléfono</Label><Input :model-value="bl.consignee_tel || ''" class="h-9 font-mono text-xs" @change="(e:Event) => actualizarBL('consignee_tel', (e.target as HTMLInputElement).value)" /></div>
         </div>
-        <div class="flex flex-col gap-1.5"><Label class="text-xs">Dirección</Label><Input :model-value="bl.consignee_street || ''" @change="(e:Event) => actualizarBL('consignee_street', (e.target as HTMLInputElement).value)" /></div>
-        <div class="grid grid-cols-3 gap-3">
-          <div class="flex flex-col gap-1.5"><Label class="text-xs">Ciudad</Label><Input :model-value="bl.consignee_city || ''" @change="(e:Event) => actualizarBL('consignee_city', (e.target as HTMLInputElement).value)" /></div>
-          <div class="flex flex-col gap-1.5"><Label class="text-xs">Zip code</Label><Input :model-value="bl.consignee_zip || ''" class="font-mono" @change="(e:Event) => actualizarBL('consignee_zip', (e.target as HTMLInputElement).value)" /></div>
-          <div class="flex flex-col gap-1.5"><Label class="text-xs">Email</Label><Input type="email" :model-value="bl.consignee_email || ''" @change="(e:Event) => actualizarBL('consignee_email', (e.target as HTMLInputElement).value)" /></div>
+        <div class="flex flex-col gap-1"><Label class="text-xs">Dirección</Label><Input :model-value="bl.consignee_street || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('consignee_street', (e.target as HTMLInputElement).value)" /></div>
+        <div class="grid grid-cols-12 gap-x-3 gap-y-2.5">
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-4"><Label class="text-xs">Ciudad</Label><Input :model-value="bl.consignee_city || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('consignee_city', (e.target as HTMLInputElement).value)" /></div>
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-2"><Label class="text-xs">Zip code</Label><Input :model-value="bl.consignee_zip || ''" class="h-9 font-mono text-xs" @change="(e:Event) => actualizarBL('consignee_zip', (e.target as HTMLInputElement).value)" /></div>
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-6"><Label class="text-xs">Email</Label><Input type="email" :model-value="bl.consignee_email || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('consignee_email', (e.target as HTMLInputElement).value)" /></div>
         </div>
       </CardContent>
     </Card>

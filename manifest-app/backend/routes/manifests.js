@@ -184,7 +184,7 @@ router.get('/api/manifests/:id', (req, res) => {
 // buque elegido no se recordaba al recargar.
 const CAMPOS_EDITABLES_MANIFEST = [
   'manifest_no','vessel_name','vessel_code','carrier_code','voyage_no','imo',
-  'loading_port','unloading_port','departure_date','arrival_date','status',
+  'loading_port','unloading_port','discharge_port','departure_date','arrival_date','status',
   'docking_number',
 ];
 

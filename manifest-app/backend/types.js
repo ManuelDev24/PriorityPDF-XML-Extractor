@@ -159,6 +159,7 @@
  * @property {string} biz_company_code
  * @property {string} loading_port
  * @property {string} unloading_port
+ * @property {string} [discharge_port] Puerto de descarga intermedio, para carga en tránsito
  * @property {string} departure_date
  * @property {string} arrival_date
  * @property {string} manifest_no

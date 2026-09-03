@@ -23,12 +23,14 @@ const app  = express();
 const PORT = process.env.PORT || 3000;
 const BRIDGE_HOST = process.env.BRIDGE_HOST || 'localhost';
 const BRIDGE_PORT = process.env.BRIDGE_PORT || 5001;
+const DBF_PATH = process.env.DBF_PATH || process.env.SISCOMMATE_DBF_PATH || '';
 
 // ─── BASE DE DATOS ───────────────────────────────────────────────────────────
 const db = require('./db/connection');
 require('./db/migrations').runMigrations({
   bridgeHost: BRIDGE_HOST,
   bridgePort: BRIDGE_PORT,
+  dbfPath: DBF_PATH,
 });
 
 // ─── MIDDLEWARE ──────────────────────────────────────────────────────────────

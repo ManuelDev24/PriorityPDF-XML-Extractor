@@ -15,7 +15,7 @@ import {
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell,
 } from '@/components/ui/table';
 
-const TAMANOS = ['20', '40', '40HC', '45', 'RORO'];
+const FALLBACK_TAMANOS = ['20', '40', '40HC', '45', 'RORO'];
 
 const bridgeHost = ref('');
 const bridgePort = ref('');
@@ -23,6 +23,7 @@ const dbfPath = ref('');
 const bridgeOnline = ref<boolean | null>(null);
 const bridgeTexto = ref('Verificando…');
 const filas = ref<ContainerType[]>([]);
+const tamanosValidos = ref<string[]>([]);
 const nuevoTipo = ref('');
 const nuevoTamano = ref('40');
 const nuevaEtiqueta = ref('');
@@ -40,7 +41,8 @@ function toast(msg: string, tipo: 'ok' | 'err' = 'ok') {
 const bridgeUrl = computed(() => `http://${bridgeHost.value || 'localhost'}:${bridgePort.value || '5001'}`);
 
 function opciones(size: string): string[] {
-  return TAMANOS.includes(size) ? TAMANOS : [...TAMANOS, size];
+  const tamanos = tamanosValidos.value.length ? tamanosValidos.value : FALLBACK_TAMANOS;
+  return tamanos.includes(size) ? tamanos : [...tamanos, size];
 }
 
 async function cargarSettings() {
@@ -82,6 +84,11 @@ async function cargarTipos() {
   filas.value = await api.getContainerTypes();
 }
 
+async function cargarTamanos() {
+  try { tamanosValidos.value = await api.getContainerSizes(); }
+  catch { tamanosValidos.value = FALLBACK_TAMANOS; }
+}
+
 async function guardarFila(fila: ContainerType) {
   await api.saveContainerType(fila.xml_type, fila.size, fila.label);
   toast(`${fila.xml_type} → ${fila.size} guardado`);
@@ -112,7 +119,7 @@ async function agregarTipo() {
   }
 }
 
-onMounted(() => { cargarSettings(); cargarTipos(); checkBridge(); });
+onMounted(() => { cargarSettings(); cargarTipos(); cargarTamanos(); checkBridge(); });
 </script>
 
 <template>
@@ -141,7 +148,7 @@ onMounted(() => { cargarSettings(); cargarTipos(); checkBridge(); });
             inserta en la base de datos SISCOMMATE
           </CardDescription>
         </CardHeader>
-        <CardContent class="flex flex-col gap-5">
+        <CardContent class="flex flex-col gap-3.5">
           <div class="flex items-center gap-3 rounded-md border border-border bg-paper px-3 py-2 text-sm">
             <span
               class="h-2 w-2 shrink-0 rounded-full"
@@ -152,19 +159,20 @@ onMounted(() => { cargarSettings(); cargarTipos(); checkBridge(); });
             <Button variant="outline" size="sm" @click="checkBridge">Probar conexión</Button>
           </div>
 
-          <!-- Grid por contenido: host es corto, puerto más corto aún, el
-               botón no necesita estirarse. Esto es lo que corrige el reclamo
-               de "campos enormes" — antes era 1fr 1fr sin relación al dato. -->
-          <div class="grid grid-cols-[minmax(0,1fr)_100px_auto] items-end gap-3">
-            <div class="flex flex-col gap-1.5">
+          <!-- Sistema de 12 columnas (mismo que el editor): la columna del
+               botón "Guardar" queda en el mismo lugar (col 10-12) en ambas
+               filas de esta tarjeta, así los botones se alinean entre sí
+               aunque el campo de arriba sea más corto que el de abajo. -->
+          <div class="grid grid-cols-12 items-end gap-x-3 gap-y-2.5">
+            <div class="col-span-12 md:col-span-7 flex flex-col gap-1">
               <Label class="text-xs">Host / IP del servidor</Label>
               <Input v-model="bridgeHost" placeholder="localhost" class="font-mono text-sm" />
             </div>
-            <div class="flex flex-col gap-1.5">
+            <div class="col-span-6 md:col-span-2 flex flex-col gap-1">
               <Label class="text-xs">Puerto</Label>
               <Input v-model="bridgePort" placeholder="5001" class="font-mono text-sm" />
             </div>
-            <Button @click="saveBridgeConfig">Guardar</Button>
+            <Button class="col-span-6 md:col-span-3" @click="saveBridgeConfig">Guardar</Button>
           </div>
           <p class="-mt-2 text-xs text-ink-faint">
             URL resultante: <code class="font-mono text-accent">{{ bridgeUrl }}</code>
@@ -176,12 +184,12 @@ onMounted(() => { cargarSettings(); cargarTipos(); checkBridge(); });
               Ruta UNC o de red donde residen los archivos <code class="font-mono">.DBF</code> de SISCOMMATE.
               Ejemplo: <code class="font-mono">\\SERVIDOR\SISCOMMATE\DATA</code>
             </p>
-            <div class="mt-3 grid grid-cols-[1fr_auto] items-end gap-3">
-              <div class="flex flex-col gap-1.5">
+            <div class="mt-3 grid grid-cols-12 items-end gap-x-3 gap-y-2.5">
+              <div class="col-span-12 md:col-span-9 flex flex-col gap-1">
                 <Label class="text-xs">Ruta de tablas DBF</Label>
                 <Input v-model="dbfPath" class="font-mono text-sm" />
               </div>
-              <Button @click="saveDbfPath">Guardar</Button>
+              <Button class="col-span-12 md:col-span-3" @click="saveDbfPath">Guardar</Button>
             </div>
           </div>
         </CardContent>
@@ -234,26 +242,26 @@ onMounted(() => { cargarSettings(); cargarTipos(); checkBridge(); });
             </TableBody>
           </Table>
 
-          <!-- Agregar: mismo principio de ancho-por-contenido que el resto -->
-          <div class="mt-4 grid grid-cols-[96px_120px_1fr_auto] items-end gap-3 rounded-md bg-accent-soft p-3">
-            <div class="flex flex-col gap-1.5">
+          <!-- Mismo sistema de 12 columnas que el resto del rediseño -->
+          <div class="mt-4 grid grid-cols-12 items-end gap-x-3 gap-y-2.5 rounded-md bg-accent-soft p-3">
+            <div class="col-span-6 md:col-span-2 flex flex-col gap-1">
               <Label class="text-xs">Código XML</Label>
               <Input v-model="nuevoTipo" placeholder="ej. 13" class="h-8 font-mono text-sm" />
             </div>
-            <div class="flex flex-col gap-1.5">
+            <div class="col-span-6 md:col-span-3 flex flex-col gap-1">
               <Label class="text-xs">Tamaño</Label>
               <Select v-model="nuevoTamano">
                 <SelectTrigger size="sm"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem v-for="s in TAMANOS" :key="s" :value="s">{{ s }}</SelectItem>
+                  <SelectItem v-for="s in (tamanosValidos.length ? tamanosValidos : FALLBACK_TAMANOS)" :key="s" :value="s">{{ s }}</SelectItem>
                 </SelectContent>
               </Select>
             </div>
-            <div class="flex flex-col gap-1.5">
+            <div class="col-span-12 md:col-span-5 flex flex-col gap-1">
               <Label class="text-xs">Descripción</Label>
               <Input v-model="nuevaEtiqueta" placeholder="ej. 40ft High Cube Refrigerado" class="h-8 text-sm" />
             </div>
-            <Button size="sm" @click="agregarTipo">+ Agregar</Button>
+            <Button size="sm" class="col-span-12 md:col-span-2" @click="agregarTipo">+ Agregar</Button>
           </div>
         </CardContent>
       </Card>
