@@ -355,7 +355,7 @@ watch(() => bl.value?.id, () => {
               :display-value="(v: unknown) => String(v ?? '')"
             >
               <ComboboxAnchor as-child>
-                <ComboboxInput placeholder="Buscar por código o descripción..." class="h-9 bg-paper-raised font-mono text-xs"
+                <ComboboxInput placeholder="Buscar por código o descripción..." class="font-mono text-xs"
                   @update:model-value="(v: string) => buscarItem(v)"
                   @focus="seleccionarTextoInput" />
               </ComboboxAnchor>
@@ -414,7 +414,7 @@ watch(() => bl.value?.id, () => {
               :display-value="(v: unknown) => String(v ?? '')"
             >
               <ComboboxAnchor as-child>
-                <ComboboxInput placeholder="Buscar por nombre o EIN..." class="h-9 bg-paper-raised font-mono text-xs"
+                <ComboboxInput placeholder="Buscar por nombre o EIN..." class="font-mono text-xs"
                   @update:model-value="(v: string) => buscarCliente(v)"
                   @focus="seleccionarTextoInput" />
               </ComboboxAnchor>
@@ -438,7 +438,7 @@ watch(() => bl.value?.id, () => {
           </div>
           <div class="col-span-12 md:col-span-3 flex flex-col gap-1">
             <Label class="text-xs">IVU consignatario</Label>
-            <Input :model-value="bl.hacienda_client_ivu || ''" placeholder="ej. 01406530016" maxlength="11" class="h-9 bg-paper-raised font-mono text-xs"
+            <Input :model-value="bl.hacienda_client_ivu || ''" placeholder="ej. 01406530016" maxlength="11" class="font-mono text-xs"
               @input="(e:Event) => { const el = e.target as HTMLInputElement; el.value = el.value.replace(/[^0-9]/g,''); }"
               @change="(e:Event) => actualizarBL('hacienda_client_ivu', (e.target as HTMLInputElement).value)" />
           </div>
@@ -452,7 +452,7 @@ watch(() => bl.value?.id, () => {
         <div class="grid grid-cols-12 gap-x-3 gap-y-2.5">
           <div class="col-span-12 flex flex-col gap-1 md:col-span-3">
             <Label class="text-xs">No. contenedor (Hacienda)</Label>
-            <Input :model-value="contenedorHacienda" placeholder="ej. TCKU1234567" class="h-9 bg-paper-raised font-mono text-xs"
+            <Input :model-value="contenedorHacienda" placeholder="ej. TCKU1234567" class="font-mono text-xs"
               @change="(e:Event) => actualizarBL('hacienda_container_no', (e.target as HTMLInputElement).value)" />
           </div>
           <div v-if="contenedoresDelBL.length" class="col-span-12 flex flex-col gap-1.5">
@@ -522,20 +522,18 @@ watch(() => bl.value?.id, () => {
       <CardHeader><CardTitle><span class="rounded bg-status-validated-soft px-1.5 py-0.5 text-status-validated">Consignador</span> — Shipper (República Dominicana)</CardTitle></CardHeader>
       <CardContent class="flex flex-col gap-2.5">
         <div class="flex flex-col gap-1"><Label class="text-xs">Nombre / Razón social</Label><Input :model-value="bl.consignor_name || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('consignor_name', (e.target as HTMLInputElement).value)" /></div>
-        <!-- Fila 2: documento (3) · tipo (4) · espacio restante (5) -->
+        <!-- Fila 2: tipo primero (se elige antes de escribir el número) · documento (5, contenido más largo) · espacio restante (4) -->
         <div class="grid grid-cols-12 gap-x-3 gap-y-2.5">
-          <div class="col-span-12 flex flex-col gap-1 md:col-span-3"><Label class="text-xs">No. documento (RNC / Cédula)</Label><Input :model-value="bl.consignor_document_no || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('consignor_document_no', (e.target as HTMLInputElement).value)" /></div>
-          <div class="col-span-12 flex flex-col gap-1 md:col-span-4"><Label class="text-xs">Tipo documento</Label><Input :model-value="bl.consignor_document_type || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('consignor_document_type', (e.target as HTMLInputElement).value)" /></div>
-          <div class="hidden md:block md:col-span-5" aria-hidden="true" />
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-3"><Label class="text-xs">Tipo documento</Label><Input :model-value="bl.consignor_document_type || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('consignor_document_type', (e.target as HTMLInputElement).value)" /></div>
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-5"><Label class="text-xs">No. documento (RNC / Cédula)</Label><Input :model-value="bl.consignor_document_no || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('consignor_document_no', (e.target as HTMLInputElement).value)" /></div>
+          <div class="hidden md:block md:col-span-4" aria-hidden="true" />
         </div>
         <div class="flex flex-col gap-1"><Label class="text-xs">Dirección</Label><Input :model-value="bl.consignor_street || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('consignor_street', (e.target as HTMLInputElement).value)" /></div>
-        <!-- Fila 4: ciudad (4) · contacto (8) -->
+        <!-- Fila 4: ciudad (3) · teléfono (5, puede traer dos números concatenados en datos reales) · email (4) -->
         <div class="grid grid-cols-12 gap-x-3 gap-y-2.5">
-          <div class="col-span-12 flex flex-col gap-1 md:col-span-4"><Label class="text-xs">Ciudad</Label><Input :model-value="bl.consignor_city || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('consignor_city', (e.target as HTMLInputElement).value)" /></div>
-          <div class="col-span-12 grid grid-cols-2 gap-x-3 md:col-span-8">
-            <div class="flex flex-col gap-1"><Label class="text-xs">Teléfono</Label><Input :model-value="bl.consignor_tel || ''" class="h-9 font-mono text-xs" @change="(e:Event) => actualizarBL('consignor_tel', (e.target as HTMLInputElement).value)" /></div>
-            <div class="flex flex-col gap-1"><Label class="text-xs">Email</Label><Input type="email" :model-value="bl.consignor_email || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('consignor_email', (e.target as HTMLInputElement).value)" /></div>
-          </div>
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-3"><Label class="text-xs">Ciudad</Label><Input :model-value="bl.consignor_city || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('consignor_city', (e.target as HTMLInputElement).value)" /></div>
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-5"><Label class="text-xs">Teléfono</Label><Input :model-value="bl.consignor_tel || ''" class="h-9 font-mono text-xs" @change="(e:Event) => actualizarBL('consignor_tel', (e.target as HTMLInputElement).value)" /></div>
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-4"><Label class="text-xs">Email</Label><Input type="email" :model-value="bl.consignor_email || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('consignor_email', (e.target as HTMLInputElement).value)" /></div>
         </div>
       </CardContent>
     </Card>
@@ -544,15 +542,15 @@ watch(() => bl.value?.id, () => {
       <CardHeader><CardTitle><span class="rounded bg-accent-soft px-1.5 py-0.5 text-accent">Consignatario</span> — Consignee (Puerto Rico)</CardTitle></CardHeader>
       <CardContent class="flex flex-col gap-2.5">
         <div class="grid grid-cols-12 gap-x-3 gap-y-2.5">
-          <div class="col-span-12 flex flex-col gap-1 md:col-span-6"><Label class="text-xs">Nombre / Razón social</Label><Input :model-value="bl.consignee_name || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('consignee_name', (e.target as HTMLInputElement).value)" /></div>
-          <div class="col-span-12 flex flex-col gap-1 md:col-span-3"><Label class="text-xs">EIN / SS (PR)</Label><Input :model-value="bl.consignee_document_no || ''" class="h-9 font-mono text-xs" @change="(e:Event) => actualizarBL('consignee_document_no', (e.target as HTMLInputElement).value)" /></div>
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-7"><Label class="text-xs">Nombre / Razón social</Label><Input :model-value="bl.consignee_name || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('consignee_name', (e.target as HTMLInputElement).value)" /></div>
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-2"><Label class="text-xs">EIN / SS (PR)</Label><Input :model-value="bl.consignee_document_no || ''" class="h-9 font-mono text-xs" @change="(e:Event) => actualizarBL('consignee_document_no', (e.target as HTMLInputElement).value)" /></div>
           <div class="col-span-12 flex flex-col gap-1 md:col-span-3"><Label class="text-xs">Teléfono</Label><Input :model-value="bl.consignee_tel || ''" class="h-9 font-mono text-xs" @change="(e:Event) => actualizarBL('consignee_tel', (e.target as HTMLInputElement).value)" /></div>
         </div>
         <div class="flex flex-col gap-1"><Label class="text-xs">Dirección</Label><Input :model-value="bl.consignee_street || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('consignee_street', (e.target as HTMLInputElement).value)" /></div>
         <div class="grid grid-cols-12 gap-x-3 gap-y-2.5">
-          <div class="col-span-12 flex flex-col gap-1 md:col-span-4"><Label class="text-xs">Ciudad</Label><Input :model-value="bl.consignee_city || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('consignee_city', (e.target as HTMLInputElement).value)" /></div>
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-3"><Label class="text-xs">Ciudad</Label><Input :model-value="bl.consignee_city || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('consignee_city', (e.target as HTMLInputElement).value)" /></div>
           <div class="col-span-12 flex flex-col gap-1 md:col-span-2"><Label class="text-xs">Zip code</Label><Input :model-value="bl.consignee_zip || ''" class="h-9 font-mono text-xs" @change="(e:Event) => actualizarBL('consignee_zip', (e.target as HTMLInputElement).value)" /></div>
-          <div class="col-span-12 flex flex-col gap-1 md:col-span-6"><Label class="text-xs">Email</Label><Input type="email" :model-value="bl.consignee_email || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('consignee_email', (e.target as HTMLInputElement).value)" /></div>
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-7"><Label class="text-xs">Email</Label><Input type="email" :model-value="bl.consignee_email || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('consignee_email', (e.target as HTMLInputElement).value)" /></div>
         </div>
       </CardContent>
     </Card>
