@@ -1,25 +1,51 @@
 # Plan de arranque — manifest-app
 
-Fecha: 2026-09-02
-Consolida todo lo analizado y ejecutado en la sesión del 2026-09-02.
+Fecha: 2026-09-02 · Última actualización: 2026-09-03
+Consolida todo lo analizado y ejecutado en las sesiones del 2026-09-02 y 2026-09-03.
 
 ---
 
 ## 1. Dónde estamos hoy
 
-### Hecho y verificado (sin commitear)
+### Hecho, commiteado en `Dev`, verificado
 
-La Fase A está completa: backend y frontend separados en `backend/` y `frontend/`,
-54 tests pasando, 4 defectos corregidos.
+La Fase A y la migración completa del frontend a Vue 3 + TypeScript están
+terminadas. Seis commits en `Dev` (`main` sigue intacto):
+
+```
+ad8da9b  Reemplazar index.html y admin.html por las versiones Vue probadas
+05628bb  Migrar el editor a Vue 3 + TypeScript
+8c6ef22  Piloto de migración: pantalla de administración
+06f16c0  Corregir tres bugs de pérdida silenciosa de datos
+ffb1213  Fijar versión de Node, agregar respaldo y verificación de tipos
+8df5e75  Separar backend y frontend en módulos + corregir 4 defectos
+```
 
 | | Antes | Ahora |
 |---|---|---|
-| Backend | `server.js`, 1601 líneas | bootstrap de 55 líneas + 11 módulos |
-| Frontend | `index.html`, 1898 líneas | 103 líneas de markup + 9 módulos JS + CSS externo |
-| Tests | ninguno | 54, todos pasando |
+| Backend | `server.js`, 1601 líneas | bootstrap de 55 líneas + 11 módulos, tipado con JSDoc |
+| Frontend | `index.html` escrito a mano, 1898 líneas | Vue 3 + TS, `frontend/index.html` es salida de `npm run build` |
+| Tests backend | ninguno | 57, todos pasando |
+| Typecheck | ninguno | backend (`tsc`) y frontend (`vue-tsc`) limpios |
 
-Defectos corregidos: XSS almacenado (con `escJs()`, verificado en navegador con el
-payload real), paridad de validaciones entre `export-txt` y `push-siscommate`,
+Las versiones originales de `index.html`/`admin.html` se conservan como
+`index.legacy.html` / `admin.legacy.html` — contenido idéntico, nunca borradas.
+
+**Fidelidad visual verificada, no asumida**: se comparó el DOM real (estilos
+calculados + geometría al píxel, no solo el markup) del original contra la
+versión Vue. 0 diferencias en 844 elementos del editor y 265 del admin.
+
+**Tres bugs preexistentes encontrados y corregidos** (los destapó la prueba de
+punta a punta, no eran defectos de la migración): la columna `imo` nunca
+existió en `manifests` pese a que el TXT la escribe (cualquier `PUT` que la
+incluyera perdía *todos* los campos de esa petición); `updateBL` y
+`updateManifest` compartían un temporizador de guardado, así que elegir un
+buque (4 campos de golpe) solo guardaba el último; `vessel_code` se descartaba
+en silencio por no estar en la lista de campos editables.
+
+Defectos de la Fase A: XSS almacenado (con `escJs()`, verificado en navegador
+con el payload real — un primer intento con solo entidades HTML resultó
+insuficiente), paridad de validaciones entre `export-txt` y `push-siscommate`,
 timeout en las llamadas al bridge, y `dbf.js` marcado como inactivo.
 
 ### Decidido
@@ -29,6 +55,16 @@ timeout en las llamadas al bridge, y `dbf.js` marcado como inactivo.
   visual: preserva `class` y `style` tal cual, mientras que React obligaría a
   convertir a mano 413 atributos (253 `class`→`className`, 160 `style` a objeto).
 - **Backend: TypeScript sí, cambio de framework no.** Express se queda.
+  TypeScript fijado a `~5.9` — `vue-tsc` no soporta TS 7, que ya no expone
+  `typescript/lib/tsc`.
+- **Rediseño visual futuro: shadcn-vue** (Tailwind + componentes con piel
+  propia). Fase separada, posterior a este reemplazo — corrige la falta de
+  armonía en los grids del formulario (hoy usan fracciones iguales sin
+  relación al contenido real de cada campo).
+- **Fase B: se mantiene C#/.NET.** Ver sección 4 — la razón no es preferencia
+  de lenguaje, es que el único camino seguro para no corromper los índices de
+  SISCOMMATE pasa por el motor real de FoxPro (VFPOLEDB), y eso fija el
+  mecanismo de acceso, no el lenguaje que lo invoca.
 
 ---
 
@@ -36,20 +72,21 @@ timeout en las llamadas al bridge, y `dbf.js` marcado como inactivo.
 
 Nada de lo que sigue avanza sin estas respuestas.
 
-### B1. ¿Cuál es el objetivo de producción?
+### B1. ¿Cuál es el objetivo de producción? — RESUELTO: Windows 10
 
-El repo tiene dos caminos de despliegue incompatibles:
+**Confirmado el 2026-09-02: el servidor real es Windows 10.** `preparar_deploy_32bit.bat`
+(WS2008 SP2, Node 12) queda descartado como objetivo — es candidato a limpieza,
+no se usa.
 
-- `instalar_produccion.bat` → Windows 11/10 **64 bits**, Node LTS del PATH
-- `preparar_deploy_32bit.bat` → Windows Server 2008 SP2 **32 bits**, Node 12.22.12 x86
+Verificado con documentación oficial que la cadena corre ahí sin sorpresas:
+Vite 8 requiere Node 20.19+ (el Node empaquetado es 20.20.2), y Node 20 da
+soporte **Tier 1** (producción, con pruebas oficiales) a Windows 10/Server 2016+.
+De paso, la misma tabla de plataformas de Node confirma que Windows 8.1/Server 2012
+es "Experimental" y **Windows Server 2008 no aparece en absoluto** — el camino
+de 32 bits no solo estaba desactualizado, nunca estuvo en una plataforma soportada.
 
-Node 12 está fuera de soporte desde abril 2022, y `better-sqlite3` 9.6.0 no
-funciona ahí. Sospecha: el camino de 32 bits está muerto, pero hay que
-confirmarlo.
-
-**Impacto:** si WS2008 sigue vivo y alguien abre la app ahí con IE11, ninguna
-opción de framework moderno corre sin `@vitejs/plugin-legacy`. Bloquea el spec
-de migración.
+Fuentes: [Vite 8.0 — requisitos](https://vite.dev/blog/announcing-vite8) ·
+[Node.js BUILDING.md — tabla de plataformas](https://github.com/nodejs/node/blob/v20.x/BUILDING.md)
 
 ### B2. ¿Quién debe poder entrar a la aplicación? — DECIDIDO: se pospone
 
@@ -72,14 +109,30 @@ otro origen.
 **Opciones para el login futuro:** allowlist por IP (lo más simple),
 usuario/clave básico, o integración con el dominio Windows.
 
-### B3. ¿Qué columnas tienen realmente BOL.DBF y BOLITEM.DBF?
+### B3. ¿Qué columnas tienen realmente BOL.DBF y BOLITEM.DBF? — sigue abierto, con más contexto
 
-Bloquea la Fase B entera. Se sabe que `MANIFEST.DBF` sí tiene columna `docking`
-(el bridge simplemente nunca la llena, `SiscommateBridge.cs:226`). Se desconoce
-si existen columnas para tarifa, SS/EIN e IVU, o si habría que coordinarlo con
-quien administra SISCOMMATE.
+Bloquea la Fase B entera. Ver sección 4 para el detalle completo de lo
+encontrado el 2026-09-03 (proyecto `HCDPR`, un segundo bridge en Node.js sin
+desplegar). Resumen:
 
-El equipo tiene acceso a los DBF por red, así que es consultable.
+- **`MANIFEST.docking` y `BOLITEM.code` confirmados como columnas reales** —
+  dos implementaciones de C# escritas por separado las declaran en su INSERT,
+  y las dos las mandan vacías. No es un bug aislado, es que nadie las cableó.
+- **Ninguna de las tres implementaciones encontradas (los dos bridges en C# y
+  uno en Node) coincide en el esquema completo de `BOL`** — la de Node tiene
+  una columna `status` que las otras no usan, y le faltan `charges`/`comvali`/
+  `comval`/`cdesport` que sí aparecen en las otras dos. Ninguna está verificada
+  contra el DBF real.
+- Sigue sin confirmarse si existen columnas para tarifa, SS/EIN e IVU en
+  `BOL`/`BOLITEM`, o si habría que coordinarlo con quien administra SISCOMMATE.
+
+El equipo tiene acceso a los DBF por red, así que es consultable. Próximo paso
+concreto: conseguir una copia de `MANIFEST.DBF`, `BOL.DBF`, `BOLCONT.DBF`,
+`BOLITEM.DBF` **y sus archivos asociados** (`.CDX`, `.FPT`, si existen) —
+idealmente desde un respaldo o en una ventana sin uso, no copiando los
+archivos mientras SISCOMMATE los tiene abiertos. Esos archivos van a traer
+datos reales de clientes (SS/EIN, nombres, direcciones): tratarlos con el
+mismo cuidado que el resto de la base.
 
 ### B4. ¿Cuál de los dos ambientes SISCOMMATE es el real hoy?
 
@@ -100,81 +153,226 @@ Hay que confirmar si algo la respalda.
 
 ## 3. Orden de arranque recomendado
 
-### Paso 0 — Commitear la Fase A (urgente)
+### Paso 0 — Commitear la Fase A ✅ hecho
 
-Todo el trabajo de la sesión está **sin commitear**. Es lo primero, antes de
-cualquier otra cosa: si la máquina falla, se pierde.
+Commiteado en `Dev` (ver sección 1). `main` sigue intacto.
 
 ### Paso 1 — Responder B1, B2, B3
 
-Sin B1 no se puede cerrar el spec de migración. B2 y B3 se pueden responder en
-paralelo.
+✅ B1 resuelto (Windows 10). ✅ B2 resuelto (login pospuesto). **B3 sigue
+abierto** — ver sección 6, es lo único que falta de este paso.
 
-### Paso 2 — Asegurar la base (si B5 dice que no hay respaldo)
+### Paso 2 — Asegurar la base ✅ hecho
 
-Tarea chica, valor alto: una copia programada de `manifest.db`. Con WAL activo,
-usar `VACUUM INTO` o la API de backup de SQLite, no copiar el archivo en caliente.
+`npm run backup` implementado y probado contra la base real: usa la API de
+backup de SQLite (no copia el archivo — la base corre en WAL y una copia en
+caliente puede salir inconsistente), verifica el resultado (cuenta filas +
+`integrity_check`) antes de darlo por bueno, y rota conservando los últimos 30.
 
-### Paso 3 — Fijar la versión de Node
+**Falta programarlo en el servidor** (`schtasks`) y apuntar `BACKUP_DIR` a otro
+disco — hoy guarda junto al original, protege contra borrado accidental, no
+contra falla de disco.
 
-Ya mordió una vez en esta sesión: el `node_modules` estaba compilado para Node 20
-y el Node del sistema (24) falló con `NODE_MODULE_VERSION 115 vs 137`.
+### Paso 3 — Fijar la versión de Node ✅ hecho
 
-- Agregar `engines` a `package.json`
-- Documentar que se usa el Node 20 empaquetado del repo
-- Que los `.bat` de despliegue apunten a ese Node, no al del PATH
+`engines: {"node": ">=18.0.0"}` en `package.json` + `.npmrc` con
+`engine-strict=true` (falla el `npm install` con la versión equivocada, en vez
+de fallar después con un error críptico) + prueba de humo en
+`instalar_produccion.bat` que verifica que `better-sqlite3` cargue con el Node
+que va a correr el servicio, antes de dejarlo instalado.
 
-### Paso 4 — Tipos en el backend, sin cambiar el despliegue
+### Paso 4 — Tipos en el backend ✅ hecho
 
-JSDoc + `checkJs` + `tsc --noEmit` solo para verificar. Se siguen desplegando los
-mismos `.js` por `xcopy`, cero fricción nueva.
+`tsconfig.json` con `checkJs` + `noEmit` (`npm run typecheck`), TypeScript y
+`@types/node` como devDependencies (el `npm install --production` no las baja).
+Tipado `txtGenerator`, los dos parsers, `blValidation`, `siscommateClient`,
+`migrations`, `backup` y las consultas de las 5 rutas.
 
-Prioridad por valor:
-1. `txtGenerator.js` — vive de offsets de bytes y anchos de campo
-2. Los parsers — producen objetos de 45 campos que entran a un INSERT con 45
-   marcadores posicionales; un desalineo ahí es silencioso y catastrófico
-3. El contrato del payload al bridge, hoy implícito
+**El typecheck encontró bugs reales al aplicarse**, no solo faltas de tipo:
+dos `parseFloat()` sobre valores que llegan como número desde SQLite o como
+texto desde el frontend (reemplazados por un `toNum()` explícito, con 3 tests
+que fijan el comportamiento), y una ruta que leía `ci.hacienda_item_code` /
+`ci.hacienda_tariff` de un objeto que ningún parser produce con esas
+propiedades — siempre insertaba `NULL` dando a entender que podían venir del
+archivo.
 
-### Paso 5 — Migración del frontend a Vue 3 + TS
+### Paso 5 — Migración del frontend a Vue 3 + TS ✅ hecho
 
-1. **Línea base visual primero**: capturar pantallas y DOM de cada estado
-   (lista, editor con B/L, multi-contenedor, preview TXT, modales, admin) para
-   comparar después. La fidelidad se prueba, no se promete.
-2. **Piloto en `admin.html`** — 168 líneas de JS, pantalla aislada, cero riesgo de
-   negocio. El objetivo real del piloto no es el código: es verificar que
-   `npm run build` + copiar `dist/` funciona en el servidor Windows. Si falla, se
-   enteran con la pantalla que no importa.
-3. **Editor, pantalla por pantalla.** `app.css` no se toca ni una línea. El markup
-   se copia; solo cambia la sintaxis de interpolación.
-4. Los 54 tests del backend no cambian: el contrato de la API es el mismo y
-   sirven de red durante toda la migración.
+Los 4 sub-pasos planeados se ejecutaron y verificaron:
+1. Línea base visual — comparación de DOM real (estilos calculados +
+   geometría), no solo markup.
+2. Piloto en admin — confirmó que Vite + Vue corre limpio; typecheck reveló
+   que `vue-tsc` no soporta TypeScript 7, fijado a `~5.9`.
+3. Editor completo migrado, con las mismas pruebas de fidelidad, más CRUD de
+   items de carga, alta/edición de consignatario, y **exportación real del TXT
+   de Hacienda** (21 líneas, todas de 205 caracteres) verificada de punta a punta.
+4. `index.html`/`admin.html` reemplazados — son salida de `npm run build` desde
+   ahora; los originales se conservan como `*.legacy.html`.
+
+**Pendiente, no bloqueante:** probar el build en el servidor real (todo indica
+que corre — ver B1 — pero nunca se ejecutó ahí), y el rediseño con shadcn-vue
+como fase separada.
 
 ### Paso 6 — Fase B, SISCOMMATE (condicionada a B3)
 
-**Replantear el enfoque.** El análisis cambió: `VFPOLEDB`, el proveedor para leer
-los DBF, existe **solo en 32 bits** — Microsoft nunca publicó versión x64.
-
-Eso significa que el bridge en C# **no es basura heredada: es el aislamiento de
-una dependencia de 32 bits en un proceso aparte**. Si moviéramos la escritura de
-DBF adentro de Node, todo el proceso Node tendría que ser de 32 bits, arrastrando
-límite de ~1.5 GB de memoria y menos versiones disponibles, para siempre.
-
-**Enfoque correcto:** reemplazar el bridge C# por un helper de 32 bits **propio**
-—mismo aislamiento, pero bajo control del equipo— en vez de meter DBF en Node.
-
-Lo que debe resolver:
-- Los 4 campos que hoy no llegan a SISCOMMATE: `docking_number`,
-  `hacienda_tariff`, `hacienda_client_ss` / `hacienda_client_ivu`, y el detalle de
-  `bl_cargo_items` (hoy se escribe una sola fila BOLITEM con los totales del B/L)
-- Leer `dbf_path` desde `settings` en vez de tenerlo compilado, para que cambiar
-  de ambiente no requiera recompilar
-- **Transaccionalidad**: hoy no hay. Si falla a mitad de los B/L quedan datos
-  parciales y el chequeo de "el viaje ya existe" bloquea el reintento, obligando a
-  limpiar el DBF a mano
+Ver sección 4 completa — se reescribió el 2026-09-03 con hallazgos nuevos de
+tres implementaciones previas encontradas en el equipo.
 
 ---
 
-## 4. Deuda conocida de la Fase A
+## 4. Fase B — SISCOMMATE: hallazgos del 2026-09-03
+
+Estado: **pendiente de validación de SISCOMMATE.** No se toma la decisión de
+implementar escritura directa a los DBF hasta confirmar los índices/CDX y,
+sobre todo, cómo SISCOMMATE abre y busca esas tablas.
+
+### 4.1 Se encontraron tres implementaciones previas, ninguna sabía de las otras
+
+| Ubicación | Qué es | Estado |
+|---|---|---|
+| `manifest-app/bridge/SiscommateBridge.cs` | El bridge en C# **actualmente en producción** — HTTP puro, .NET Framework, VFPOLEDB vía `OleDbConnection` con parámetros | Compilado (`.exe` presente), es el que corre hoy |
+| `siscommate-bridge/server.js` | Un **segundo bridge, completo, en Node.js puro** — mismo puerto 5001, mismos 4 endpoints | Código terminado, `node_modules` instalados, nunca desplegado (su `INSTALAR.md` describe Windows Server 2008 + Node 16, objetivo distinto al actual) |
+| `HCDPR` (`Desktop/HaciendaPR/HCDPR`) | Formulario WinForms experimental, mismo esquema de tablas que el bridge C#, referencia a `DotNetDBF` sin llegar a usarla | Sin compilar, copiado el 2026-09-03, sin historial previo |
+
+Los dos bridges reales escuchan en el **mismo puerto 5001** — mutuamente
+excluyentes, nunca corrieron a la vez.
+
+### 4.2 Lo que las tres implementaciones confirman en conjunto
+
+- **`MANIFEST.docking` y `BOLITEM.code` son columnas reales** — dos
+  implementaciones de C# escritas por separado las declaran en su INSERT y las
+  dos las mandan vacías. Confirma que es una falta de cableado, no una
+  limitación del esquema.
+- **El esquema de `BOL` no coincide entre las tres** — la de Node agrega una
+  columna `status` que las otras no usan y le faltan `charges`/`comvali`/
+  `comval`/`cdesport`. Ninguna está verificada contra el DBF real. Esto no
+  resuelve B3, lo refuerza: se necesita el esquema real, no otra suposición.
+- Ninguna de las tres tiene un campo para SS/EIN o IVU en `BOL`, ni para
+  tarifa en `BOLITEM`. Sigue sin ser prueba de que no existan las columnas.
+
+### 4.3 El bridge en Node sí sabe llegar a VFPOLEDB — y cómo
+
+`siscommate-bridge/server.js` usa el paquete npm `adodb`. Su mecanismo, en
+`node_modules/adodb/core/core.js`:
+
+```js
+let cscriptPath = path.join(sysroot, x64 ? 'SysWOW64' : 'System32', 'cscript.exe');
+```
+
+Node no carga VFPOLEDB directamente: arranca como proceso hijo el
+`cscript.exe` de 32 bits que ya viene incluido en cualquier Windows
+(`SysWOW64\cscript.exe`), y le habla por stdin/stdout con un script JScript que
+hace el `ADODB.Connection` real dentro de ese proceso hijo. El proceso Node
+principal se queda en 64 bits sin restricción; solo el hijo desechable —cero
+instalación extra— toca el driver de 32 bits.
+
+Esto demuestra que el límite de 32 bits no obliga a que *todo el proceso
+satélite* sea x86 — se puede aislar en algo más chico que un ejecutable .NET
+completo. No cambia la decisión tomada (se mantiene C#/.NET), pero es
+información real encontrada analizando el código y queda documentada para no
+perderla.
+
+**Dos problemas de calidad reales en esa implementación**, si alguna vez se
+retoma: no usa consultas parametrizadas — arma el SQL con interpolación de
+strings directa (`'${voyageNo}'`), abriendo una vía de inyección hacia el DBF;
+y `.env` apunta a `DBF_PATH=Z:\` (una unidad mapeada, no una ruta UNC como las
+otras dos), lo que sugiere que nunca se probó contra el ambiente real.
+
+### 4.4 Por qué la escritura directa a DBF (en cualquier lenguaje) sigue sin ser segura
+
+Se investigó si `DotNetDBF` (o cualquier librería de DBF puro, en cualquier
+lenguaje) resuelve el problema de fondo. No lo resuelve:
+
+**Ninguna librería de DBF puro sabe escribir índices compuestos de Visual
+FoxPro (`.cdx`)** — ni `DotNetDBF` ni su alternativa `DbfDataReader` (que solo
+lee CDX, no escribe). SISCOMMATE es una aplicación FoxPro viva: si se escriben
+filas nuevas directo al `.dbf` sin pasar por el motor real de FoxPro, el
+índice que usa para sus propias búsquedas queda desincronizado del dato — en
+el mejor caso no encuentra los registros nuevos por sus pantallas, en el peor
+corrompe el índice.
+
+VFPOLEDB es interesante precisamente porque la operación pasa por el motor/
+driver real, no por manipulación directa de bytes — por eso mantiene los
+índices correctos, y por eso todo lo demás (`DotNetDBF`, cualquier librería
+DBF en Python/Node/Rust) comparte el mismo riesgo estructural sin importar el
+lenguaje.
+
+Confirmado con fuente que VFPOLEDB nunca tuvo build de 64 bits (última
+actualización 2009, VFP 9 SP2):
+[Watch out for 64 bit Incompatibility using the Visual FoxPro OleDb Provider — Rick Strahl](https://webconnection.west-wind.com/blog/posts/2022/Nov/22/Watch-out-for-64-bit-Incompatibility-using-the-Visual-FoxPro-OleDb-Provider) ·
+[Microsoft OLE DB Provider for Visual FoxPro 9.0 — notas de versión](https://github.com/VFPX/VFP9SP2Hotfix3/blob/master/OLEDB_Release_Notes.md)
+
+**`DotNetDBF` no queda descartado del todo**: para lectura/inspección/
+diagnóstico es seguro con cualquier librería DBF pura, porque leer nunca toca
+el índice. Lo que no se usa para producción es escribir sin pasar por el motor
+real, hasta demostrar cómo se mantienen los índices.
+
+### 4.5 Arquitectura confirmada para la Fase B
+
+```
+   Backend Web (Node, 64 bits)
+            │  HTTP
+            ▼
+   SISCOMMATE Bridge (satélite x86)
+      .NET 8 + System.Data.OleDb
+            │
+       VFPOLEDB x86
+            │
+            ▼
+   DBF de SISCOMMATE (+ CDX)
+```
+
+Mismo patrón de hoy (proceso satélite de 32 bits separado del backend
+principal), modernizado de .NET Framework 4.8 a **.NET 8 x86** —
+`System.Data.OleDb` existe como paquete NuGet en .NET 8 y sigue hablando con
+VFPOLEDB igual. La web nunca toca los DBF directamente.
+
+**La web no tiene por qué esperar a la Fase B para funcionar** — sigue
+entregándole al bridge un payload igual al de hoy (`manifest`, `bls`,
+`containers`); lo que cambia es solo la implementación interna del bridge.
+
+### 4.6 Los tres pasos antes de escribir una sola línea
+
+1. **No tocar producción todavía.** Conseguir de quien administra SISCOMMATE:
+   ubicación real de los DBF, estructura de las 4 tablas, índices `.CDX`,
+   claves usadas, relaciones `MANIFEST → BOL → BOLCONT → BOLITEM`, campos
+   obligatorios, campos que SISCOMMATE genera automáticamente, y cómo
+   determina que un B/L es válido.
+2. **Prueba de solo lectura.** El bridge ejecuta `SELECT * FROM BOL` (y las
+   otras 3 tablas) y devuelve los datos — sin insertar nada.
+3. **Prueba controlada de escritura**, con un registro de prueba: escribir por
+   el camino completo (web → bridge → VFPOLEDB → DBF) y **verificar
+   visualmente en SISCOMMATE** que el registro aparece y se comporta normal.
+   Es la única prueba que confirma que el índice quedó sincronizado sin tener
+   que leer el binario del `.cdx` a mano.
+
+### 4.7 Herramientas: VS Code vs Visual Studio
+
+| Parte del proyecto | Herramienta |
+|---|---|
+| `manifest-app/` (backend Node + frontend Vue/TS) | **VS Code** — ya en uso, Volar para `.vue`, terminal para los `npm run *` |
+| El bridge en C# (hoy y su modernización a .NET 8) | **Visual Studio** — mejor depuración de llamadas COM/OLE DB, gestión de NuGet integrada; `HCDPR` ya está armado como proyecto de VS y es el punto de partida natural si se retoma esa base (aunque el bridge debe ser un servicio HTTP headless, no WinForms) |
+
+No hay solapamiento: cada herramienta cubre su mitad del stack.
+
+### 4.8 Lo que debe resolver el bridge modernizado
+
+- Los 4 campos que hoy no llegan a SISCOMMATE: `docking_number` (confirmado
+  que la columna existe), `hacienda_item_code`/`code` (confirmado que existe),
+  `hacienda_tariff`, `hacienda_client_ss`/`hacienda_client_ivu` (columnas sin
+  confirmar — B3), y el detalle de `bl_cargo_items` (hoy se escribe una sola
+  fila BOLITEM con los totales del B/L)
+- Leer `dbf_path` desde `settings` en vez de tenerlo compilado, para que
+  cambiar de ambiente no requiera recompilar
+- **Transaccionalidad**: hoy no hay. Si falla a mitad de los B/L quedan datos
+  parciales y el chequeo de "el viaje ya existe" bloquea el reintento,
+  obligando a limpiar el DBF a mano. El bridge en Node resuelve esto distinto
+  (borra el viaje completo y reinserta) — evaluar si ese patrón es más seguro
+  o más riesgoso antes de adoptarlo
+
+---
+
+## 5. Deuda conocida de la Fase A
 
 Decisiones conscientes, no olvidos:
 
@@ -194,7 +392,7 @@ Decisiones conscientes, no olvidos:
 
 ---
 
-## 5. Anotado para el día que se vaya a Postgres
+## 6. Anotado para el día que se vaya a Postgres
 
 El acceso a la base quedó concentrado en 6 archivos, así que es un trabajo
 acotado. Lo mecánico: 72 llamadas síncronas pasan a `await`, más `datetime('now')`
