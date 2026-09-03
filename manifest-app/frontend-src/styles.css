@@ -1,0 +1,147 @@
+
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn-vue/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* Tipografía cargada por Google Fonts. IBM Plex se eligió por asociarse a
+   contextos regulatorios/enterprise (no es el default de cualquier SaaS),
+   con Plex Mono reforzando el patrón que la app ya usa bien: B/L, EIN, IMO,
+   contenedores y códigos arancelarios en monospace. */
+
+/*
+ * Tokens de diseño — Priority Global Manifiestos
+ *
+ * Plan de diseño acordado (sesión 2026-09-02/03):
+ *   - Nada de crema cálida (#F4F1EA, el tell #1 de "hecho por IA") ni azul
+ *     SaaS genérico. Base fría de papel, tinta pizarra, acento azul aduana.
+ *   - Los 4 estados del negocio (pendiente/validado/exportado/siscommate) ya
+ *     existían como badges de colores random; aquí se vuelven deliberados.
+ *   - El problema real que motivó el rediseño: los grids de campos usaban
+ *     fracciones iguales (1fr 1fr) sin relación al contenido — IMO (7
+ *     caracteres) ocupaba el mismo ancho que Buque (nombre largo).
+ *
+ * shadcn-vue genera sus componentes esperando NOMBRES fijos de variable
+ * (--background, --primary, --border, etc: las "slots" que usan sus clases
+ * bg-background/text-foreground/bg-primary/etc). El init de la CLI las creó
+ * apuntando a su paleta gris genérica (oklch) con Geist como fuente — eso se
+ * remplaza aquí por la paleta y tipografía del plan, SIN dejar de proveer
+ * esos mismos nombres, para no romper ningún componente generado.
+ */
+:root {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Code", monospace;
+
+  /* Base — gris-azulado frío de papel, no crema */
+  --color-paper: #F4F5F7;
+  --color-paper-raised: #FFFFFF;
+  --color-paper-sunken: #E8EAED;
+  --color-ink: #1B2430;
+  --color-ink-muted: #5B6472;
+  --color-ink-faint: #8A93A0;
+
+  /* Acento — azul aduana, específico, no el azul de cualquier dashboard */
+  --color-accent: #1E3A5F;
+  --color-accent-hover: #16293F;
+  --color-accent-soft: #E6ECF2;
+
+  /* Estados de negocio — deliberados, no candy-SaaS */
+  --color-status-pending: #B7791F;
+  --color-status-pending-soft: #FBF1E1;
+  --color-status-validated: #2F6844;
+  --color-status-validated-soft: #E7F1EA;
+  --color-status-exported: #2C5F7C;
+  --color-status-exported-soft: #E5EEF2;
+  --color-status-siscommate: #6B4C7A;
+  --color-status-siscommate-soft: #EFE9F1;
+
+  /* Peligro/requerido — terracota controlado, no rojo de alarma */
+  --color-danger: #B23A2E;
+  --color-danger-soft: #F7E7E5;
+
+  --radius: 0.5rem;
+
+  /* ── Slots de shadcn-vue, remapeados a la paleta de arriba ── */
+  --background: var(--color-paper);
+  --foreground: var(--color-ink);
+  --card: var(--color-paper-raised);
+  --card-foreground: var(--color-ink);
+  --popover: var(--color-paper-raised);
+  --popover-foreground: var(--color-ink);
+  --primary: var(--color-accent);
+  --primary-foreground: #FFFFFF;
+  --secondary: var(--color-paper-sunken);
+  --secondary-foreground: var(--color-ink);
+  --muted: var(--color-paper-sunken);
+  --muted-foreground: var(--color-ink-muted);
+  --accent: var(--color-accent-soft);
+  --accent-foreground: var(--color-accent);
+  --destructive: var(--color-danger);
+  --border: #DADEE3;
+  --input: #DADEE3;
+  --ring: var(--color-accent);
+}
+
+@theme inline {
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+
+  --color-paper: var(--color-paper);
+  --color-paper-raised: var(--color-paper-raised);
+  --color-paper-sunken: var(--color-paper-sunken);
+  --color-ink: var(--color-ink);
+  --color-ink-muted: var(--color-ink-muted);
+  --color-ink-faint: var(--color-ink-faint);
+  --color-accent: var(--color-accent);
+  --color-accent-hover: var(--color-accent-hover);
+  --color-accent-soft: var(--color-accent-soft);
+  --color-status-pending: var(--color-status-pending);
+  --color-status-pending-soft: var(--color-status-pending-soft);
+  --color-status-validated: var(--color-status-validated);
+  --color-status-validated-soft: var(--color-status-validated-soft);
+  --color-status-exported: var(--color-status-exported);
+  --color-status-exported-soft: var(--color-status-exported-soft);
+  --color-status-siscommate: var(--color-status-siscommate);
+  --color-status-siscommate-soft: var(--color-status-siscommate-soft);
+  --color-danger: var(--color-danger);
+  --color-danger-soft: var(--color-danger-soft);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent-fg: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --font-heading: var(--font-sans);
+}
+
+/* Sin modo oscuro por ahora: es una app operativa interna, no lo tenía la
+   versión anterior, y agregarlo ahora sería alcance no pedido. Los mismos
+   slots quedan listos para cuando haga falta. */
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground font-sans;
+  }
+}
+

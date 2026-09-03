@@ -1,28 +1,20 @@
 {
-  // Verificacion de tipos SIN build step.
+  // tsconfig "solución" — no compila nada por sí mismo (files: []), solo
+  // referencia a los dos tsconfig reales del proyecto y declara el alias @
+  // en un lugar que las herramientas de tooling (shadcn-vue CLI, editores)
+  // esperan encontrar junto a vite.config.mts.
   //
-  // El codigo sigue siendo JavaScript plano y se despliega tal cual por xcopy:
-  // "noEmit" significa que TypeScript solo revisa, nunca genera archivos. Los
-  // tipos se declaran con JSDoc en comentarios.
-  //
-  // Ejecutar:  npm run typecheck
+  //   npm run typecheck        -> tsconfig.backend.json (JSDoc, backend/**/*.js)
+  //   npm run typecheck:front  -> frontend-src/tsconfig.json (Vue + TS)
+  "files": [],
+  "references": [
+    { "path": "./tsconfig.backend.json" },
+    { "path": "./frontend-src/tsconfig.json" }
+  ],
   "compilerOptions": {
-    "allowJs": true,
-    "checkJs": true,
-    "noEmit": true,
-
-    "target": "ES2022",
-    "module": "commonjs",
-    "lib": ["ES2022"],
-    "types": ["node"],
-
-    // Se arranca permisivo a proposito: el objetivo es ir tipando modulo por
-    // modulo sin que el proyecto entero quede en rojo. Endurecer posteriormente.
-    "strict": false,
-    "noImplicitAny": false,
-    "resolveJsonModule": true,
-    "skipLibCheck": true
-  },
-  "include": ["backend/**/*.js"],
-  "exclude": ["node_modules", "backend/**/*.test.js"]
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./frontend-src/*"]
+    }
+  }
 }

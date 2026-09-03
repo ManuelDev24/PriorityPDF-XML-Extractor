@@ -370,6 +370,37 @@ No hay solapamiento: cada herramienta cubre su mitad del stack.
   (borra el viaje completo y reinserta) — evaluar si ese patrón es más seguro
   o más riesgoso antes de adoptarlo
 
+### 4.9 Bug confirmado el 2026-09-03 — contrato JSON Node ↔ bridge C# desincronizado
+
+**Pendiente a propósito — se resuelve de ÚLTIMO, después de todo lo demás
+que falte del proyecto.** Instrucción explícita del usuario: anotarlo y no
+tocarlo hasta que sea lo único que quede pendiente.
+
+Comparando `backend/services/siscommateClient.js` contra
+`bridge/SiscommateBridge.cs` línea por línea:
+
+- **BOLCONT nunca se escribe.** `siscommateClient.js:139` envía el payload
+  con la clave `containers`. `SiscommateBridge.cs:150` busca
+  `data.ContainsKey("container_bl")` — clave distinta. Como es un
+  `ContainsKey` que falla en silencio (no lanza excepción), `contList` queda
+  siempre vacía y el `INSERT INTO BOLCONT` nunca corre. El push responde
+  `ok:true` igual — el mensaje interno del bridge sí delata el problema
+  ("0 contenedores") pero esa respuesta ni siquiera llega al usuario (ver
+  siguiente punto).
+- **La respuesta del bridge no trae `lote` ni `bls`.** `SiscommateBridge.cs`
+  responde `{"ok":true,"msg":"..."}` únicamente. `routes/siscommate.js:88`
+  lee `result.lote` y `result.bls`, que no existen en esa respuesta — quedan
+  `undefined`. El toast final probablemente muestra "Lote undefined" en vez
+  del número real de lote.
+
+Arreglo cuando se retome (no aplicado todavía):
+1. En `SiscommateBridge.cs`, cambiar `data.ContainsKey("container_bl")` →
+   `data.ContainsKey("containers")` (y el `data["container_bl"]` que le sigue).
+2. Hacer que el `Send(...)` del handler `POST /guardar` incluya `lote` y,
+   si aplica, `bls` en el JSON de respuesta — no solo `ok`/`msg`.
+3. Recompilar `SiscommateBridge.exe` (`bridge/compilar.bat`) y probar un push
+   real contra el ambiente MXRS antes de dar esto por cerrado.
+
 ---
 
 ## 5. Deuda conocida de la Fase A
