@@ -12,8 +12,9 @@ import {
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
 } from '@/components/ui/select';
 import {
-  Table, TableHeader, TableBody, TableRow, TableHead, TableCell,
+  Table, TableHeader, TableBody, TableRow, TableHead, TableCell, TableFooter,
 } from '@/components/ui/table';
+import { Trash2 } from '@lucide/vue';
 
 const FALLBACK_TAMANOS = ['20', '40', '40HC', '45', '48', '53', 'RORO'];
 
@@ -133,7 +134,7 @@ onMounted(() => { cargarSettings(); cargarTipos(); cargarTamanos(); checkBridge(
       </Button>
     </header>
 
-    <main class="mx-auto max-w-3xl px-6 py-8">
+    <main class="mx-auto max-w-4xl px-6 py-8">
       <h1 class="text-2xl font-semibold text-ink">Administración</h1>
       <p class="mt-1 text-sm text-ink-muted">
         Configuración del sistema, mapeo de contenedores y conexión con SISCOMMATE
@@ -231,38 +232,37 @@ onMounted(() => { cargarSettings(); cargarTipos(); cargarTamanos(); checkBridge(
                   </Select>
                 </TableCell>
                 <TableCell>
-                  <Input v-model="fila.label" class="h-8 text-sm" @change="guardarFila(fila)" />
+                  <Input v-model="fila.label" class="h-8 max-w-sm text-sm" @change="guardarFila(fila)" />
                 </TableCell>
                 <TableCell class="text-right">
-                  <Button variant="ghost" size="sm" class="text-destructive hover:text-destructive" @click="eliminarFila(fila.xml_type)">
-                    Eliminar
+                  <Button variant="ghost" size="icon-sm" class="text-destructive hover:text-destructive" title="Eliminar" @click="eliminarFila(fila.xml_type)">
+                    <Trash2 class="size-3.5" />
                   </Button>
                 </TableCell>
               </TableRow>
             </TableBody>
+            <TableFooter>
+              <TableRow>
+                <TableCell>
+                  <Input v-model="nuevoTipo" placeholder="ej. 13" class="h-8 font-mono text-sm" />
+                </TableCell>
+                <TableCell>
+                  <Select v-model="nuevoTamano">
+                    <SelectTrigger size="sm"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem v-for="s in (tamanosValidos.length ? tamanosValidos : FALLBACK_TAMANOS)" :key="s" :value="s">{{ s }}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </TableCell>
+                <TableCell>
+                  <Input v-model="nuevaEtiqueta" placeholder="ej. 40ft High Cube Refrigerado" class="h-8 max-w-sm text-sm" />
+                </TableCell>
+                <TableCell class="text-right">
+                  <Button size="sm" @click="agregarTipo">+ Agregar</Button>
+                </TableCell>
+              </TableRow>
+            </TableFooter>
           </Table>
-
-          <!-- Mismo sistema de 12 columnas que el resto del rediseño -->
-          <div class="mt-4 grid grid-cols-12 items-end gap-x-3 gap-y-2.5 rounded-md bg-accent-soft p-3">
-            <div class="col-span-6 md:col-span-2 flex flex-col gap-1">
-              <Label class="text-xs">Código XML</Label>
-              <Input v-model="nuevoTipo" placeholder="ej. 13" class="h-8 font-mono text-sm" />
-            </div>
-            <div class="col-span-6 md:col-span-3 flex flex-col gap-1">
-              <Label class="text-xs">Tamaño</Label>
-              <Select v-model="nuevoTamano">
-                <SelectTrigger size="sm"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem v-for="s in (tamanosValidos.length ? tamanosValidos : FALLBACK_TAMANOS)" :key="s" :value="s">{{ s }}</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div class="col-span-12 md:col-span-5 flex flex-col gap-1">
-              <Label class="text-xs">Descripción</Label>
-              <Input v-model="nuevaEtiqueta" placeholder="ej. 40ft High Cube Refrigerado" class="h-8 text-sm" />
-            </div>
-            <Button size="sm" class="col-span-12 md:col-span-2" @click="agregarTipo">+ Agregar</Button>
-          </div>
         </CardContent>
       </Card>
     </main>
