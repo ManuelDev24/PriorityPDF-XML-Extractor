@@ -20,9 +20,7 @@ const props = withDefaults(
   {
     position: 'popper',
     align: 'start',
-    side: 'bottom',
     sideOffset: 4,
-    avoidCollisions: false,
   },
 )
 const emits = defineEmits<SelectContentEmits>()

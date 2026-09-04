@@ -61,7 +61,7 @@ test('1302: extrae el B/L con cantidad, descripción y peso de la página', () =
   const r = parseCustoms1302(TEXTO_1302);
   assert.strictEqual(r.bls.length, 1);
   const bl = r.bls[0];
-  assert.strictEqual(bl.bl_no, 'PYRR-2617593');
+  assert.strictEqual(bl.bl_no, 'PYRR2617593', 'el PDF imprime el guión pero se guarda sin él, igual que el XML de la DGA');
   assert.strictEqual(bl.package_qty, 288);
   assert.strictEqual(bl.package_unit_code, 'carton');
   assert.strictEqual(bl.goods_name, 'PACKAGES CONTAINING PAINT');
@@ -74,7 +74,7 @@ test('1302: normaliza el número de contenedor partido', () => {
   assert.strictEqual(r.containers[0].container_no, 'PRRU2010106', '"PRRU 201010-6" → "PRRU2010106"');
   assert.strictEqual(r.containers[0].size, '40');
   assert.strictEqual(r.containers[0].container_type, 'R');
-  assert.deepStrictEqual(r.containerBLs[0], { bl_no: 'PYRR-2617593', container_no: 'PRRU2010106' });
+  assert.deepStrictEqual(r.containerBLs[0], { bl_no: 'PYRR2617593', container_no: 'PRRU2010106' });
 });
 
 test('1302: asigna shipper, consignee y notify en el orden correcto', () => {
@@ -97,7 +97,7 @@ test('1302: el EIN del consignatario alimenta hacienda_client_ss', () => {
 test('1302: genera un cargo item por entrada', () => {
   const r = parseCustoms1302(TEXTO_1302);
   assert.strictEqual(r.cargoItems.length, 1);
-  assert.strictEqual(r.cargoItems[0].bl_no, 'PYRR-2617593');
+  assert.strictEqual(r.cargoItems[0].bl_no, 'PYRR2617593');
   assert.strictEqual(r.cargoItems[0].container_no, 'PRRU2010106');
   assert.strictEqual(r.cargoItems[0].gross_weight, 12500.5);
 });

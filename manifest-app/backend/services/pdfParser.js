@@ -198,10 +198,13 @@ function parsePdfParty(blockLines) {
       raw = raw.replace(/TAX\s*ID\s*[:#]?\s*[\d-]+/i, '').replace(/^[-\s]+|[-\s]+$/g, '').trim();
     }
 
-    // Teléfono
+    // Teléfono. isPhoneNumber ya solo deja pasar líneas con caracteres de
+    // teléfono (dígitos/espacios/paréntesis/guión/punto/slash/+) o la palabra
+    // Tel/Phone/etc, así que no hace falta recortar — un límite de 30
+    // truncaba casos reales de dos teléfonos separados por " - " (32+ chars).
     if (isPhoneNumber(raw)) {
       if (!p.tel || p.tel.replace(/\D/g,'').length < raw.replace(/\D/g,'').length) {
-        p.tel = raw.substring(0, 30);
+        p.tel = raw;
       }
       return;
     }
@@ -310,14 +313,18 @@ function parseCustoms1302(text) {
     const pageWeightsKg = [];
     for (let i = 0; i + 1 < pureNums.length; i += 2) pageWeightsKg.push(pureNums[i]);
 
-    // Entradas de B/L en la página
-    const blLineRe = /^([A-Z]{2,6}-\d{5,10})(?:\s+(\S.*))?$/;
+    // Entradas de B/L en la página. El PDF imprime el B/L con guión
+    // ("PYRR-2624176"), pero el mismo número en el XML de la DGA no lo trae
+    // ("PYRR2624176") — se exige el guión para reconocer la línea (evita
+    // confundir con otro texto), pero se guarda sin él para que ambas fuentes
+    // usen el mismo formato.
+    const blLineRe = /^([A-Z]{2,6})-(\d{5,10})(?:\s+(\S.*))?$/;
     const pageEntries = [];
     for (let i = 0; i < lines.length; i++) {
       const m = lines[i].trim().match(blLineRe);
       if (!m) continue;
 
-      const rawSecondToken = (m[2] || '').trim();
+      const rawSecondToken = (m[3] || '').trim();
       let containerNo = '';
       let vin = '';
       let equipmentType = '';
@@ -335,7 +342,7 @@ function parseCustoms1302(text) {
       }
 
       const e = {
-        bl_no: m[1],
+        bl_no: m[1] + m[2],
         container_no: containerNo,
         vin: vin,
         size: '',
