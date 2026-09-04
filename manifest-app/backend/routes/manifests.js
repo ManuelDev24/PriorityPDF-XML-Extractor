@@ -107,8 +107,8 @@ router.post('/api/manifests/upload', upload.single('xml'), async (req, res) => {
 
       const insCargo = db.prepare(`
         INSERT INTO bl_cargo_items
-          (bl_id, manifest_id, container_no, goods_name, gross_weight, hacienda_item_code, hacienda_tariff, seq)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          (bl_id, manifest_id, container_no, goods_name, gross_weight, hacienda_item_code, hacienda_tariff, seq, package_qty)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       const seqMap = {};
       parsed.cargoItems.forEach(ci => {
@@ -120,10 +120,13 @@ router.post('/api/manifests/upload', upload.single('xml'), async (req, res) => {
           // Hacienda). Los llena el operador después, desde el editor.
           // Antes se leían de `ci`, dando a entender que podían venir del
           // archivo; el chequeo de tipos mostró que esas propiedades no existen.
+          // package_qty sí lo produce pdfParser (cargoItems[].package_qty, una
+          // línea de mercancía por bulto) — antes se descartaba por falta de
+          // columna en bl_cargo_items.
           insCargo.run(
             blId, manifestId, ci.container_no || null, ci.goods_name || '',
             Number(ci.gross_weight) || 0, null,
-            null, seqMap[blId]
+            null, seqMap[blId], Number(ci.package_qty) || 0
           );
         }
       });

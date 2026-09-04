@@ -38,6 +38,20 @@ const PAISES: Record<string, string> = {
 const paises = computed(() => [...new Set(puertos.value.map(p => p.country))]);
 const puertosDe = (pais: string) => puertos.value.filter(p => p.country === pais);
 
+// Código empaque (DGA): lista cerrada pedida explícitamente, pero el parser
+// trae valores libres del XML/PDF ("pack", "unit", "IG013", etc.) que no
+// necesariamente están en esta lista. displayEmpaque hace la "detección
+// automática": si el valor guardado coincide con alguno de estos códigos
+// (sin importar mayúsculas), lo muestra en su forma canónica; si no coincide
+// con ninguno, se muestra tal cual llegó y el operador lo agrega manualmente
+// — nunca se reescribe el dato guardado solo por mostrarlo.
+const TIPOS_EMPAQUE = ['AUTO', 'AUTO-T', 'BARREL', 'BBL', 'BBLS', 'BOX', 'BUNDLE', 'CRATE', 'DRUMS', 'LSE', 'PALETS', 'PIECES'];
+function displayEmpaque(valor: unknown) {
+  const v = String(valor ?? '').trim();
+  if (!v) return '';
+  return TIPOS_EMPAQUE.find(t => t === v.toUpperCase()) ?? v;
+}
+
 const puertoOrigen = computed({
   get: () => m.value.loading_port || 'DRP',
   set: (v: string) => actualizarManifiesto('loading_port', v),
@@ -109,6 +123,12 @@ async function marcar(estado: 'validado' | 'pendiente') {
 // autocomplete casero — teclado y foco reales, mismo comportamiento) ──
 const itemAbierto = ref(false);
 const itemsHallados = ref<ItemHacienda[]>([]);
+const empaqueAbierto = ref(false);
+const empaquesFiltrados = ref<string[]>(TIPOS_EMPAQUE);
+function buscarEmpaque(q: string) {
+  const texto = q.trim().toUpperCase();
+  empaquesFiltrados.value = texto ? TIPOS_EMPAQUE.filter(t => t.includes(texto)) : TIPOS_EMPAQUE;
+}
 const descItem = ref('');
 const sugerencias = ref<ItemHacienda[]>([]);
 let tItem: ReturnType<typeof setTimeout> | undefined;
@@ -437,7 +457,7 @@ watch(() => bl.value?.id, () => {
             </p>
           </div>
           <div class="col-span-12 md:col-span-3 flex flex-col gap-1">
-            <Label class="text-xs">IVU consignatario</Label>
+            <Label class="text-xs">IVU / No. comerciante consignatario</Label>
             <Input :model-value="bl.hacienda_client_ivu || ''" placeholder="ej. 01406530016" maxlength="11" class="font-mono text-xs"
               @input="(e:Event) => { const el = e.target as HTMLInputElement; el.value = el.value.replace(/[^0-9]/g,''); }"
               @change="(e:Event) => actualizarBL('hacienda_client_ivu', (e.target as HTMLInputElement).value)" />
@@ -503,7 +523,36 @@ watch(() => bl.value?.id, () => {
           </div>
           <div class="col-span-12 flex flex-col gap-1 md:col-span-2">
             <Label class="text-xs">Código empaque (DGA)</Label>
-            <Input :model-value="bl.package_unit_code || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('package_unit_code', (e.target as HTMLInputElement).value)" />
+            <!-- Lista cerrada pedida por el usuario, pero con fallback a texto
+                 libre: si el valor que trae el XML/PDF no está en la lista
+                 (ignore-filter porque el filtro es local en buscarEmpaque, no
+                 servidor), se muestra tal cual y el operador puede escribir
+                 cualquier otro código a mano.
+                 displayEmpaque se aplica ANTES del model-value (no vía
+                 display-value): reka-ui solo recalcula display-value tras una
+                 selección explícita, no al montar con un valor ya cargado —
+                 así se ve normalizado ("BOX") desde el primer render. -->
+            <Combobox
+              :model-value="displayEmpaque(bl.package_unit_code)"
+              @update:model-value="(v) => actualizarBL('package_unit_code', String(v))"
+              v-model:open="empaqueAbierto"
+              ignore-filter
+              open-on-click
+              open-on-focus
+              :display-value="(v: unknown) => String(v ?? '')"
+            >
+              <ComboboxAnchor as-child>
+                <ComboboxInput placeholder="Ej. BOX" class="text-xs"
+                  @update:model-value="(v: string) => buscarEmpaque(v)"
+                  @focus="seleccionarTextoInput" />
+              </ComboboxAnchor>
+              <ComboboxList>
+                <ComboboxEmpty>Sin coincidencias — se guarda el texto escrito</ComboboxEmpty>
+                <ComboboxGroup>
+                  <ComboboxItem v-for="t in empaquesFiltrados" :key="t" :value="t">{{ t }}</ComboboxItem>
+                </ComboboxGroup>
+              </ComboboxList>
+            </Combobox>
           </div>
         </div>
         <div class="flex w-full flex-col gap-1">

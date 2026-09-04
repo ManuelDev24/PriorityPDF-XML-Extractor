@@ -7,7 +7,7 @@ import { api, type Cliente, type VistaPreviaTxt } from '../editor/api';
 import {
   datosManifiesto, blActual, stats, estado, estadoDerecha, toastMsg, toastTipo,
   cargarCatalogos, cargarManifiestos, seleccionarManifiesto, cargarStats,
-  guardarPendientes, salirDelManifiesto, toast, setEstado,
+  guardarPendientes, toast, setEstado, restaurarSeleccion,
 } from '../editor/store';
 import Sidebar from './Sidebar.vue';
 import EditorPanel from './EditorPanel.vue';
@@ -162,6 +162,7 @@ onMounted(async () => {
   setInterval(revisarBridge, 30000);
   await cargarCatalogos();
   await cargarManifiestos();
+  await restaurarSeleccion();
 });
 </script>
 
@@ -206,7 +207,6 @@ onMounted(async () => {
           <span class="text-xs text-ink-faint">{{ datosManifiesto.manifest.vessel_name || '' }}</span>
           <div class="flex-1"></div>
           <Button variant="outline" size="sm" :disabled="!blActual" @click="blActual && verTxt(blActual.id)"><Eye class="size-3.5" />Ver TXT</Button>
-          <Button variant="outline" size="sm" title="Salir del viaje actual" aria-label="Salir del viaje actual" @click="salirDelManifiesto"><X class="size-3.5" />Salir del viaje</Button>
           <Button size="sm" @click="exportarTxt"><FileOutput class="size-3.5" />Exportar TXT</Button>
           <Button size="sm" variant="outline" class="border-status-siscommate text-status-siscommate hover:bg-status-siscommate-soft hover:text-status-siscommate" :disabled="enviando" @click="pushSiscommate">
             <Loader2 v-if="enviando" class="size-3.5 animate-spin" /><DatabaseZap v-else class="size-3.5" />
@@ -243,7 +243,7 @@ onMounted(async () => {
           <EditorPanel v-if="datosManifiesto && blActual" ref="editorRef" @vista-previa="verTxt" @crear-cliente="abrirCrearCliente" @editar-cliente="abrirEditarCliente" />
 
           <div v-else-if="datosManifiesto" class="flex h-full flex-col items-center justify-center gap-2 text-ink-faint">
-            <p>Este manifiesto no tiene B/L</p>
+            <p>{{ datosManifiesto.bls.length ? 'Selecciona un B/L' : 'Este manifiesto no tiene B/L' }}</p>
           </div>
 
           <div v-else class="flex min-h-full w-full flex-col items-center justify-center gap-3 text-center text-ink-faint">

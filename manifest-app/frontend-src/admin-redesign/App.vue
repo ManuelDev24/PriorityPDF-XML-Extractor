@@ -15,7 +15,7 @@ import {
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell,
 } from '@/components/ui/table';
 
-const FALLBACK_TAMANOS = ['20', '40', '40HC', '45', '48', 'RORO'];
+const FALLBACK_TAMANOS = ['20', '40', '40HC', '45', '48', '53', 'RORO'];
 
 const bridgeHost = ref('');
 const bridgePort = ref('');

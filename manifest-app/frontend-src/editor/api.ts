@@ -63,6 +63,7 @@ export interface Contenedor {
   container_no: string;
   container_type: string;
   size?: string;
+  amount?: number;
 }
 
 export interface VinculoContenedor {
@@ -87,6 +88,7 @@ export interface ItemCarga {
   hacienda_item_code: string | null;
   hacienda_tariff: string | null;
   seq: number;
+  package_qty: number | string;
 }
 
 export interface ItemHacienda {
@@ -154,6 +156,8 @@ export const api = {
     pedir<{ ok: true }>(`/api/manifests/${id}`, { method: 'DELETE' }),
 
   // B/L
+  crearBL: (manifestId: number, blNo: string) =>
+    pedir<{ ok: true; bl: BL }>(`/api/manifests/${manifestId}/bl`, cuerpo('POST', { bl_no: blNo })),
   actualizarBL: (id: number, campos: Partial<BL>) =>
     pedir<{ ok: true }>(`/api/bl/${id}`, cuerpo('PUT', campos)),
   eliminarBL: (id: number) =>

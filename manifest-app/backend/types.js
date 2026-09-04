@@ -225,6 +225,9 @@
  * @property {string|null} hacienda_item_code
  * @property {string|null} hacienda_tariff
  * @property {number} seq
+ * @property {number} package_qty  Cantidad de bultos de este item — se precarga
+ *   desde ParsedCargoItem.package_qty (PDF) o containers.amount (XML) al abrir
+ *   "+ Item", pero queda editable por el operador.
  */
 
 /**

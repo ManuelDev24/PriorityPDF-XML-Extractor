@@ -13,7 +13,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import StatusBadge from './StatusBadge.vue';
-import { Trash2, ChevronRight, ChevronDown, Search } from '@lucide/vue';
+import { Trash2, ChevronRight, ChevronDown, Search, Plus, X } from '@lucide/vue';
 
 defineProps<{ abierto: boolean }>();
 const emit = defineEmits<{ confirmar: [titulo: string, cuerpo: string, accion: () => void] }>();
@@ -21,6 +21,9 @@ const emit = defineEmits<{ confirmar: [titulo: string, cuerpo: string, accion: (
 const busqueda = ref('');
 const blsHallados = ref<ResultadoBusqueda['bls']>([]);
 const filtrados = ref<typeof manifiestos.value | null>(null);
+const nuevoBlPara = ref<number | null>(null);
+const nuevoBlNo = ref('');
+const creandoBl = ref(false);
 let temporizador: ReturnType<typeof setTimeout> | undefined;
 
 const lista = () => filtrados.value ?? manifiestosFiltrados.value;
@@ -60,7 +63,14 @@ async function irAlBL(manifestId: number, blId: number) {
 }
 
 async function alternar(id: number) {
-  if (expandidos.has(id)) { expandidos.delete(id); return; }
+  if (expandidos.has(id)) {
+    expandidos.delete(id);
+    if (datosManifiesto.value?.manifest.id === id) {
+      blActual.value = null;
+      datosManifiesto.value = null;
+    }
+    return;
+  }
   expandidos.add(id);
   if (datosManifiesto.value?.manifest.id !== id) await seleccionarManifiesto(id);
 }
@@ -96,6 +106,27 @@ function pedirBorrarBL(blId: number, blNo: string) {
         }
       } catch (e) { toast('Error eliminando B/L: ' + (e as Error).message, 'err'); }
     });
+}
+
+async function crearNuevoBL(manifestId: number) {
+  const blNo = nuevoBlNo.value.trim();
+  if (!blNo || creandoBl.value) return;
+  creandoBl.value = true;
+  try {
+    const data = await api.crearBL(manifestId, blNo);
+    datosManifiesto.value = await api.obtenerManifiesto(manifestId);
+    const m = manifiestos.value.find(x => x.id === manifestId);
+    if (m) m.bl_count = datosManifiesto.value.bls.length;
+    blActual.value = datosManifiesto.value.bls.find(bl => bl.id === data.bl.id) ?? data.bl;
+    nuevoBlNo.value = '';
+    nuevoBlPara.value = null;
+    cargarStats();
+    toast('B/L creado correctamente');
+  } catch (e) {
+    toast('Error creando B/L: ' + (e as Error).message, 'err');
+  } finally {
+    creandoBl.value = false;
+  }
 }
 </script>
 
@@ -157,6 +188,14 @@ function pedirBorrarBL(blId: number, blNo: string) {
         </div>
 
         <div v-if="expandidos.has(m.id) && datosManifiesto?.manifest.id === m.id" class="bg-paper">
+          <div class="flex items-center justify-end gap-1 border-b border-border px-2 py-1.5 pl-8">
+            <template v-if="nuevoBlPara === m.id">
+              <Input v-model="nuevoBlNo" class="h-7 min-w-0 flex-1 text-xs" placeholder="Número de B/L" @keyup.enter="crearNuevoBL(m.id)" />
+              <Button size="sm" class="h-7 px-2 text-xs" :disabled="!nuevoBlNo.trim() || creandoBl" @click="crearNuevoBL(m.id)">Crear</Button>
+              <button class="rounded p-1 text-ink-faint hover:bg-paper-sunken" title="Cancelar" @click="nuevoBlPara = null; nuevoBlNo = ''"><X class="size-3.5" /></button>
+            </template>
+            <Button v-else size="sm" class="h-7 bg-emerald-600 px-2 text-xs text-white hover:bg-emerald-700" @click="nuevoBlPara = m.id; nuevoBlNo = ''"><Plus class="size-3.5" />Nuevo B/L</Button>
+          </div>
           <button
             v-for="bl in datosManifiesto.bls" :key="bl.id"
             class="group/bl flex w-full items-center gap-2 border-b border-border py-1.5 pl-8 pr-2 text-left text-xs hover:bg-accent-soft"

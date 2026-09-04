@@ -23,6 +23,27 @@ const CAMPOS_EDITABLES_BL = [
   'hacienda_client_ivu','status','notes','unloading_port_code',
 ];
 
+// ── CREAR B/L VACIO ───────────────────────────────────────────────────────────
+router.post('/api/manifests/:manifestId/bl', (req, res) => {
+  const blNo = String(req.body?.bl_no || '').trim();
+  const manifestId = Number(req.params.manifestId);
+  if (!Number.isInteger(manifestId) || !blNo) {
+    return res.status(400).json({ error: 'El número de B/L es obligatorio' });
+  }
+  if (!db.prepare('SELECT 1 FROM manifests WHERE id=?').get(manifestId)) {
+    return res.status(404).json({ error: 'Manifiesto no encontrado' });
+  }
+  if (db.prepare('SELECT 1 FROM bills_of_lading WHERE manifest_id=? AND bl_no=?').get(manifestId, blNo)) {
+    return res.status(409).json({ error: 'Ya existe un B/L con ese número en el manifiesto' });
+  }
+  const info = db.prepare(`
+    INSERT INTO bills_of_lading (manifest_id, bl_no, package_qty, gross_weight, value, status)
+    VALUES (?, ?, 0, 0, 0, 'pendiente')
+  `).run(manifestId, blNo);
+  const bl = db.prepare('SELECT * FROM bills_of_lading WHERE id=?').get(info.lastInsertRowid);
+  res.status(201).json({ ok: true, bl });
+});
+
 router.put('/api/bl/:id', (req, res) => {
   const sets = []; const vals = [];
   CAMPOS_EDITABLES_BL.forEach(f => {
@@ -98,23 +119,23 @@ router.post('/api/bl/:id/cargo-items', (req, res) => {
   const bl = db.prepare(`SELECT manifest_id FROM bills_of_lading WHERE id=?`).get(bl_id);
   if (!bl) return res.status(404).json({ error: 'B/L no encontrado' });
 
-  const { container_no, goods_name, gross_weight, hacienda_item_code, hacienda_tariff, seq } = req.body;
+  const { container_no, goods_name, gross_weight, hacienda_item_code, hacienda_tariff, seq, package_qty } = req.body;
   const maxSeq = db.prepare(`SELECT COALESCE(MAX(seq),0) as m FROM bl_cargo_items WHERE bl_id=?`).get(bl_id).m;
   const info = db.prepare(`
     INSERT INTO bl_cargo_items
-      (bl_id,manifest_id,container_no,goods_name,gross_weight,hacienda_item_code,hacienda_tariff,seq)
-    VALUES (?,?,?,?,?,?,?,?)
+      (bl_id,manifest_id,container_no,goods_name,gross_weight,hacienda_item_code,hacienda_tariff,seq,package_qty)
+    VALUES (?,?,?,?,?,?,?,?,?)
   `).run(
     bl_id, bl.manifest_id, container_no || null, goods_name || '',
     parseFloat(gross_weight) || 0, hacienda_item_code || null,
-    hacienda_tariff || null, seq || maxSeq + 1
+    hacienda_tariff || null, seq || maxSeq + 1, parseInt(package_qty) || 0
   );
   const item = db.prepare(`SELECT * FROM bl_cargo_items WHERE id=?`).get(info.lastInsertRowid);
   res.json({ ok: true, item });
 });
 
 router.put('/api/bl-cargo-items/:id', (req, res) => {
-  const allowed = ['container_no','goods_name','gross_weight','hacienda_item_code','hacienda_tariff','seq'];
+  const allowed = ['container_no','goods_name','gross_weight','hacienda_item_code','hacienda_tariff','seq','package_qty'];
   const sets = []; const vals = [];
   allowed.forEach(f => {
     if (req.body[f] !== undefined) {

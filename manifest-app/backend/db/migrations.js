@@ -51,6 +51,12 @@ function runMigrations({
   // antes de continuar hacia el destino. Pedido explícito 2026-09-03.
   addColumnIfMissing('manifests',       'discharge_port',      'TEXT');
 
+  // Cantidad de bultos por item de carga. txtGenerator ya la escribía
+  // (src.package_qty || bl.package_qty) desde antes de que existiera esta
+  // columna, y pdfParser ya la extrae por item (cargoItems[].package_qty) —
+  // solo faltaba la columna para no perderla al guardar. Pedido 2026-09-03.
+  addColumnIfMissing('bl_cargo_items',  'package_qty',         'INTEGER DEFAULT 0');
+
   // ── Configuración persistente (bridge host/port, ruta DBF) ─────────────────
   db.exec(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')`);
   // Parametrizado: antes se interpolaban las variables de entorno en el SQL

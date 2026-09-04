@@ -20,7 +20,7 @@ const multi = computed(() => cnos.value.length > 1);
 const modalAbierto = ref(false);
 const modalTitulo = ref('');
 const editandoId = ref<number | null>(null);
-const fGoods = ref(''); const fPeso = ref(0); const fCodigo = ref(''); const fTarifa = ref('');
+const fGoods = ref(''); const fCantidad = ref(0); const fPeso = ref(0); const fCodigo = ref(''); const fTarifa = ref('');
 const fCont = ref(''); const contForzado = ref<string | null>(null);
 
 async function cargar() {
@@ -31,6 +31,7 @@ async function cargar() {
 watch(() => blActual.value?.id, cargar, { immediate: true });
 
 function itemsDe(cno: string) { return items.value.filter(i => i.container_no === cno); }
+function amountDe(cno: string) { return contenedoresDelBL.value.find(c => c.container_no === cno)?.amount || 0; }
 const todosTienen = computed(() => cnos.value.every(c => itemsDe(c).length > 0));
 
 async function guardarCampo(id: number, campo: keyof ItemCarga, valor: string) {
@@ -46,9 +47,13 @@ async function inicializarPorContenedor() {
   const crear = cnos.value.filter(c => !existentes.has(c));
   if (!crear.length) { toast('Todos los contenedores ya tienen items'); return; }
   for (const cno of crear) {
+    // La cantidad de bultos por contenedor viene del XML/PDF (containers.amount);
+    // si el contenedor no trae ese dato, se usa la cantidad general del B/L.
+    const contenedor = contenedoresDelBL.value.find(c => c.container_no === cno);
     await api.crearItem(bl.id, {
       container_no: cno, goods_name: bl.goods_name || '', gross_weight: bl.gross_weight || 0,
       hacienda_item_code: bl.hacienda_item_code || null, hacienda_tariff: bl.hacienda_tariff || null,
+      package_qty: contenedor?.amount || Number(bl.package_qty) || 0,
     });
   }
   await cargar();
@@ -58,6 +63,10 @@ async function inicializarPorContenedor() {
 function abrirAgregar(forzarCno: string | null) {
   const bl = blActual.value;
   modalTitulo.value = 'Agregar item de carga'; editandoId.value = null; contForzado.value = forzarCno;
+  // Cantidad: se precarga desde el contenedor elegido (dato del XML/PDF) y,
+  // si no aplica (sin contenedor forzado o sin dato), desde el B/L.
+  const contenedor = forzarCno ? contenedoresDelBL.value.find(c => c.container_no === forzarCno) : null;
+  fCantidad.value = contenedor?.amount || Number(bl?.package_qty) || 0;
   fGoods.value = bl?.goods_name || ''; fPeso.value = Number(bl?.gross_weight) || 0;
   fCodigo.value = bl?.hacienda_item_code || ''; fTarifa.value = bl?.hacienda_tariff || ''; fCont.value = forzarCno ?? '';
   modalAbierto.value = true;
@@ -66,6 +75,7 @@ function abrirEditar(id: number) {
   const it = items.value.find(i => i.id === id);
   if (!it) return;
   modalTitulo.value = 'Editar item'; editandoId.value = id; contForzado.value = null;
+  fCantidad.value = Number(it.package_qty) || 0;
   fGoods.value = it.goods_name; fPeso.value = Number(it.gross_weight) || 0;
   fCodigo.value = it.hacienda_item_code || ''; fTarifa.value = it.hacienda_tariff || '';
   modalAbierto.value = true;
@@ -75,10 +85,10 @@ async function guardarModal() {
   if (!bl || !fGoods.value.trim()) { toast('La descripción es requerida', 'err'); return; }
   try {
     if (editandoId.value !== null) {
-      await api.actualizarItem(editandoId.value, { goods_name: fGoods.value.trim(), gross_weight: fPeso.value, hacienda_item_code: fCodigo.value.trim() || null, hacienda_tariff: fTarifa.value || null });
+      await api.actualizarItem(editandoId.value, { goods_name: fGoods.value.trim(), package_qty: fCantidad.value, gross_weight: fPeso.value, hacienda_item_code: fCodigo.value.trim() || null, hacienda_tariff: fTarifa.value || null });
       toast('Item actualizado');
     } else {
-      await api.crearItem(bl.id, { goods_name: fGoods.value.trim(), gross_weight: fPeso.value, hacienda_item_code: fCodigo.value.trim() || null, hacienda_tariff: fTarifa.value || null, container_no: fCont.value || null });
+      await api.crearItem(bl.id, { goods_name: fGoods.value.trim(), package_qty: fCantidad.value, gross_weight: fPeso.value, hacienda_item_code: fCodigo.value.trim() || null, hacienda_tariff: fTarifa.value || null, container_no: fCont.value || null });
       toast('Item agregado');
     }
     modalAbierto.value = false;
@@ -106,6 +116,7 @@ async function eliminar(id: number) {
         <div class="min-w-0 flex-1">
           <p class="font-medium">{{ item.goods_name }}</p>
           <p class="mt-0.5 flex flex-wrap gap-3 text-xs text-ink-faint">
+            <span>Cantidad: <b class="text-ink">{{ item.package_qty || 0 }}</b></span>
             <span>Peso: <b class="text-ink">{{ item.gross_weight || 0 }} kg</b></span>
             <span>Código: <b class="font-mono text-ink">{{ item.hacienda_item_code || '—' }}</b></span>
             <span>Tarifa: <b class="text-ink">{{ item.hacienda_tariff || '—' }}</b></span>
@@ -131,13 +142,15 @@ async function eliminar(id: number) {
         <span class="size-1.5 rounded-full" :class="itemsDe(cno).length ? 'bg-status-validated' : 'bg-status-pending'" />
         <span class="font-mono text-xs font-semibold text-accent">{{ cno }}</span>
         <span v-if="itemsDe(cno).length" class="rounded-full bg-accent-soft px-2 py-0.5 text-[11px] font-medium text-accent">{{ itemsDe(cno).length }} item(s) propios</span>
+        <span v-if="amountDe(cno)" class="rounded-full bg-paper-sunken px-2 py-0.5 text-[11px] font-medium text-ink-muted" title="Cantidad de bultos declarada en el XML/PDF para este contenedor">Cantidad: {{ amountDe(cno) }}</span>
         <span class="flex-1 text-xs text-ink-faint">{{ itemsDe(cno).length ? '' : 'usando descripción general del B/L' }}</span>
         <Button size="sm" variant="outline" class="h-6 text-xs" @click="abrirAgregar(cno)">+ Item</Button>
       </div>
       <Table v-if="itemsDe(cno).length" class="table-fixed">
         <TableHeader>
           <TableRow>
-            <TableHead class="w-5/12">Descripción</TableHead>
+            <TableHead class="w-4/12">Descripción</TableHead>
+            <TableHead class="w-1/12">Cantidad</TableHead>
             <TableHead class="w-2/12">Peso (kg)</TableHead>
             <TableHead class="w-2/12">Código</TableHead>
             <TableHead class="w-2/12">Tarifa</TableHead>
@@ -146,7 +159,8 @@ async function eliminar(id: number) {
         </TableHeader>
         <TableBody>
           <TableRow v-for="item in itemsDe(cno)" :key="item.id">
-            <TableCell class="w-5/12"><Textarea :model-value="item.goods_name" rows="1" class="min-h-9 text-xs" @change="(e:Event) => guardarCampo(item.id,'goods_name',(e.target as HTMLTextAreaElement).value)" /></TableCell>
+            <TableCell class="w-4/12"><Textarea :model-value="item.goods_name" rows="1" class="min-h-9 text-xs" @change="(e:Event) => guardarCampo(item.id,'goods_name',(e.target as HTMLTextAreaElement).value)" /></TableCell>
+            <TableCell class="w-1/12"><Input type="number" step="1" :model-value="item.package_qty || 0" class="h-9 text-xs" @change="(e:Event) => guardarCampo(item.id,'package_qty',(e.target as HTMLInputElement).value)" /></TableCell>
             <TableCell class="w-2/12"><Input type="number" step="0.01" :model-value="item.gross_weight || 0" class="h-9 text-xs" @change="(e:Event) => guardarCampo(item.id,'gross_weight',(e.target as HTMLInputElement).value)" /></TableCell>
             <TableCell class="w-2/12"><Input :model-value="item.hacienda_item_code || ''" placeholder="código" class="h-9 font-mono text-xs" @change="(e:Event) => guardarCampo(item.id,'hacienda_item_code',(e.target as HTMLInputElement).value)" /></TableCell>
             <TableCell class="w-2/12">
@@ -163,14 +177,15 @@ async function eliminar(id: number) {
   </template>
 
   <Dialog v-model:open="modalAbierto">
-    <DialogContent>
+    <DialogContent class="sm:max-w-xl">
       <DialogHeader><DialogTitle>{{ modalTitulo }}</DialogTitle></DialogHeader>
       <div class="flex flex-col gap-3">
         <div class="flex flex-col gap-1">
           <Label class="text-xs">Descripción de mercancía <span class="text-danger">*</span></Label>
           <Textarea v-model="fGoods" rows="3" class="text-xs" />
         </div>
-        <div class="grid grid-cols-3 gap-3">
+        <div class="grid grid-cols-4 gap-3">
+          <div class="flex flex-col gap-1"><Label class="text-xs">Cantidad</Label><Input type="number" step="1" v-model.number="fCantidad" class="h-9 text-xs" /></div>
           <div class="flex flex-col gap-1"><Label class="text-xs">Peso bruto (kg)</Label><Input type="number" step="0.01" v-model.number="fPeso" class="h-9 text-xs" /></div>
           <div class="flex flex-col gap-1"><Label class="text-xs">Código arancelario</Label><Input v-model="fCodigo" class="h-9 font-mono text-xs" /></div>
           <div class="flex flex-col gap-1">

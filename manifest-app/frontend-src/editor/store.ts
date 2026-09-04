@@ -4,7 +4,7 @@
 // no es el framework: es que el guardado diferido, que antes vivia suelto en
 // dos funciones con un temporizador compartido, queda encapsulado aqui.
 
-import { reactive, ref, computed } from 'vue';
+import { reactive, ref, computed, watch } from 'vue';
 import { api, type Manifiesto, type DatosManifiesto, type BL,
          type Carrier, type Puerto, type Buque } from './api';
 
@@ -12,7 +12,7 @@ import { api, type Manifiesto, type DatosManifiesto, type BL,
 export const carriers = ref<Carrier[]>([]);
 export const puertos  = ref<Puerto[]>([]);
 export const buques   = ref<Buque[]>([]);
-const FALLBACK_TAMANOS = ['20', '40', '40HC', '45', '48', 'RORO'];
+const FALLBACK_TAMANOS = ['20', '40', '40HC', '45', '48', '53', 'RORO'];
 export const tamanosValidos = ref<string[]>(FALLBACK_TAMANOS);
 
 // ── Listado y seleccion ──────────────────────────────────────────────────────
@@ -23,6 +23,22 @@ export const expandidos      = reactive(new Set<number>());
 export const pestana         = ref<'active' | 'completed'>('active');
 
 export const manifiestoActualId = computed(() => datosManifiesto.value?.manifest.id ?? null);
+
+// Recordar el viaje/B/L abierto para no perderlos al refrescar el navegador
+// (antes se volvía siempre a "Selecciona un manifiesto"). Se guarda con un
+// watch (no en cada punto que muta blActual/datosManifiesto) para que
+// también funcione cuando el cierre viene de un lugar que no pasa por
+// cerrarBL/seleccionarBL, como el colapso de un viaje en el sidebar.
+const KEY_MANIFIESTO = 'priority-ultimo-manifiesto';
+const KEY_BL = 'priority-ultimo-bl';
+watch(datosManifiesto, (d) => {
+  if (d) localStorage.setItem(KEY_MANIFIESTO, String(d.manifest.id));
+  else localStorage.removeItem(KEY_MANIFIESTO);
+});
+watch(blActual, (bl) => {
+  if (bl) localStorage.setItem(KEY_BL, String(bl.id));
+  else localStorage.removeItem(KEY_BL);
+});
 
 export const manifiestosFiltrados = computed(() => {
   const completado = (m: Manifiesto) => m.status === 'siscommate' || m.status === 'exportado';
@@ -154,7 +170,13 @@ export async function seleccionarManifiesto(id: number) {
       blActual.value = null;
     }
     setEstado(`Manifiesto ${m.voyage_no} — ${datosManifiesto.value.bls.length} B/L cargados`);
-  } catch { toast('Error cargando manifiesto', 'err'); }
+  } catch {
+    toast('Error cargando manifiesto', 'err');
+    // El id guardado ya no sirve (manifiesto eliminado, etc.) — si no se
+    // limpia, cada refresh vuelve a intentar cargarlo y vuelve a fallar.
+    localStorage.removeItem(KEY_MANIFIESTO);
+    localStorage.removeItem(KEY_BL);
+  }
 }
 
 export function seleccionarBL(id: number) {
@@ -166,9 +188,17 @@ export function cerrarBL() {
   blActual.value = null;
 }
 
-export function salirDelManifiesto() {
-  blActual.value = null;
-  datosManifiesto.value = null;
+/** Reabre el viaje/B/L que estaba abierto antes de refrescar. Se llama una
+ * sola vez al arrancar, después de que cargarManifiestos ya resolvió. */
+export async function restaurarSeleccion() {
+  const manifiestoId = Number(localStorage.getItem(KEY_MANIFIESTO)) || 0;
+  if (!manifiestoId) return;
+  // Leer el B/L guardado ANTES de seleccionarManifiesto: ese selecciona el
+  // primer B/L por defecto, lo que dispara el watch de blActual y pisa este
+  // valor en localStorage antes de que se pueda usar para restaurar.
+  const blId = Number(localStorage.getItem(KEY_BL)) || 0;
+  await seleccionarManifiesto(manifiestoId);
+  if (blId && datosManifiesto.value) seleccionarBL(blId);
 }
 
 /** Contenedores vinculados al B/L abierto, con su tamaño. */
@@ -180,6 +210,6 @@ export const contenedoresDelBL = computed(() => {
     .filter(c => c.bl_no === bl.bl_no)
     .map(c => {
       const full = d.containers.find(ct => ct.container_no === c.container_no);
-      return { container_no: c.container_no, id: full?.id ?? null, size: full?.size ?? '' };
+      return { container_no: c.container_no, id: full?.id ?? null, size: full?.size ?? '', amount: full?.amount ?? 0 };
     });
 });

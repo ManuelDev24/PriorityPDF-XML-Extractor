@@ -8,7 +8,7 @@ const VESSELS = [
   { code: 'EMVS20190510', name: 'CARIBBEAN FORCE', imo: '9335161', carrier: 'MMARINEX', scac: 'MXS' },
 ];
 
-const VALID_CONTAINER_SIZES = ['20', '40', '40HC', '45', '48', 'RORO'];
+const VALID_CONTAINER_SIZES = ['20', '40', '40HC', '45', '48', '53', 'RORO'];
 
 const PORT_MAPPINGS = [
   ['PRSJU', 'XSJ'], ['SJU', 'XSJ'], ['SJX', 'XSJ'],
