@@ -95,6 +95,12 @@ class SiscommateBridge
                         string result  = GuardarEnDBF(data);
                         Send(resp, 200, "{\"ok\":true,\"msg\":\"" + EscJson(result) + "\"}");
                     }
+                    else if (method == "GET" && path == "/consultar")
+                    {
+                        string voyage = req.QueryString["voyage"] ?? "";
+                        var datos = ConsultarManifiesto(voyage);
+                        Send(resp, 200, new JavaScriptSerializer().Serialize(datos));
+                    }
                     else if (method == "OPTIONS")
                     {
                         resp.Headers.Add("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -232,6 +238,74 @@ class SiscommateBridge
         p.Value = value;
     }
 
+    // ── Consulta de solo lectura ─────────────────────────────────────────────
+    // Vista B del análisis de bugs: leer lo que de verdad quedó en la base de
+    // SISCOMMATE para un viaje, en vez de confiar solo en el registro local.
+    /**
+     * Convierte la fila actual de un OleDbDataReader en un diccionario listo
+     * para serializar. Los CHAR de VFP vienen rellenos de espacios a la
+     * derecha; DBNull se convierte a null (JavaScriptSerializer no sabe
+     * serializar DBNull.Value).
+     */
+    static Dictionary<string, object> ReadRow(OleDbDataReader reader)
+    {
+        var row = new Dictionary<string, object>();
+        for (int i = 0; i < reader.FieldCount; i++)
+        {
+            object val = reader.GetValue(i);
+            if (val == DBNull.Value) val = null;
+            else if (val is string) val = ((string)val).TrimEnd();
+            else if (val is DateTime) val = ((DateTime)val).ToString("yyyy-MM-dd");
+            row[reader.GetName(i)] = val;
+        }
+        return row;
+    }
+
+    static List<Dictionary<string, object>> ConsultarTabla(OleDbConnection conn, string tabla, string voyageNo)
+    {
+        var filas = new List<Dictionary<string, object>>();
+        using (var cmd = new OleDbCommand("SELECT * FROM " + tabla + " WHERE manifest = ?", conn))
+        {
+            cmd.Parameters.AddWithValue("manifest", voyageNo);
+            using (var reader = cmd.ExecuteReader())
+            {
+                while (reader.Read()) filas.Add(ReadRow(reader));
+            }
+        }
+        return filas;
+    }
+
+    /**
+     * Lo que de verdad quedó grabado en SISCOMMATE para un viaje: la fila de
+     * MANIFEST y las de BOL/BOLCONT/BOLITEM vinculadas — para comparar contra
+     * lo que el editor cree haber enviado.
+     */
+    static Dictionary<string, object> ConsultarManifiesto(string voyageNo)
+    {
+        var result = new Dictionary<string, object>();
+        using (var conn = new OleDbConnection(GetConnectionString()))
+        {
+            conn.Open();
+
+            Dictionary<string, object> manifestRow = null;
+            using (var cmd = new OleDbCommand("SELECT * FROM MANIFEST WHERE manifest = ?", conn))
+            {
+                cmd.Parameters.AddWithValue("manifest", voyageNo);
+                using (var reader = cmd.ExecuteReader())
+                {
+                    if (reader.Read()) manifestRow = ReadRow(reader);
+                }
+            }
+
+            result["encontrado"] = manifestRow != null;
+            result["manifest"]   = manifestRow;
+            result["bls"]        = ConsultarTabla(conn, "BOL",     voyageNo);
+            result["items"]      = ConsultarTabla(conn, "BOLITEM", voyageNo);
+            result["containers"] = ConsultarTabla(conn, "BOLCONT", voyageNo);
+        }
+        return result;
+    }
+
     // ── Lote ──────────────────────────────────────────────────────────────────
     static int ObtenerUltimoLote()
     {
@@ -346,7 +420,11 @@ class SiscommateBridge
                 cmd.Parameters.AddWithValue("agent",    false);
                 AddDate(cmd, "arrival",  arrival);
                 cmd.Parameters.AddWithValue("imo",      GetStr(mDict, "imo"));
-                cmd.Parameters.AddWithValue("docking",  "");
+                // Antes hardcodeado a "" — se perdía el docking number que el
+                // operador sí llena y que el Node ya exige antes de dejar
+                // pasar el push (blValidation.js). Confirmado contra un
+                // manifiesto real de SISCOMMATE que el campo docking sí se usa.
+                cmd.Parameters.AddWithValue("docking",  GetStr(mDict, "docking_number"));
                 cmd.ExecuteNonQuery();
             }
 

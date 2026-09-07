@@ -11,7 +11,7 @@ const db = require('../db/connection');
 /** @typedef {import('../types').ContainerBLRow} ContainerBLRow */
 /** @typedef {import('../types').CargoItemRow} CargoItemRow */
 /** @typedef {import('../types').BridgeContainer} BridgeContainer */
-const { getBridgeStatus, getLote, pushManifest } = require('../services/siscommateClient');
+const { getBridgeStatus, getLote, pushManifest, consultarManifiesto } = require('../services/siscommateClient');
 const { validateForSubmission } = require('../services/blValidation');
 
 const router = express.Router();
@@ -89,6 +89,18 @@ router.post('/api/manifests/:id/push-siscommate', async (req, res) => {
     db.prepare(`UPDATE manifests SET status='siscommate', exported_at=datetime('now') WHERE id=?`)
       .run(req.params.id);
 
+    // Historial: el lote es lo único que permite ubicar este envío en la base
+    // real de SISCOMMATE después, y antes no se guardaba en ningún lado.
+    db.prepare(`
+      INSERT INTO siscommate_push_log (manifest_id, voyage_no, lote, bl_count)
+      VALUES (?,?,?,?)
+    `).run(
+      Number(req.params.id),
+      manifest.voyage_no || '',
+      String(result && result.lote != null ? result.lote : ''),
+      validBls.length
+    );
+
     res.json({
       ok: true,
       lote_anterior: loteInfo.lote,
@@ -103,6 +115,34 @@ router.post('/api/manifests/:id/push-siscommate', async (req, res) => {
       hint: 'Verifica que SiscommateBridge está corriendo en el servidor (puerto 5001)',
     });
   }
+});
+
+// ── VISTA EN VIVO DE LO QUE HAY EN SISCOMMATE ────────────────────────────────
+// Lee directo de las tablas DBF reales (vía el bridge, el único proceso que
+// puede hablar VFPOLEDB) — no nuestra copia local, la fuente de verdad.
+router.get('/api/manifests/:id/siscommate-live', async (req, res) => {
+  const manifest = db.prepare('SELECT voyage_no FROM manifests WHERE id=?').get(req.params.id);
+  if (!manifest) return res.status(404).json({ error: 'No encontrado' });
+
+  try {
+    const datos = await consultarManifiesto(manifest.voyage_no);
+    res.json(datos);
+  } catch (err) {
+    res.status(503).json({
+      error: 'No se pudo conectar con SiscommateBridge: ' + err.message,
+      hint: 'Verifica que SiscommateBridge está corriendo en el servidor (puerto 5001)',
+    });
+  }
+});
+
+// ── HISTORIAL DE ENVÍOS (nuestro registro local) ─────────────────────────────
+router.get('/api/siscommate/history', (req, res) => {
+  res.json(db.prepare(`
+    SELECT l.*, m.status as manifest_status
+    FROM siscommate_push_log l
+    LEFT JOIN manifests m ON m.id = l.manifest_id
+    ORDER BY l.pushed_at DESC
+  `).all());
 });
 
 module.exports = router;

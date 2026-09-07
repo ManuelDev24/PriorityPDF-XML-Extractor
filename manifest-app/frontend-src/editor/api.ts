@@ -133,6 +133,15 @@ export interface VistaPreviaTxt { pairs: ParTxt[]; line1: string; line2: string 
 
 export interface EstadoBridge { online: boolean; version?: string; error?: string }
 
+/** Lo que de verdad quedó grabado en SISCOMMATE para un viaje (lectura directa del DBF). */
+export interface DatosSiscommateVivo {
+  encontrado: boolean;
+  manifest: Record<string, unknown> | null;
+  bls: Record<string, unknown>[];
+  items: Record<string, unknown>[];
+  containers: Record<string, unknown>[];
+}
+
 // ── Cliente HTTP ─────────────────────────────────────────────────────────────
 async function pedir<T>(url: string, opts?: RequestInit): Promise<T> {
   const r = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...opts });
@@ -198,4 +207,6 @@ export const api = {
     pedir<{ ok: true; lote_anterior: number | null; lote_nuevo: number; enviados: number }>(
       `/api/manifests/${id}/push-siscommate`, { method: 'POST' }
     ),
+  siscommateVivo: (id: number) =>
+    pedir<DatosSiscommateVivo>(`/api/manifests/${id}/siscommate-live`),
 };

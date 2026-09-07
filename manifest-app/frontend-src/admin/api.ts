@@ -21,6 +21,17 @@ export interface ContainerType {
   label: string;
 }
 
+/** Fila de siscommate_push_log: un envío real a SISCOMMATE. */
+export interface EnvioSiscommate {
+  id: number;
+  manifest_id: number;
+  voyage_no: string;
+  lote: string;
+  bl_count: number;
+  pushed_at: string;
+  manifest_status: string | null;
+}
+
 async function pedir<T>(url: string, opts?: RequestInit): Promise<T> {
   const r = await fetch(url, opts);
   if (!r.ok) throw new Error(await r.text());
@@ -63,4 +74,6 @@ export const api = {
       `/api/catalogs/container-types/${encodeURIComponent(xmlType)}`,
       { method: 'DELETE' }
     ),
+
+  getHistorialSiscommate: () => pedir<EnvioSiscommate[]>('/api/siscommate/history'),
 };

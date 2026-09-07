@@ -139,8 +139,19 @@ function pushManifest({ manifest, bls, containers }) {
   return bridgeRequest('POST', '/guardar', { manifest, bls, containers });
 }
 
+/**
+ * Consulta de solo lectura: lo que de verdad quedó grabado en SISCOMMATE para
+ * un viaje (MANIFEST + BOL/BOLCONT/BOLITEM), para comparar contra lo que el
+ * editor cree haber enviado.
+ * @param {string} voyageNo
+ * @returns {Promise<{encontrado: boolean, manifest: object|null, bls: object[], items: object[], containers: object[]}>}
+ */
+function consultarManifiesto(voyageNo) {
+  return bridgeRequest('GET', '/consultar?voyage=' + encodeURIComponent(voyageNo), null);
+}
+
 module.exports = {
   getBridgeConfig, bridgeRequest,
-  getBridgeStatus, getLote, pushManifest,
+  getBridgeStatus, getLote, pushManifest, consultarManifiesto,
   BRIDGE_TIMEOUT_MS,
 };

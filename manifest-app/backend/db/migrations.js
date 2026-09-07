@@ -117,6 +117,19 @@ function runMigrations({
   );
   PORT_MAPPINGS.forEach(([dga, siscommate]) => insPortMapping.run(dga, siscommate, ''));
 
+  // ── Historial de envíos a SISCOMMATE ───────────────────────────────────────
+  // El push solo marcaba manifests.status='siscommate' y la fecha: el número
+  // de lote que asigna SISCOMMATE (lo único que permite ubicar el envío en la
+  // base real después) se perdía apenas respondía el bridge. Acá queda.
+  db.exec(`CREATE TABLE IF NOT EXISTS siscommate_push_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    manifest_id INTEGER NOT NULL,
+    voyage_no   TEXT    NOT NULL DEFAULT '',
+    lote        TEXT    NOT NULL DEFAULT '',
+    bl_count    INTEGER NOT NULL DEFAULT 0,
+    pushed_at   TEXT    NOT NULL DEFAULT (datetime('now'))
+  )`);
+
   // ── Items de carga múltiples por B/L (opcionalmente por contenedor) ────────
   db.exec(`CREATE TABLE IF NOT EXISTS bl_cargo_items (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,

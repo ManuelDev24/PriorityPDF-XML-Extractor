@@ -3,7 +3,7 @@
 // la presentación: Dialog de shadcn para los modales, toast propio con las
 // clases del sistema de diseño.
 import { ref, computed, onMounted } from 'vue';
-import { api, type Cliente, type VistaPreviaTxt } from '../editor/api';
+import { api, type Cliente, type VistaPreviaTxt, type DatosSiscommateVivo } from '../editor/api';
 import {
   datosManifiesto, blActual, stats, estado, estadoDerecha, toastMsg, toastTipo,
   cargarCatalogos, cargarManifiestos, seleccionarManifiesto, cargarStats,
@@ -15,7 +15,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { Upload, Settings, Ship, Eye, FileOutput, DatabaseZap, Loader2, FileUp, X, PanelLeftClose, PanelLeftOpen } from '@lucide/vue';
+import { Upload, Settings, Ship, Eye, FileOutput, DatabaseZap, Database, Loader2, FileUp, X, PanelLeftClose, PanelLeftOpen } from '@lucide/vue';
 
 const bridgeOnline = ref(false);
 const archivoInput = ref<HTMLInputElement | null>(null);
@@ -157,6 +157,22 @@ async function pushSiscommate() {
   enviando.value = false;
 }
 
+const viendoVivo = ref(false);
+const vivo = ref<DatosSiscommateVivo | null>(null);
+async function verSiscommateVivo() {
+  const m = datosManifiesto.value?.manifest;
+  if (!m) return;
+  viendoVivo.value = true;
+  try {
+    vivo.value = await api.siscommateVivo(m.id);
+  } catch (e) {
+    let msg = (e as Error).message;
+    try { msg = JSON.parse(msg).error || msg; } catch { /* texto plano */ }
+    avisar('No se pudo consultar SISCOMMATE', msg);
+  }
+  viendoVivo.value = false;
+}
+
 onMounted(async () => {
   revisarBridge();
   setInterval(revisarBridge, 30000);
@@ -212,6 +228,10 @@ onMounted(async () => {
             <Loader2 v-if="enviando" class="size-3.5 animate-spin" /><DatabaseZap v-else class="size-3.5" />
             {{ enviando ? 'Guardando...' : 'Guardar en SISCOMMATE' }}
           </Button>
+          <Button variant="outline" size="sm" :disabled="viendoVivo" @click="verSiscommateVivo">
+            <Loader2 v-if="viendoVivo" class="size-3.5 animate-spin" /><Database v-else class="size-3.5" />
+            Ver en SISCOMMATE
+          </Button>
         </div>
 
         <!-- Ancho máximo centrado (mismo criterio que admin-redesign): en
@@ -219,7 +239,7 @@ onMounted(async () => {
              estiran a más de max-w-5xl, para que sigan siendo fáciles de
              escanear en vez de ocupar todo el monitor. -->
         <div class="flex-1 overflow-y-auto p-4">
-          <div class="mx-auto flex min-h-full w-full max-w-5xl flex-col gap-4">
+          <div class="mx-auto flex h-full w-full max-w-5xl flex-col gap-4">
           <div v-if="previa" class="overflow-hidden rounded-lg border-2 border-accent">
             <div class="flex items-center gap-2 bg-accent-soft px-3 py-2 text-sm font-medium text-accent">
               Vista previa TXT — B/L {{ blActual?.bl_no || '' }}
@@ -246,7 +266,7 @@ onMounted(async () => {
             <p>{{ datosManifiesto.bls.length ? 'Selecciona un B/L' : 'Este manifiesto no tiene B/L' }}</p>
           </div>
 
-          <div v-else class="flex min-h-full w-full flex-col items-center justify-center gap-3 text-center text-ink-faint">
+          <div v-else class="flex flex-1 w-full flex-col items-center justify-center gap-3 text-center text-ink-faint">
             <Ship class="size-10" />
             <p class="text-base text-ink-muted">Selecciona un manifiesto</p>
             <p class="text-xs">o carga un XML o PDF de la DGA</p>
@@ -275,6 +295,72 @@ onMounted(async () => {
         <DialogFooter>
           <Button v-for="(b, i) in modal.botones" :key="i" :variant="(b.variant as any)" @click="b.accion">{{ b.label }}</Button>
         </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog :open="!!vivo" @update:open="(v) => !v && (vivo = null)">
+      <DialogContent v-if="vivo" class="max-w-2xl">
+        <DialogHeader><DialogTitle>Lo que hay en SISCOMMATE — Viaje {{ datosManifiesto?.manifest.voyage_no }}</DialogTitle></DialogHeader>
+        <p v-if="!vivo.encontrado" class="text-sm text-ink-faint">No se encontró ningún manifiesto con este número de viaje en las tablas de SISCOMMATE.</p>
+        <div v-else class="flex max-h-[70vh] flex-col gap-4 overflow-y-auto text-xs">
+          <div>
+            <p class="mb-1 font-medium text-ink-muted">Manifiesto (MANIFEST)</p>
+            <div class="grid grid-cols-2 gap-x-4 gap-y-0.5 rounded border border-border p-2 font-mono">
+              <template v-for="(val, key) in (vivo.manifest || {})" :key="key">
+                <span class="text-ink-faint">{{ key }}</span><span class="truncate">{{ val === null || val === '' ? '—' : String(val) }}</span>
+              </template>
+            </div>
+          </div>
+          <div>
+            <p class="mb-1 font-medium text-ink-muted">B/L — BOL ({{ vivo.bls.length }})</p>
+            <p v-if="!vivo.bls.length" class="text-ink-faint">Sin B/L registrados.</p>
+            <div v-else class="overflow-x-auto rounded border border-border">
+              <table class="w-full border-collapse font-mono">
+                <thead><tr class="border-b border-border bg-paper-raised text-left text-ink-faint">
+                  <th v-for="k in Object.keys(vivo.bls[0])" :key="k" class="px-2 py-1 whitespace-nowrap">{{ k }}</th>
+                </tr></thead>
+                <tbody>
+                  <tr v-for="(bl, i) in vivo.bls" :key="i" class="border-b border-border/50 last:border-0">
+                    <td v-for="k in Object.keys(vivo.bls[0])" :key="k" class="px-2 py-1 whitespace-nowrap">{{ (bl as any)[k] === null || (bl as any)[k] === '' ? '—' : String((bl as any)[k]) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div>
+            <p class="mb-1 font-medium text-ink-muted">Contenedores (BOLCONT) ({{ vivo.containers.length }})</p>
+            <p v-if="!vivo.containers.length" class="text-ink-faint">Sin contenedores registrados.</p>
+            <div v-else class="overflow-x-auto rounded border border-border">
+              <table class="w-full border-collapse font-mono">
+                <thead><tr class="border-b border-border bg-paper-raised text-left text-ink-faint">
+                  <th v-for="k in Object.keys(vivo.containers[0])" :key="k" class="px-2 py-1 whitespace-nowrap">{{ k }}</th>
+                </tr></thead>
+                <tbody>
+                  <tr v-for="(c, i) in vivo.containers" :key="i" class="border-b border-border/50 last:border-0">
+                    <td v-for="k in Object.keys(vivo.containers[0])" :key="k" class="px-2 py-1 whitespace-nowrap">{{ (c as any)[k] === null || (c as any)[k] === '' ? '—' : String((c as any)[k]) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div>
+            <p class="mb-1 font-medium text-ink-muted">Items de carga (BOLITEM) ({{ vivo.items.length }})</p>
+            <p v-if="!vivo.items.length" class="text-ink-faint">Sin items registrados.</p>
+            <div v-else class="overflow-x-auto rounded border border-border">
+              <table class="w-full border-collapse font-mono">
+                <thead><tr class="border-b border-border bg-paper-raised text-left text-ink-faint">
+                  <th v-for="k in Object.keys(vivo.items[0])" :key="k" class="px-2 py-1 whitespace-nowrap">{{ k }}</th>
+                </tr></thead>
+                <tbody>
+                  <tr v-for="(it, i) in vivo.items" :key="i" class="border-b border-border/50 last:border-0">
+                    <td v-for="k in Object.keys(vivo.items[0])" :key="k" class="px-2 py-1 whitespace-nowrap">{{ (it as any)[k] === null || (it as any)[k] === '' ? '—' : String((it as any)[k]) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        <DialogFooter><Button variant="outline" @click="vivo = null">Cerrar</Button></DialogFooter>
       </DialogContent>
     </Dialog>
 

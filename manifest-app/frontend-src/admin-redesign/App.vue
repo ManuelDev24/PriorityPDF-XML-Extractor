@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import { api, type ContainerType } from '../admin/api';
+import { api, type ContainerType, type EnvioSiscommate } from '../admin/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -85,6 +85,15 @@ async function cargarTipos() {
   filas.value = await api.getContainerTypes();
 }
 
+const historial = ref<EnvioSiscommate[]>([]);
+async function cargarHistorial() {
+  try { historial.value = await api.getHistorialSiscommate(); }
+  catch { historial.value = []; }
+}
+function fechaCorta(iso: string) {
+  return iso ? iso.replace('T', ' ').substring(0, 16) : '';
+}
+
 async function cargarTamanos() {
   try { tamanosValidos.value = await api.getContainerSizes(); }
   catch { tamanosValidos.value = FALLBACK_TAMANOS; }
@@ -120,7 +129,7 @@ async function agregarTipo() {
   }
 }
 
-onMounted(() => { cargarSettings(); cargarTipos(); cargarTamanos(); checkBridge(); });
+onMounted(() => { cargarSettings(); cargarTipos(); cargarTamanos(); checkBridge(); cargarHistorial(); });
 </script>
 
 <template>
@@ -263,6 +272,48 @@ onMounted(() => { cargarSettings(); cargarTipos(); cargarTamanos(); checkBridge(
               </TableRow>
             </TableFooter>
           </Table>
+        </CardContent>
+      </Card>
+
+      <!-- ── Historial de envíos a SISCOMMATE ── -->
+      <Card class="mt-6">
+        <CardHeader>
+          <div class="flex items-center gap-2">
+            <CardTitle>Historial de envíos a SISCOMMATE</CardTitle>
+            <Badge class="bg-accent-soft text-accent">{{ historial.length }} envíos</Badge>
+          </div>
+          <CardDescription>
+            Cada fila es un push real al bridge — el lote es lo que permite ubicar el
+            envío en la base de SISCOMMATE. Este es nuestro registro local; para ver lo
+            que de verdad quedó grabado, abrí el manifiesto en el editor y usá
+            "Ver en SISCOMMATE".
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Table v-if="historial.length">
+            <TableHeader>
+              <TableRow>
+                <TableHead>Viaje</TableHead>
+                <TableHead class="w-24">Lote</TableHead>
+                <TableHead class="w-20 text-right">B/L</TableHead>
+                <TableHead class="w-40">Fecha de envío</TableHead>
+                <TableHead class="w-28">Estado actual</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              <TableRow v-for="envio in historial" :key="envio.id">
+                <TableCell class="font-medium">{{ envio.voyage_no }}</TableCell>
+                <TableCell><code class="font-mono text-sm text-accent">{{ envio.lote }}</code></TableCell>
+                <TableCell class="text-right">{{ envio.bl_count }}</TableCell>
+                <TableCell class="text-ink-muted">{{ fechaCorta(envio.pushed_at) }}</TableCell>
+                <TableCell>
+                  <Badge v-if="envio.manifest_status === 'siscommate'" class="bg-status-siscommate-soft text-status-siscommate">Enviado</Badge>
+                  <Badge v-else class="bg-paper-sunken text-ink-muted">{{ envio.manifest_status || '—' }}</Badge>
+                </TableCell>
+              </TableRow>
+            </TableBody>
+          </Table>
+          <p v-else class="text-sm text-ink-faint">Todavía no se hizo ningún envío a SISCOMMATE.</p>
         </CardContent>
       </Card>
     </main>
