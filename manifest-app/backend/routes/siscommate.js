@@ -28,6 +28,13 @@ router.post('/api/manifests/:id/push-siscommate', async (req, res) => {
     const manifest = db.prepare('SELECT * FROM manifests WHERE id=?').get(req.params.id);
     if (!manifest) return res.status(404).json({ error: 'No encontrado' });
 
+    // MANIFEST.carrier en el DBF es char(3) — espera el SCAC ("PRR", "MXS"),
+    // no el código interno del carrier ("MPRIORO"). Enviar el código interno
+    // (7 chars) contra una columna de 3 rompía el INSERT completo con "Data
+    // type mismatch", sin indicar cuál parámetro era.
+    const carrierRow = db.prepare('SELECT scac FROM carriers WHERE code=?').get(manifest.carrier_code);
+    manifest.carrier_code = (carrierRow && carrierRow.scac) || manifest.carrier_code;
+
     /** @type {BLRow[]} */
     const allBls = db.prepare('SELECT * FROM bills_of_lading WHERE manifest_id=? ORDER BY bl_no').all(req.params.id);
 

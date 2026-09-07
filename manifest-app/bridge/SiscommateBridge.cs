@@ -145,10 +145,15 @@ class SiscommateBridge
 
         try
         {
+            // SOURCES_NAME es "VFPOLEDB" (el nombre que reporta el enumerador
+            // OLE DB), no "VFPOLEDB.1" (ese es el ProgID que se usa en la
+            // cadena de conexión, "Provider=VFPOLEDB.1;..."). Comparar contra
+            // el ProgID acá nunca daba match, aunque el proveedor estuviera
+            // bien instalado y registrado.
             var providers = new OleDbEnumerator().GetElements();
             foreach (System.Data.DataRow row in providers.Rows)
             {
-                if (String.Equals(row["SOURCES_NAME"].ToString(), "VFPOLEDB.1",
+                if (String.Equals(row["SOURCES_NAME"].ToString(), "VFPOLEDB",
                     StringComparison.OrdinalIgnoreCase))
                 {
                     providerRegistered = true;
@@ -202,6 +207,29 @@ class SiscommateBridge
     {
         decimal v;
         return decimal.TryParse(GetStr(d, k), out v) ? v : 0m;
+    }
+
+    // Los campos Date de VFP son DBTYPE_DBDATE (129→133 en el esquema real:
+    // MANIFEST.date/sdate/idate/lotdate/topay/arrival, BOL.date/idate).
+    // cmd.Parameters.AddWithValue(nombre, DateTime) infiere OleDbType.Date
+    // (fecha+hora, DBTYPE_DATE) — un tipo distinto e incompatible con
+    // DBTYPE_DBDATE, y VFPOLEDB lo rechaza con "Data type mismatch" en el
+    // INSERT completo, no solo en ese parámetro. Forzar DBDate acá es lo que
+    // hace que coincida con la columna real.
+    static void AddDate(OleDbCommand cmd, string name, DateTime value)
+    {
+        var p = cmd.Parameters.Add(name, OleDbType.DBDate);
+        p.Value = value.Date;
+    }
+
+    // Mismo problema que con las fechas: los campos Numeric de VFP son
+    // DBTYPE_NUMERIC (131), pero AddWithValue(int) infiere OleDbType.Integer
+    // y AddWithValue(decimal) infiere OleDbType.Decimal — ninguno coincide
+    // con DBTYPE_NUMERIC y VFPOLEDB rechaza el INSERT completo.
+    static void AddNumeric(OleDbCommand cmd, string name, decimal value)
+    {
+        var p = cmd.Parameters.Add(name, OleDbType.Numeric);
+        p.Value = value;
     }
 
     // ── Lote ──────────────────────────────────────────────────────────────────
@@ -290,12 +318,12 @@ class SiscommateBridge
                 " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", conn))
             {
                 cmd.Parameters.AddWithValue("manifest", voyageNo);
-                cmd.Parameters.AddWithValue("date",     DateTime.Now);
+                AddDate(cmd, "date",     DateTime.Now);
                 cmd.Parameters.AddWithValue("mawb",     voyageNo);
                 cmd.Parameters.AddWithValue("vessel",   GetStr(mDict, "vessel_name"));
                 cmd.Parameters.AddWithValue("voyfli",   voyageNo);
-                cmd.Parameters.AddWithValue("sdate",    departure);
-                cmd.Parameters.AddWithValue("idate",    departure);
+                AddDate(cmd, "sdate",    departure);
+                AddDate(cmd, "idate",    departure);
                 cmd.Parameters.AddWithValue("dtime",    "18:00");
                 cmd.Parameters.AddWithValue("forigin",  "");
                 cmd.Parameters.AddWithValue("master1",  "");
@@ -307,16 +335,16 @@ class SiscommateBridge
                 cmd.Parameters.AddWithValue("origport", "DRP");
                 cmd.Parameters.AddWithValue("discport", unloadingPort);
                 cmd.Parameters.AddWithValue("destport", unloadingPort);
-                cmd.Parameters.AddWithValue("lotnum",   lotenum);
-                cmd.Parameters.AddWithValue("lotdate",  DateTime.Now);
+                cmd.Parameters.AddWithValue("lotnum",   lotenum.ToString());
+                AddDate(cmd, "lotdate",  DateTime.Now);
                 cmd.Parameters.AddWithValue("lottype",  "N");
                 cmd.Parameters.AddWithValue("default",  false);
                 cmd.Parameters.AddWithValue("carrier",  carrierCode);
-                cmd.Parameters.AddWithValue("lotamt",   0);
-                cmd.Parameters.AddWithValue("topay",    new DateTime(1899, 12, 30));
+                AddNumeric(cmd, "lotamt", 0m);
+                AddDate(cmd, "topay",    new DateTime(1899, 12, 30));
                 cmd.Parameters.AddWithValue("plot",     "");
                 cmd.Parameters.AddWithValue("agent",    false);
-                cmd.Parameters.AddWithValue("arrival",  arrival);
+                AddDate(cmd, "arrival",  arrival);
                 cmd.Parameters.AddWithValue("imo",      GetStr(mDict, "imo"));
                 cmd.Parameters.AddWithValue("docking",  "");
                 cmd.ExecuteNonQuery();
@@ -337,25 +365,25 @@ class SiscommateBridge
                 {
                     cmd.Parameters.AddWithValue("manifest", voyageNo);
                     cmd.Parameters.AddWithValue("bolno",    GetStr(bl, "bl_no"));
-                    cmd.Parameters.AddWithValue("date",     DateTime.Now);
+                    AddDate(cmd, "date",     DateTime.Now);
                     cmd.Parameters.AddWithValue("ttype",    "O");  // O = Ocean
                     cmd.Parameters.AddWithValue("boltype",  "M");
                     cmd.Parameters.AddWithValue("consigne", GetStr(bl, "consignee_name"));
                     cmd.Parameters.AddWithValue("exporter", GetStr(bl, "consignor_name"));
                     cmd.Parameters.AddWithValue("payee",    "");
                     cmd.Parameters.AddWithValue("ptype",    "C");
-                    cmd.Parameters.AddWithValue("charges",  0);
+                    AddNumeric(cmd, "charges", 0m);
                     cmd.Parameters.AddWithValue("pind",     "C");
                     cmd.Parameters.AddWithValue("taxtype",  "E");
-                    cmd.Parameters.AddWithValue("taxamt",   0);
-                    cmd.Parameters.AddWithValue("taxadi",   0);
+                    AddNumeric(cmd, "taxamt",  0m);
+                    AddNumeric(cmd, "taxadi",  0m);
                     cmd.Parameters.AddWithValue("invoice",  "");
-                    cmd.Parameters.AddWithValue("idate",    new DateTime(1899, 12, 30));
-                    cmd.Parameters.AddWithValue("invamt",   0);
+                    AddDate(cmd, "idate",    new DateTime(1899, 12, 30));
+                    AddNumeric(cmd, "invamt", 0m);
                     cmd.Parameters.AddWithValue("sdesc",    "");
-                    cmd.Parameters.AddWithValue("insamt",   0);
-                    cmd.Parameters.AddWithValue("dutypaid", 0);
-                    cmd.Parameters.AddWithValue("rate",     0);
+                    AddNumeric(cmd, "insamt", 0m);
+                    AddNumeric(cmd, "dutypaid", 0m);
+                    AddNumeric(cmd, "rate",   0m);
                     cmd.Parameters.AddWithValue("relno",    "");
                     cmd.Parameters.AddWithValue("declno",   "");
                     cmd.Parameters.AddWithValue("discport", blDiscPort);
@@ -363,7 +391,7 @@ class SiscommateBridge
                     cmd.Parameters.AddWithValue("coriport", "");
                     cmd.Parameters.AddWithValue("cdesport", "");
                     cmd.Parameters.AddWithValue("comvali",  "");
-                    cmd.Parameters.AddWithValue("comval",   0);
+                    AddNumeric(cmd, "comval", 0m);
                     cmd.ExecuteNonQuery();
                 }
             }
@@ -381,8 +409,8 @@ class SiscommateBridge
                     cmd.Parameters.AddWithValue("contain",  GetStr(cbl, "container_no"));
                     cmd.Parameters.AddWithValue("size",     GetStr(cbl, "size"));
                     cmd.Parameters.AddWithValue("type",     "R");
-                    cmd.Parameters.AddWithValue("control",  control);
-                    cmd.Parameters.AddWithValue("sec",      1);
+                    cmd.Parameters.AddWithValue("control",  control.ToString());
+                    AddNumeric(cmd, "sec",   1m);
                     cmd.ExecuteNonQuery();
                     control++;
                 }
@@ -403,24 +431,24 @@ class SiscommateBridge
                 {
                     cmd.Parameters.AddWithValue("manifest", voyageNo);
                     cmd.Parameters.AddWithValue("bolno",    GetStr(bl, "bl_no"));
-                    cmd.Parameters.AddWithValue("qty",      GetDec(bl, "package_qty"));
+                    AddNumeric(cmd, "qty",   GetDec(bl, "package_qty"));
                     cmd.Parameters.AddWithValue("ptype",    pkgType);
-                    cmd.Parameters.AddWithValue("weight",   GetDec(bl, "gross_weight"));
-                    cmd.Parameters.AddWithValue("volume",   0.0);
+                    AddNumeric(cmd, "weight", GetDec(bl, "gross_weight"));
+                    AddNumeric(cmd, "volume", 0m);
                     cmd.Parameters.AddWithValue("desc",     GetStr(bl, "goods_name"));
                     cmd.Parameters.AddWithValue("sind",     "");
-                    cmd.Parameters.AddWithValue("qrec",     GetDec(bl, "package_qty"));
+                    AddNumeric(cmd, "qrec",  GetDec(bl, "package_qty"));
                     cmd.Parameters.AddWithValue("code",     GetStr(bl, "hacienda_item_code"));
-                    cmd.Parameters.AddWithValue("value",    GetDec(bl, "value"));
-                    cmd.Parameters.AddWithValue("control",  control);
-                    cmd.Parameters.AddWithValue("rate",     0);
-                    cmd.Parameters.AddWithValue("taxamt",   0);
-                    cmd.Parameters.AddWithValue("taxadi",   0);
+                    AddNumeric(cmd, "value", GetDec(bl, "value"));
+                    cmd.Parameters.AddWithValue("control",  control.ToString());
+                    AddNumeric(cmd, "rate",   0m);
+                    AddNumeric(cmd, "taxamt", 0m);
+                    AddNumeric(cmd, "taxadi", 0m);
                     cmd.Parameters.AddWithValue("wind",     "K");
                     cmd.Parameters.AddWithValue("vind",     "F");
-                    cmd.Parameters.AddWithValue("sec",      1);
-                    cmd.Parameters.AddWithValue("qty2",     0);
-                    cmd.Parameters.AddWithValue("value2",   0);
+                    AddNumeric(cmd, "sec",   1m);
+                    AddNumeric(cmd, "qty2",  0m);
+                    AddNumeric(cmd, "value2", 0m);
                     cmd.ExecuteNonQuery();
                     control++;
                 }

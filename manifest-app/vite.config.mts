@@ -26,6 +26,17 @@ export default defineConfig({
       '@': resolve(__dirname, 'frontend-src'),
     },
   },
+  // Si se corre `vite` suelto (dev server en :5173, sin pasar por Express),
+  // ninguna llamada a /api/* existía ahí — el fetch le pegaba al propio
+  // Vite, que devolvía su HTML de fallback en vez de JSON ("Unexpected
+  // token '<'"). Este proxy reenvía /api al backend real en :3000, para que
+  // el frontend funcione igual entre a través de :3000 (producción, server.js
+  // sirviendo los archivos ya compilados) o de :5173 (dev server de Vite).
+  server: {
+    proxy: {
+      '/api': 'http://localhost:3000',
+    },
+  },
   build: {
     outDir: resolve(__dirname, 'frontend'),
     // outDir queda fuera de root (frontend-src/): Vite exige emptyOutDir

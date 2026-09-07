@@ -22,7 +22,13 @@ if %CSC%=="" (
 
 echo Usando: %CSC%
 
+REM /platform:x86 es obligatorio: VFPOLEDB es un proveedor OLE DB de 32 bits
+REM exclusivamente. Sin este flag, csc genera "Any CPU", que en Windows de
+REM 64 bits corre como proceso de 64 bits — y un proceso de 64 bits no puede
+REM cargar VFPOLEDB aunque esté correctamente registrado (falla silenciosa:
+REM el health-check reporta provider_registered=false sin ningún error).
 %CSC% /target:exe ^
+    /platform:x86 ^
     /out:SiscommateBridge.exe ^
     /r:System.Data.dll ^
     /r:System.Web.Extensions.dll ^
