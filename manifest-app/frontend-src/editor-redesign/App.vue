@@ -79,7 +79,14 @@ async function guardarCliente() {
 const previa = ref<VistaPreviaTxt | null>(null);
 const regla = '1'.repeat(205);
 async function verTxt(blId: number) {
-  try { previa.value = await api.vistaPreviaTxt(blId); } catch { toast('Error en vista previa', 'err'); }
+  try {
+    const resultado = await api.vistaPreviaTxt(blId);
+    // Si el usuario ya saltó a otro B/L mientras esta petición estaba en
+    // vuelo, aplicarla igual pisaba la vista previa recién limpiada con
+    // datos de un B/L que ya no es el activo — se descarta la respuesta
+    // tardía en vez de mostrarla.
+    if (blActual.value?.id === blId) previa.value = resultado;
+  } catch { toast('Error en vista previa', 'err'); }
 }
 // Sin esto, cambiar de B/L (desde el buscador del sidebar o la lista) dejaba
 // la vista previa vieja en pantalla — mismo título "Vista previa TXT — B/L

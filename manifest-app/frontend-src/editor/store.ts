@@ -160,6 +160,13 @@ export async function cargarManifiestos() {
 }
 
 export async function seleccionarManifiesto(id: number) {
+  // Solo un viaje puede estar realmente "abierto" a la vez (datosManifiesto
+  // es un único objeto) — si expandidos conservaba el id anterior al saltar
+  // directo de un viaje a otro (sin colapsarlo primero), su fila se quedaba
+  // con la flecha hacia abajo aunque ya no mostrara sus B/L. Un clic ahí
+  // caía en la rama de "colapsar" en vez de "abrir", y como el id no
+  // coincidía con el viaje realmente activo, no pasaba nada visible.
+  expandidos.clear();
   expandidos.add(id);
   try {
     datosManifiesto.value = await api.obtenerManifiesto(id);

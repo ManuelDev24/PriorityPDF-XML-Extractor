@@ -112,9 +112,11 @@ function opcionesTamano(size: string) {
 }
 
 async function marcar(estado: 'validado' | 'pendiente') {
+  if (!blActual.value) return;
+  const id = blActual.value.id;
   try {
-    await api.actualizarBL(bl.value.id, { status: estado });
-    bl.value.status = estado;
+    await api.actualizarBL(id, { status: estado });
+    if (blActual.value?.id === id) blActual.value.status = estado;
     toast(estado === 'validado' ? 'B/L marcado como validado' : 'B/L regresado a pendiente');
   } catch { toast('Error', 'err'); }
 }
@@ -342,9 +344,12 @@ watch(() => bl.value?.id, () => {
       <h2 class="text-sm font-semibold">{{ bl.bl_no }}</h2>
       <StatusBadge :status="bl.status" />
       <div class="flex-1"></div>
-      <Button v-if="bl.status === 'validado'" variant="outline" size="sm" @click="marcar('pendiente')"><X class="size-3.5" />Desvalidar</Button>
-      <Button v-else variant="outline" size="sm" class="border-status-validated text-status-validated hover:bg-status-validated-soft hover:text-status-validated" @click="marcar('validado')"><Check class="size-3.5" />Validado</Button>
-      <Button variant="outline" size="sm" @click="emit('vistaPrevia', bl.id)"><Eye class="size-3.5" />Ver TXT</Button>
+      <Button v-if="bl.status === 'validado'" variant="outline" size="sm" @click="blActual && marcar('pendiente')"><X class="size-3.5" />Desvalidar</Button>
+      <Button v-else variant="outline" size="sm" class="border-status-validated text-status-validated hover:bg-status-validated-soft hover:text-status-validated" @click="blActual && marcar('validado')"><Check class="size-3.5" />Validado</Button>
+      <!-- blActual (no el computed bl, que fuerza no-null con !) por si el
+           clic llega justo cuando blActual ya pasó a null — evita el
+           "Cannot read properties of null (reading 'id')" en este handler. -->
+      <Button variant="outline" size="sm" @click="blActual && emit('vistaPrevia', blActual.id)"><Eye class="size-3.5" />Ver TXT</Button>
       <Button variant="outline" size="sm" title="Cerrar B/L actual" aria-label="Cerrar B/L actual" @click="cerrarBL"><X class="size-3.5" />Cerrar B/L</Button>
     </div>
 
