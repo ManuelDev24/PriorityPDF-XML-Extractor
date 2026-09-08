@@ -7,7 +7,7 @@ import { api, type ResultadoBusqueda } from '../editor/api';
 import {
   manifiestos, manifiestosFiltrados, datosManifiesto, blActual, expandidos,
   pestana, seleccionarManifiesto, seleccionarBL, cargarManifiestos, cargarStats,
-  toast,
+  toast, setEstado,
 } from '../editor/store';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -68,6 +68,10 @@ async function alternar(id: number) {
     if (datosManifiesto.value?.manifest.id === id) {
       blActual.value = null;
       datosManifiesto.value = null;
+      // Sin esto la barra de estado se quedaba con "Manifiesto X — N B/L
+      // cargados" del viaje que se acaba de colapsar, aunque ya no hay
+      // ningún manifiesto seleccionado.
+      setEstado('Listo');
     }
     return;
   }
@@ -83,7 +87,11 @@ function pedirBorrarManifiesto(id: number, viaje: string) {
         await api.eliminarManifiesto(id);
         expandidos.delete(id);
         toast('Manifiesto eliminado');
-        if (datosManifiesto.value?.manifest.id === id) { datosManifiesto.value = null; blActual.value = null; }
+        if (datosManifiesto.value?.manifest.id === id) {
+          datosManifiesto.value = null;
+          blActual.value = null;
+          setEstado('Listo');
+        }
         await cargarManifiestos();
       } catch (e) { toast('Error al eliminar: ' + (e as Error).message, 'err'); }
     });

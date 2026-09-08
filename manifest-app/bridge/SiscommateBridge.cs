@@ -4,6 +4,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Data;
 using System.Data.OleDb;
 using System.IO;
 using System.Net;
@@ -92,14 +93,39 @@ class SiscommateBridge
                         string body    = new StreamReader(req.InputStream, Encoding.UTF8).ReadToEnd();
                         var    js      = new JavaScriptSerializer();
                         var    data    = js.Deserialize<Dictionary<string, object>>(body);
-                        string result  = GuardarEnDBF(data);
-                        Send(resp, 200, "{\"ok\":true,\"msg\":\"" + EscJson(result) + "\"}");
+                        string msg;
+                        // El backend Node lee result.lote de la respuesta (para
+                        // guardarlo en el historial local) — antes esta ruta solo
+                        // mandaba un mensaje de texto y ese campo nunca llegaba.
+                        int lote = GuardarEnDBF(data, out msg);
+                        Send(resp, 200, "{\"ok\":true,\"lote\":" + lote + ",\"msg\":\"" + EscJson(msg) + "\"}");
                     }
                     else if (method == "GET" && path == "/consultar")
                     {
                         string voyage = req.QueryString["voyage"] ?? "";
                         var datos = ConsultarManifiesto(voyage);
                         Send(resp, 200, new JavaScriptSerializer().Serialize(datos));
+                    }
+                    // Uso puntual y manual: borra un viaje completo (MANIFEST+BOL+
+                    // BOLITEM+BOLCONT) para poder reenviarlo. No lo llama ninguna
+                    // ruta del backend Node — solo se invoca a mano cuando hace
+                    // falta corregir un envío ya hecho a la base real.
+                    // Uso puntual y manual: lista TODAS las columnas reales de una
+                    // tabla del DBF (no solo las que este bridge escribe hoy), para
+                    // poder auditar qué campos existen y no se están usando.
+                    else if (method == "GET" && path == "/esquema")
+                    {
+                        string tabla = req.QueryString["tabla"] ?? "";
+                        var cols = ObtenerEsquema(tabla);
+                        Send(resp, 200, new JavaScriptSerializer().Serialize(cols));
+                    }
+                    else if (method == "POST" && path == "/eliminar")
+                    {
+                        string body2 = new StreamReader(req.InputStream, Encoding.UTF8).ReadToEnd();
+                        var data2 = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(body2);
+                        string voyage2 = GetStr(data2, "voyage");
+                        string result2 = EliminarManifiesto(voyage2);
+                        Send(resp, 200, "{\"ok\":true,\"msg\":\"" + EscJson(result2) + "\"}");
                     }
                     else if (method == "OPTIONS")
                     {
@@ -215,6 +241,24 @@ class SiscommateBridge
         return decimal.TryParse(GetStr(d, k), out v) ? v : 0m;
     }
 
+    /**
+     * BOLCONT.size es CHAR(3): un manifiesto real de SISCOMMATE usa "053"
+     * para un contenedor de 53' (dígitos con ceros a la izquierda), pero el
+     * catálogo local (container_type_map) guarda "20","40","40HC","53",etc.
+     * Para tamaños puramente numéricos esto es una conversión segura y
+     * confirmada. "40HC" se reduce al núcleo numérico "40"→"040" (SISCOMMATE
+     * no parece distinguir alto cubo en este campo). Para algo sin dígitos
+     * (p.ej. "RORO") no hay evidencia de qué código real usar — se manda tal
+     * cual, truncado a 3 caracteres, hasta confirmar el valor correcto.
+     */
+    static string NormalizarSize(string raw)
+    {
+        string digits = System.Text.RegularExpressions.Regex.Replace(raw ?? "", "[^0-9]", "");
+        if (digits.Length > 0)
+            return digits.Length > 3 ? digits.Substring(0, 3) : digits.PadLeft(3, '0');
+        return (raw ?? "").Length > 3 ? raw.Substring(0, 3) : raw ?? "";
+    }
+
     // Los campos Date de VFP son DBTYPE_DBDATE (129→133 en el esquema real:
     // MANIFEST.date/sdate/idate/lotdate/topay/arrival, BOL.date/idate).
     // cmd.Parameters.AddWithValue(nombre, DateTime) infiere OleDbType.Date
@@ -252,7 +296,19 @@ class SiscommateBridge
         var row = new Dictionary<string, object>();
         for (int i = 0; i < reader.FieldCount; i++)
         {
-            object val = reader.GetValue(i);
+            object val;
+            try
+            {
+                // Un Numeric/Decimal de VFP que quedó en blanco (nunca se le
+                // asignó valor) hace que GetValue() tire "The provider could
+                // not determine the Decimal value" en vez de devolver DBNull.
+                // Tratarlo como null es lo correcto: no hay valor que leer.
+                val = reader.GetValue(i);
+            }
+            catch (Exception)
+            {
+                val = null;
+            }
             if (val == DBNull.Value) val = null;
             else if (val is string) val = ((string)val).TrimEnd();
             else if (val is DateTime) val = ((DateTime)val).ToString("yyyy-MM-dd");
@@ -306,6 +362,65 @@ class SiscommateBridge
         return result;
     }
 
+    static List<Dictionary<string, object>> ObtenerEsquema(string tabla)
+    {
+        var result = new List<Dictionary<string, object>>();
+        using (var conn = new OleDbConnection(GetConnectionString()))
+        {
+            conn.Open();
+            using (var cmd = new OleDbCommand("SELECT * FROM " + tabla + " WHERE 1=0", conn))
+            using (var reader = cmd.ExecuteReader())
+            {
+                DataTable schema = reader.GetSchemaTable();
+                foreach (DataRow row in schema.Rows)
+                {
+                    var col = new Dictionary<string, object>();
+                    col["name"]      = row["ColumnName"].ToString();
+                    col["type"]      = row["DataType"].ToString();
+                    col["size"]      = row["ColumnSize"];
+                    col["precision"] = row["NumericPrecision"];
+                    col["scale"]     = row["NumericScale"];
+                    result.Add(col);
+                }
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Borra un viaje completo (MANIFEST+BOL+BOLITEM+BOLCONT) para poder
+     * reenviarlo con GuardarEnDBF, que rechaza un viaje que ya existe.
+     * VFPOLEDB hace un borrado lógico (DELETED()) — el registro no
+     * desaparece físicamente del DBF, pero deja de contar para el SELECT
+     * COUNT(*) de la validación de duplicados y para /consultar.
+     */
+    static string EliminarManifiesto(string voyageNo)
+    {
+        if (string.IsNullOrWhiteSpace(voyageNo))
+            throw new Exception("Falta el numero de viaje.");
+
+        using (var conn = new OleDbConnection(GetConnectionString()))
+        {
+            conn.Open();
+            int nBolitem, nBolcont, nBol, nManifest;
+
+            using (var cmd = new OleDbCommand("DELETE FROM BOLITEM WHERE manifest = ?", conn))
+            { cmd.Parameters.AddWithValue("manifest", voyageNo); nBolitem = cmd.ExecuteNonQuery(); }
+
+            using (var cmd = new OleDbCommand("DELETE FROM BOLCONT WHERE manifest = ?", conn))
+            { cmd.Parameters.AddWithValue("manifest", voyageNo); nBolcont = cmd.ExecuteNonQuery(); }
+
+            using (var cmd = new OleDbCommand("DELETE FROM BOL WHERE manifest = ?", conn))
+            { cmd.Parameters.AddWithValue("manifest", voyageNo); nBol = cmd.ExecuteNonQuery(); }
+
+            using (var cmd = new OleDbCommand("DELETE FROM MANIFEST WHERE manifest = ?", conn))
+            { cmd.Parameters.AddWithValue("manifest", voyageNo); nManifest = cmd.ExecuteNonQuery(); }
+
+            return "Eliminado viaje " + voyageNo + ": " + nManifest + " manifest, " +
+                   nBol + " bol, " + nBolitem + " bolitem, " + nBolcont + " bolcont";
+        }
+    }
+
     // ── Lote ──────────────────────────────────────────────────────────────────
     static int ObtenerUltimoLote()
     {
@@ -330,7 +445,7 @@ class SiscommateBridge
     }
 
     // ── Guardar en DBF ────────────────────────────────────────────────────────
-    static string GuardarEnDBF(Dictionary<string, object> data)
+    static int GuardarEnDBF(Dictionary<string, object> data, out string msg)
     {
         var js = new JavaScriptSerializer();
 
@@ -343,9 +458,12 @@ class SiscommateBridge
             foreach (var item in (System.Collections.ArrayList)data["bls"])
                 blsList.Add(js.Deserialize<Dictionary<string, object>>(js.Serialize(item)));
 
+        // El backend Node manda la clave "containers" (services/siscommateClient.js
+        // pushManifest), no "container_bl" — con el nombre viejo esta lista
+        // siempre quedaba vacía y BOLCONT nunca recibía filas, en ningún push.
         var contList = new List<Dictionary<string, object>>();
-        if (data.ContainsKey("container_bl"))
-            foreach (var item in (System.Collections.ArrayList)data["container_bl"])
+        if (data.ContainsKey("containers"))
+            foreach (var item in (System.Collections.ArrayList)data["containers"])
                 contList.Add(js.Deserialize<Dictionary<string, object>>(js.Serialize(item)));
 
         using (var conn = new OleDbConnection(GetConnectionString()))
@@ -358,8 +476,14 @@ class SiscommateBridge
             {
                 chk.Parameters.AddWithValue("manifest", voyageNo);
                 int exists = Convert.ToInt32(chk.ExecuteScalar());
+                // Antes esto hacía "return" con un string de error, y el
+                // handler de /guardar lo envolvía igual en {"ok":true,...} —
+                // Node nunca se enteraba de que no se escribió nada. Tirar la
+                // excepción lo hace pasar por el mismo camino de error que ya
+                // usan el resto de los fallos (BOL/BOLITEM), que sí llega a
+                // Node como {"error":...}.
                 if (exists > 0)
-                    return "ERROR: El viaje " + voyageNo + " ya existe en SISCOMMATE. Eliminelo primero.";
+                    throw new Exception("El viaje " + voyageNo + " ya existe en SISCOMMATE. Eliminelo primero para reenviarlo.");
             }
 
             int lotenum = ObtenerUltimoLote() + 1;
@@ -400,7 +524,11 @@ class SiscommateBridge
                 AddDate(cmd, "idate",    departure);
                 cmd.Parameters.AddWithValue("dtime",    "18:00");
                 cmd.Parameters.AddWithValue("forigin",  "");
-                cmd.Parameters.AddWithValue("master1",  "");
+                // master1-5 no se usan para nada más en el esquema real (todo
+                // blanco hasta en un manifiesto genuino de SISCOMMATE) — se usa
+                // master1 para el número de manifiesto de Hacienda, que antes
+                // no se mandaba a ningún lado en este push.
+                cmd.Parameters.AddWithValue("master1",  GetStr(mDict, "manifest_no"));
                 cmd.Parameters.AddWithValue("master2",  "");
                 cmd.Parameters.AddWithValue("master3",  "");
                 cmd.Parameters.AddWithValue("master4",  "");
@@ -444,7 +572,12 @@ class SiscommateBridge
                     cmd.Parameters.AddWithValue("manifest", voyageNo);
                     cmd.Parameters.AddWithValue("bolno",    GetStr(bl, "bl_no"));
                     AddDate(cmd, "date",     DateTime.Now);
-                    cmd.Parameters.AddWithValue("ttype",    "O");  // O = Ocean
+                    // Antes "O" (se asumía "Ocean") — un manifiesto real creado
+                    // por SISCOMMATE (CF123T) usa "A" en todos sus B/L, y HCDPR
+                    // (la otra app que escribe a estas mismas tablas) también
+                    // usa "A" siempre. Sin más evidencia de qué distingue un
+                    // valor de otro, se sigue el dato real confirmado.
+                    cmd.Parameters.AddWithValue("ttype",    "A");
                     cmd.Parameters.AddWithValue("boltype",  "M");
                     cmd.Parameters.AddWithValue("consigne", GetStr(bl, "consignee_name"));
                     cmd.Parameters.AddWithValue("exporter", GetStr(bl, "consignor_name"));
@@ -485,7 +618,7 @@ class SiscommateBridge
                     cmd.Parameters.AddWithValue("manifest", voyageNo);
                     cmd.Parameters.AddWithValue("bolno",    GetStr(cbl, "bl_no"));
                     cmd.Parameters.AddWithValue("contain",  GetStr(cbl, "container_no"));
-                    cmd.Parameters.AddWithValue("size",     GetStr(cbl, "size"));
+                    cmd.Parameters.AddWithValue("size",     NormalizarSize(GetStr(cbl, "size")));
                     cmd.Parameters.AddWithValue("type",     "R");
                     cmd.Parameters.AddWithValue("control",  control.ToString());
                     AddNumeric(cmd, "sec",   1m);
@@ -532,7 +665,8 @@ class SiscommateBridge
                 }
             }
 
-            return "Lote " + lotenum + " insertado: " + blsList.Count + " BL, " + contList.Count + " contenedores";
+            msg = "Lote " + lotenum + " insertado: " + blsList.Count + " BL, " + contList.Count + " contenedores";
+            return lotenum;
         }
     }
 }

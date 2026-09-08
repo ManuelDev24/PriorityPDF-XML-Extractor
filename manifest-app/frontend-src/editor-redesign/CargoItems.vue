@@ -13,6 +13,12 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Pencil, Trash2, Zap } from '@lucide/vue';
 
+// El Select de reka-ui reserva value="" para "sin selección" — usarlo en un
+// SelectItem tira "Unhandled error during execution of setup function" en
+// cuanto el diálogo se monta. TODOS_LOS_CONTENEDORES es el valor real que
+// representa esa opción; se traduce a null al guardar (ver guardarModal).
+const TODOS_LOS_CONTENEDORES = '__todos__';
+
 const items = ref<ItemCarga[]>([]);
 const cnos = computed(() => contenedoresDelBL.value.map(c => c.container_no));
 const multi = computed(() => cnos.value.length > 1);
@@ -68,7 +74,7 @@ function abrirAgregar(forzarCno: string | null) {
   const contenedor = forzarCno ? contenedoresDelBL.value.find(c => c.container_no === forzarCno) : null;
   fCantidad.value = contenedor?.amount || Number(bl?.package_qty) || 0;
   fGoods.value = bl?.goods_name || ''; fPeso.value = Number(bl?.gross_weight) || 0;
-  fCodigo.value = bl?.hacienda_item_code || ''; fTarifa.value = bl?.hacienda_tariff || ''; fCont.value = forzarCno ?? '';
+  fCodigo.value = bl?.hacienda_item_code || ''; fTarifa.value = bl?.hacienda_tariff || ''; fCont.value = forzarCno ?? TODOS_LOS_CONTENEDORES;
   modalAbierto.value = true;
 }
 function abrirEditar(id: number) {
@@ -88,7 +94,8 @@ async function guardarModal() {
       await api.actualizarItem(editandoId.value, { goods_name: fGoods.value.trim(), package_qty: fCantidad.value, gross_weight: fPeso.value, hacienda_item_code: fCodigo.value.trim() || null, hacienda_tariff: fTarifa.value || null });
       toast('Item actualizado');
     } else {
-      await api.crearItem(bl.id, { goods_name: fGoods.value.trim(), package_qty: fCantidad.value, gross_weight: fPeso.value, hacienda_item_code: fCodigo.value.trim() || null, hacienda_tariff: fTarifa.value || null, container_no: fCont.value || null });
+      const contenedor = fCont.value && fCont.value !== TODOS_LOS_CONTENEDORES ? fCont.value : null;
+      await api.crearItem(bl.id, { goods_name: fGoods.value.trim(), package_qty: fCantidad.value, gross_weight: fPeso.value, hacienda_item_code: fCodigo.value.trim() || null, hacienda_tariff: fTarifa.value || null, container_no: contenedor });
       toast('Item agregado');
     }
     modalAbierto.value = false;
@@ -201,7 +208,7 @@ async function eliminar(id: number) {
           <Select v-model="fCont">
             <SelectTrigger class="h-9 text-xs"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem v-if="!contForzado" value="">Todos los contenedores</SelectItem>
+              <SelectItem v-if="!contForzado" :value="TODOS_LOS_CONTENEDORES">Todos los contenedores</SelectItem>
               <SelectItem v-for="c in cnos" :key="c" :value="c">{{ c }}</SelectItem>
             </SelectContent>
           </Select>

@@ -251,12 +251,17 @@ router.get('/api/manifests/:id/export-txt', (req, res) => {
   });
 
   const txt = generateFullTxt(manifest, bls);
-  const filename = `${manifest.manifest_no || manifest.voyage_no}_HACIENDA.TXT`;
+  // Antes el nombre era siempre igual (voyage_no fijo) — reexportar el mismo
+  // manifiesto (p.ej. después de corregir un B/L) sobrescribía el TXT
+  // anterior en la carpeta de descargas sin avisar. La marca de tiempo hace
+  // que cada exportación quede como un archivo propio.
+  const marcaTiempo = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
+  const filename = `${manifest.manifest_no || manifest.voyage_no}_HACIENDA_${marcaTiempo}.TXT`;
 
   // Registrar export y marcar status ANTES de enviar (si res.send falla el
   // cliente puede reintentar — es preferible a no registrarlo nunca)
   db.prepare(`INSERT INTO export_log (manifest_id,filename,bl_count) VALUES (?,?,?)`)
-    .run(manifest.id, `${manifest.voyage_no}.TXT`, bls.length);
+    .run(manifest.id, filename, bls.length);
   db.prepare(`UPDATE manifests SET status='exportado', exported_at=datetime('now') WHERE id=?`)
     .run(manifest.id);
 

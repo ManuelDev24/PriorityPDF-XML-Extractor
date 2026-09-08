@@ -199,6 +199,12 @@ export async function restaurarSeleccion() {
   const blId = Number(localStorage.getItem(KEY_BL)) || 0;
   await seleccionarManifiesto(manifiestoId);
   if (blId && datosManifiesto.value) seleccionarBL(blId);
+  // Sin esto, restaurar un manifiesto "completado" (siscommate/exportado)
+  // dejaba la pestaña en "active" por defecto — el sidebar mostraba "Sin
+  // manifiestos" aunque el panel principal ya tenía el B/L cargado, como si
+  // no hubiera abierto nada.
+  const m = datosManifiesto.value?.manifest;
+  if (m) pestana.value = (m.status === 'siscommate' || m.status === 'exportado') ? 'completed' : 'active';
 }
 
 /** Contenedores vinculados al B/L abierto, con su tamaño. */

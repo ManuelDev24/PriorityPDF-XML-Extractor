@@ -2,7 +2,7 @@
 // Misma lógica que frontend-src/editor/App.vue (store.ts sin tocar). Cambia
 // la presentación: Dialog de shadcn para los modales, toast propio con las
 // clases del sistema de diseño.
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, watch, onMounted } from 'vue';
 import { api, type Cliente, type VistaPreviaTxt, type DatosSiscommateVivo } from '../editor/api';
 import {
   datosManifiesto, blActual, stats, estado, estadoDerecha, toastMsg, toastTipo,
@@ -81,6 +81,11 @@ const regla = '1'.repeat(205);
 async function verTxt(blId: number) {
   try { previa.value = await api.vistaPreviaTxt(blId); } catch { toast('Error en vista previa', 'err'); }
 }
+// Sin esto, cambiar de B/L (desde el buscador del sidebar o la lista) dejaba
+// la vista previa vieja en pantalla — mismo título "Vista previa TXT — B/L
+// X" pero con las líneas del B/L anterior, porque nada volvía a pedir el
+// preview ni lo limpiaba al cambiar de B/L activo.
+watch(() => blActual.value?.id, () => { previa.value = null; });
 
 async function revisarBridge() { try { bridgeOnline.value = (await api.estadoBridge()).online; } catch { bridgeOnline.value = false; } }
 function abrirSubida() { archivoInput.value?.click(); }
@@ -240,7 +245,14 @@ onMounted(async () => {
              escanear en vez de ocupar todo el monitor. -->
         <div class="flex-1 overflow-y-auto p-4">
           <div class="mx-auto flex h-full w-full max-w-5xl flex-col gap-4">
-          <div v-if="previa" class="overflow-hidden rounded-lg border-2 border-accent">
+          <!-- shrink-0: sin esto, este es el único hijo directo de un
+               flex-col con overflow-hidden dentro de un contenedor h-full —
+               cuando el contenido total (este + EditorPanel) supera la altura
+               disponible, flexbox fuerza TODO el achique a este div (por ser
+               el único con overflow-hidden, su min-height automático cuenta
+               como 0) y lo deja en ~4px, aunque su contenido siga intacto en
+               el DOM. shrink-0 lo saca de ese cálculo. -->
+          <div v-if="previa" class="shrink-0 overflow-hidden rounded-lg border-2 border-accent">
             <div class="flex items-center gap-2 bg-accent-soft px-3 py-2 text-sm font-medium text-accent">
               Vista previa TXT — B/L {{ blActual?.bl_no || '' }}
               <Button variant="ghost" size="icon" class="ml-auto size-6" @click="previa = null"><X class="size-3.5" /></Button>
