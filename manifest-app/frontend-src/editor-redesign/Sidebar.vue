@@ -12,8 +12,10 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import StatusBadge from './StatusBadge.vue';
-import { Trash2, ChevronRight, ChevronDown, Search, Plus, X } from '@lucide/vue';
+import { Trash2, ChevronRight, ChevronDown, Search, Plus, X, Move } from '@lucide/vue';
 
 defineProps<{ abierto: boolean }>();
 const emit = defineEmits<{ confirmar: [titulo: string, cuerpo: string, accion: () => void] }>();
@@ -136,6 +138,47 @@ async function crearNuevoBL(manifestId: number) {
     creandoBl.value = false;
   }
 }
+
+// ── Mover B/L a otro viaje ──
+const moviendoBl = ref<{ id: number; blNo: string; manifestId: number } | null>(null);
+const destinoId = ref('');
+const moviendo = ref(false);
+const destinosPosibles = () => manifiestos.value.filter(m => m.id !== moviendoBl.value?.manifestId);
+
+function pedirMoverBL(blId: number, blNo: string, manifestId: number) {
+  moviendoBl.value = { id: blId, blNo, manifestId };
+  destinoId.value = '';
+}
+
+async function confirmarMoverBL() {
+  const info = moviendoBl.value;
+  const destino = Number(destinoId.value);
+  if (!info || !destino || moviendo.value) return;
+  moviendo.value = true;
+  try {
+    await api.moverBL(info.id, destino);
+    toast(`B/L ${info.blNo} movido correctamente`);
+    // Refrescar el viaje de origen (perdió el B/L) y, si el destino ya
+    // estaba cargado en algún otro momento, también quedaría desactualizado
+    // — pero solo el origen está visible ahora mismo, así que alcanza con él.
+    if (datosManifiesto.value?.manifest.id === info.manifestId) {
+      datosManifiesto.value = await api.obtenerManifiesto(info.manifestId);
+      if (blActual.value?.id === info.id) blActual.value = datosManifiesto.value.bls[0] ?? null;
+    }
+    const origen = manifiestos.value.find(m => m.id === info.manifestId);
+    if (origen && origen.bl_count) origen.bl_count -= 1;
+    const dest = manifiestos.value.find(m => m.id === destino);
+    if (dest) dest.bl_count = (dest.bl_count || 0) + 1;
+    cargarStats();
+    moviendoBl.value = null;
+  } catch (e) {
+    let msg = (e as Error).message;
+    try { msg = JSON.parse(msg).error || msg; } catch { /* texto plano */ }
+    toast('Error moviendo B/L: ' + msg, 'err');
+  } finally {
+    moviendo.value = false;
+  }
+}
 </script>
 
 <template>
@@ -213,6 +256,11 @@ async function crearNuevoBL(manifestId: number) {
             <span class="size-1.5 shrink-0 rounded-full" :class="blActual?.id === bl.id ? 'bg-accent' : bl.status === 'validado' ? 'bg-status-validated' : 'bg-ink-faint'" />
             <span class="min-w-0 flex-1 truncate">{{ bl.bl_no }}</span>
             <button
+              class="shrink-0 rounded p-0.5 text-ink-faint opacity-0 hover:bg-accent-soft hover:text-accent group-hover/bl:opacity-100"
+              :title="'Mover B/L ' + bl.bl_no + ' a otro viaje'"
+              @click.stop="pedirMoverBL(bl.id, bl.bl_no, m.id)"
+            ><Move class="size-3" /></button>
+            <button
               class="shrink-0 rounded p-0.5 text-ink-faint opacity-0 hover:bg-danger-soft hover:text-danger group-hover/bl:opacity-100"
               :title="'Eliminar B/L ' + bl.bl_no"
               @click.stop="pedirBorrarBL(bl.id, bl.bl_no)"
@@ -221,5 +269,27 @@ async function crearNuevoBL(manifestId: number) {
         </div>
       </div>
     </div>
+
+    <Dialog :open="!!moviendoBl" @update:open="(v) => !v && (moviendoBl = null)">
+      <DialogContent v-if="moviendoBl">
+        <DialogHeader><DialogTitle>Mover B/L {{ moviendoBl.blNo }}</DialogTitle></DialogHeader>
+        <div class="flex flex-col gap-1">
+          <label class="text-xs text-ink-muted">Viaje destino</label>
+          <Select v-model="destinoId">
+            <SelectTrigger class="h-9 w-full text-xs"><SelectValue placeholder="— selecciona un viaje —" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem v-for="m in destinosPosibles()" :key="m.id" :value="String(m.id)">
+                Viaje {{ m.voyage_no }} — {{ m.vessel_name || m.vessel_code || '' }}
+              </SelectItem>
+            </SelectContent>
+          </Select>
+          <p v-if="!destinosPosibles().length" class="text-xs text-ink-faint">No hay otro viaje al cual mover este B/L.</p>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" @click="moviendoBl = null">Cancelar</Button>
+          <Button :disabled="!destinoId || moviendo" @click="confirmarMoverBL">{{ moviendo ? 'Moviendo...' : 'Mover' }}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   </aside>
 </template>

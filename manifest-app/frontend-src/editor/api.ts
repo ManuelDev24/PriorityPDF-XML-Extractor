@@ -171,6 +171,10 @@ export const api = {
     pedir<{ ok: true }>(`/api/bl/${id}`, cuerpo('PUT', campos)),
   eliminarBL: (id: number) =>
     pedir<{ ok: true }>(`/api/bl/${id}`, { method: 'DELETE' }),
+  moverBL: (id: number, manifestId: number) =>
+    pedir<{ ok: true; bl_no: string; manifest_id_anterior: number; manifest_id_nuevo: number }>(
+      `/api/bl/${id}/mover`, cuerpo('PUT', { manifest_id: manifestId })
+    ),
   vistaPreviaTxt: (id: number) => pedir<VistaPreviaTxt>(`/api/bl/${id}/txt-preview`),
 
   // Contenedores

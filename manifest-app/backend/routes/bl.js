@@ -75,6 +75,45 @@ router.delete('/api/bl/:id', (req, res) => {
   res.json({ ok: true, deleted: bl.bl_no, manifest_id: bl.manifest_id });
 });
 
+// ── MOVER UN B/L A OTRO MANIFIESTO ────────────────────────────────────────────
+// Mueve el B/L y todo lo que le pertenece en exclusiva: sus vínculos de
+// contenedor (container_bl), los contenedores mismos (containers) — solo si
+// no los comparte con otro B/L que se queda atrás — y sus items de carga
+// (bl_cargo_items). Todo en una transacción para que no quede a medias.
+router.put('/api/bl/:id/mover', (req, res) => {
+  /** @type {BLRow} */
+  const bl = db.prepare('SELECT * FROM bills_of_lading WHERE id=?').get(req.params.id);
+  if (!bl) return res.status(404).json({ error: 'B/L no encontrado' });
+
+  const destinoId = Number(req.body?.manifest_id);
+  if (!Number.isInteger(destinoId)) return res.status(400).json({ error: 'Falta el manifiesto destino' });
+  if (destinoId === bl.manifest_id) return res.status(400).json({ error: 'El B/L ya está en ese manifiesto' });
+
+  const destino = db.prepare('SELECT id FROM manifests WHERE id=?').get(destinoId);
+  if (!destino) return res.status(404).json({ error: 'Manifiesto destino no encontrado' });
+
+  if (db.prepare('SELECT 1 FROM bills_of_lading WHERE manifest_id=? AND bl_no=?').get(destinoId, bl.bl_no)) {
+    return res.status(409).json({ error: `Ya existe un B/L "${bl.bl_no}" en el manifiesto destino` });
+  }
+
+  const origenId = bl.manifest_id;
+  const mover = db.transaction(() => {
+    db.prepare('UPDATE bills_of_lading SET manifest_id=? WHERE id=?').run(destinoId, bl.id);
+    db.prepare('UPDATE container_bl SET manifest_id=? WHERE bl_no=? AND manifest_id=?')
+      .run(destinoId, bl.bl_no, origenId);
+    db.prepare(`
+      UPDATE containers SET manifest_id=?
+      WHERE manifest_id=?
+        AND container_no IN (SELECT container_no FROM container_bl WHERE bl_no=? AND manifest_id=?)
+        AND container_no NOT IN (SELECT container_no FROM container_bl WHERE manifest_id=?)
+    `).run(destinoId, origenId, bl.bl_no, destinoId, origenId);
+    db.prepare('UPDATE bl_cargo_items SET manifest_id=? WHERE bl_id=?').run(destinoId, bl.id);
+  });
+  mover();
+
+  res.json({ ok: true, bl_no: bl.bl_no, manifest_id_anterior: origenId, manifest_id_nuevo: destinoId });
+});
+
 // ── PREVIEW TXT DE UN B/L ────────────────────────────────────────────────────
 router.get('/api/bl/:id/txt-preview', (req, res) => {
   const bl = db.prepare(`
