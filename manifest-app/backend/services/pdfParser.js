@@ -121,7 +121,11 @@ function normContainerNo(raw) {
   if (!raw) return '';
   const m = raw.match(/^([A-Z]{4})\s*(\d{6})\s*-?\s*(\d)?$/);
   if (m) return m[1] + m[2] + (m[3] || '');
-  return raw.replace(/\s+/g, '');
+  // Fuera de ese patrón exacto (p.ej. cuando el PDF omite el prefijo de 4
+  // letras, o cuando es una marca tipo "PALLET-000123"), el guión no aporta
+  // nada — se quita igual que los espacios para no dejar contenedores con
+  // "-" a medias.
+  return raw.replace(/\s+/g, '').replace(/-/g, '');
 }
 
 /**
