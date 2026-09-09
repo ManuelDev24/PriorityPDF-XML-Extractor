@@ -128,16 +128,21 @@ function sanitizeSS(ss) {
 }
 
 /**
- * Quita cualquier carácter que no sea letra o número del número de
- * contenedor antes de escribirlo en el TXT. Sea cual sea el origen del dato
- * (PDF mal extraído, XML, o el operador escribiéndolo a mano en el editor),
- * un punto, dos puntos, guión u otro símbolo colado en este campo hace que
- * SISCOMMATE/Hacienda rechace la línea al recibir el TXT.
- * @param {string|null|undefined} containerNo
+ * Quita cualquier carácter que no sea letra o número. Se usa en TODOS los
+ * campos identificador/código de ancho fijo que van al TXT — contenedor,
+ * B/L, viaje, No. de manifiesto, IVU — sin importar el origen del dato (PDF
+ * mal extraído, XML, o el operador escribiéndolo a mano en el editor): un
+ * punto, dos puntos, guión u otro símbolo colado en cualquiera de esos
+ * campos hace que SISCOMMATE/Hacienda rechace la línea al recibir el TXT.
+ *
+ * NO se usa en nombres, direcciones ni descripciones — ahí el punto, la
+ * coma o el "&" son contenido real ("S.A.", "KM. 72.2", "P.O. BOX") y
+ * quitarlos dañaría el dato en vez de limpiarlo.
+ * @param {string|null|undefined} valor
  * @returns {string}
  */
-function sanitizeContainerNo(containerNo) {
-  return String(containerNo || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+function sanitizeIdentificador(valor) {
+  return String(valor || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 }
 
 // Puerto XML/DGA → código SISCOMMATE (fuente: ports.dbf de SISCOMMATE)
@@ -232,9 +237,9 @@ function toSiscommatePort(code) {
  */
 function generateTxtLine0(manifest, blCount) {
   const carrier = pad(manifest.carrier_code || setting('default_carrier_code', 'MPRIORO'), 7);
-  const manNo   = pad(manifest.manifest_no || '', 7);
+  const manNo   = pad(sanitizeIdentificador(manifest.manifest_no), 7);
   const vessel  = pad(manifest.vessel_name || '', 16);
-  const voyNo   = pad(manifest.voyage_no || '', 6);
+  const voyNo   = pad(sanitizeIdentificador(manifest.voyage_no), 6);
   const imo     = padZ(manifest.imo || '0', 7);
   const dep     = (manifest.departure_date || '').replace(/-/g, '').substring(0, 8).padEnd(8, ' ');
   const arr     = (manifest.arrival_date || '').replace(/-/g, '').substring(0, 8).padEnd(8, ' ');
@@ -308,12 +313,12 @@ function generateTxtLine1(bl, manifest, containerNo) {
   const valCents = padZ(Math.round(fobValue * 100), 9);
   // tariff+R: '040R', '045R', o 4 espacios si es libre arancel / tránsito
   const tariffR  = tariff ? `${pad(tariff, 3)}R` : '    ';
-  const ivu11    = bl.hacienda_client_ivu || manifest.carrier_ivu || '';
+  const ivu11    = sanitizeIdentificador(bl.hacienda_client_ivu || manifest.carrier_ivu);
   return (
     '1' +
-    pad(bl.bl_no, 16) +          // [1:17]
+    pad(sanitizeIdentificador(bl.bl_no), 16) + // [1:17]
     'AM' +                        // [17:19]
-    pad(sanitizeContainerNo(containerNo !== undefined ? containerNo : bl.hacienda_container_no), 18) + // [19:37]
+    pad(sanitizeIdentificador(containerNo !== undefined ? containerNo : bl.hacienda_container_no), 18) + // [19:37]
     pad(bl.consignee_name, 30) +  // [37:67]
     ss9 +                         // [67:76]
     'C      ' +                   // [76:83] tipo C + 6 espacios
@@ -372,7 +377,7 @@ function generateTxtLine2(bl, containerNo, containerCount, item) {
   const unitType  = pad(hasContainer ? 'BOX' : 'LSE', 6);
   return (
     '2' +
-    pad(bl.bl_no, 16) +
+    pad(sanitizeIdentificador(bl.bl_no), 16) +
     qty +
     unitType +
     weightG +

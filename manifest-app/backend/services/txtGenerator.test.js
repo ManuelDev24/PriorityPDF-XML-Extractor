@@ -94,7 +94,7 @@ test('línea 0 coloca cada campo en su posición documentada', () => {
 test('línea 1 coloca cada campo en su posición documentada', () => {
   const l1 = generateTxtLine1(bl, manifest, 'PRRU2010106');
   assert.strictEqual(l1[0], '1',                             'tipo en [0]');
-  assert.strictEqual(l1.substring(1, 17), pad('PYRR-2617593', 16), 'bl_no en [1:17]');
+  assert.strictEqual(l1.substring(1, 17), pad('PYRR2617593', 16), 'bl_no en [1:17] — sin guión, igual que se guarda en la base');
   assert.strictEqual(l1.substring(17, 19), 'AM',             'AM en [17:19]');
   assert.strictEqual(l1.substring(19, 37), pad('PRRU2010106', 18), 'contenedor en [19:37]');
   assert.strictEqual(l1.substring(37, 67), pad('LANCO MANUFACTURING CORP', 30), 'consignee en [37:67]');
@@ -109,7 +109,7 @@ test('línea 1 coloca cada campo en su posición documentada', () => {
 test('línea 2 coloca cada campo en su posición documentada', () => {
   const l2 = generateTxtLine2(bl, 'PRRU2010106', 1, null);
   assert.strictEqual(l2[0], '2',                          'tipo en [0]');
-  assert.strictEqual(l2.substring(1, 17), pad('PYRR-2617593', 16), 'bl_no en [1:17]');
+  assert.strictEqual(l2.substring(1, 17), pad('PYRR2617593', 16), 'bl_no en [1:17] — sin guión, igual que se guarda en la base');
   assert.strictEqual(l2.substring(17, 22), '00288',       'cantidad en [17:22]');
   assert.strictEqual(l2.substring(22, 28), 'BOX   ',      'unidad en [22:28]');
   assert.strictEqual(l2.substring(28, 35), '1250050',     'peso ×100 en [28:35]');
