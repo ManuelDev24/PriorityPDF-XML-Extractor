@@ -150,8 +150,21 @@ function consultarManifiesto(voyageNo) {
   return bridgeRequest('GET', '/consultar?voyage=' + encodeURIComponent(voyageNo), null);
 }
 
+/**
+ * Busca clientes reales de SISCOMMATE (tabla CUSTOMER) por nombre o SS/EIN,
+ * para autocompletar el consignatario en el editor. Nunca lanza: si el
+ * bridge no responde, se devuelve una lista vacía en vez de romper la
+ * búsqueda local de clientes.
+ * @param {string} q
+ * @returns {Promise<object[]>}
+ */
+async function buscarClientesSiscommate(q) {
+  try { return await bridgeRequest('GET', '/clientes?q=' + encodeURIComponent(q), null); }
+  catch (_) { return []; }
+}
+
 module.exports = {
   getBridgeConfig, bridgeRequest,
-  getBridgeStatus, getLote, pushManifest, consultarManifiesto,
+  getBridgeStatus, getLote, pushManifest, consultarManifiesto, buscarClientesSiscommate,
   BRIDGE_TIMEOUT_MS,
 };

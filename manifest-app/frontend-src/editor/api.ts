@@ -110,6 +110,19 @@ export interface Cliente {
   ivu?: string;
 }
 
+/** Cliente real de SISCOMMATE (tabla CUSTOMER, vía el bridge) — de solo lectura. */
+export interface ClienteSiscommate {
+  name: string;
+  ss: string;
+  code?: string;
+  taxid?: string;
+  add1?: string;
+  add2?: string;
+  add3?: string;
+  phone1?: string;
+  ivu?: string;
+}
+
 export interface Puerto { code: string; description: string; country: string }
 export interface Carrier { code: string; name: string; scac: string; ivu?: string }
 export interface Buque   { code: string; name: string; imo: string; carrier: string; scac: string }
@@ -158,6 +171,8 @@ const cuerpo = (metodo: string, body: unknown): RequestInit => ({
 export const api = {
   // Manifiestos
   listarManifiestos: () => pedir<Manifiesto[]>('/api/manifests'),
+  crearManifiesto: (voyageNo: string) =>
+    pedir<{ ok: true; manifest: Manifiesto }>('/api/manifests', cuerpo('POST', { voyage_no: voyageNo })),
   obtenerManifiesto: (id: number) => pedir<DatosManifiesto>(`/api/manifests/${id}`),
   actualizarManifiesto: (id: number, campos: Partial<Manifiesto>) =>
     pedir<{ ok: true }>(`/api/manifests/${id}`, cuerpo('PUT', campos)),
@@ -194,6 +209,8 @@ export const api = {
   buscarItems: (q: string) => pedir<ItemHacienda[]>(`/api/catalogs/items?q=${encodeURIComponent(q)}`),
   sugerirItems: (desc: string) => pedir<ItemHacienda[]>(`/api/catalogs/items/suggest?desc=${encodeURIComponent(desc)}`),
   buscarClientes: (q: string) => pedir<Cliente[]>(`/api/catalogs/clients?q=${encodeURIComponent(q)}`),
+  buscarClientesSiscommate: (q: string) =>
+    pedir<ClienteSiscommate[]>(`/api/catalogs/siscommate-clients?q=${encodeURIComponent(q)}`),
   crearCliente: (c: Partial<Cliente> & { phone1?: string }) =>
     pedir<{ ok: true; client: Cliente }>('/api/catalogs/clients', cuerpo('POST', c)),
   actualizarCliente: (id: number, c: Partial<Cliente> & { phone1?: string }) =>

@@ -19,6 +19,21 @@ const { validateForSubmission } = require('../services/blValidation');
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
+// ── CREAR VIAJE VACÍO (sin XML/PDF, se llena todo a mano) ────────────────────
+router.post('/api/manifests', (req, res) => {
+  const voyageNo = String(req.body?.voyage_no || '').trim();
+  if (!voyageNo) return res.status(400).json({ error: 'El número de viaje es obligatorio' });
+  if (db.prepare('SELECT 1 FROM manifests WHERE voyage_no=?').get(voyageNo)) {
+    return res.status(409).json({ error: `Ya existe un viaje "${voyageNo}"` });
+  }
+  const info = db.prepare(`
+    INSERT INTO manifests (filename, voyage_no, status)
+    VALUES ('', ?, 'borrador')
+  `).run(voyageNo);
+  const manifest = db.prepare('SELECT * FROM manifests WHERE id=?').get(info.lastInsertRowid);
+  res.status(201).json({ ok: true, manifest });
+});
+
 // ── SUBIR MANIFIESTO (XML de la DGA o PDF digital) ───────────────────────────
 router.post('/api/manifests/upload', upload.single('xml'), async (req, res) => {
   try {

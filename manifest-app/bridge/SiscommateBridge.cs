@@ -119,6 +119,25 @@ class SiscommateBridge
                         var cols = ObtenerEsquema(tabla);
                         Send(resp, 200, new JavaScriptSerializer().Serialize(cols));
                     }
+                    // Búsqueda de clientes reales de SISCOMMATE (tabla CUSTOMER) por
+                    // nombre o SS/EIN, para autocompletar el consignatario en el editor.
+                    else if (method == "GET" && path == "/clientes")
+                    {
+                        string q = req.QueryString["q"] ?? "";
+                        var clientes = BuscarClientes(q);
+                        Send(resp, 200, new JavaScriptSerializer().Serialize(clientes));
+                    }
+                    // Uso puntual y manual: primeras N filas de cualquier tabla, para
+                    // explorar datos reales (p.ej. CUSTOMER/CONSIGNE) sin tener que
+                    // escribir una ruta nueva cada vez.
+                    else if (method == "GET" && path == "/muestra")
+                    {
+                        string tabla = req.QueryString["tabla"] ?? "";
+                        int limite;
+                        if (!int.TryParse(req.QueryString["limite"], out limite) || limite <= 0) limite = 10;
+                        var filas = ObtenerMuestra(tabla, limite);
+                        Send(resp, 200, new JavaScriptSerializer().Serialize(filas));
+                    }
                     else if (method == "POST" && path == "/eliminar")
                     {
                         string body2 = new StreamReader(req.InputStream, Encoding.UTF8).ReadToEnd();
@@ -358,6 +377,46 @@ class SiscommateBridge
             result["bls"]        = ConsultarTabla(conn, "BOL",     voyageNo);
             result["items"]      = ConsultarTabla(conn, "BOLITEM", voyageNo);
             result["containers"] = ConsultarTabla(conn, "BOLCONT", voyageNo);
+        }
+        return result;
+    }
+
+    static List<Dictionary<string, object>> BuscarClientes(string q)
+    {
+        var result = new List<Dictionary<string, object>>();
+        if (string.IsNullOrWhiteSpace(q) || q.Trim().Length < 2) return result;
+        string like = "%" + q.Replace("%", "").Replace("_", "").Trim() + "%";
+        using (var conn = new OleDbConnection(GetConnectionString()))
+        {
+            conn.Open();
+            using (var cmd = new OleDbCommand(
+                "SELECT TOP 15 name, ss, code, taxid, add1, add2, add3, phone1, ivu " +
+                "FROM CUSTOMER WHERE name LIKE ? OR ss LIKE ? ORDER BY name", conn))
+            {
+                cmd.Parameters.AddWithValue("name", like);
+                cmd.Parameters.AddWithValue("ss", like);
+                using (var reader = cmd.ExecuteReader())
+                {
+                    while (reader.Read()) result.Add(ReadRow(reader));
+                }
+            }
+        }
+        return result;
+    }
+
+    static List<Dictionary<string, object>> ObtenerMuestra(string tabla, int limite)
+    {
+        var result = new List<Dictionary<string, object>>();
+        using (var conn = new OleDbConnection(GetConnectionString()))
+        {
+            conn.Open();
+            // VFP exige ORDER BY junto con TOP; se ordena por la primera columna
+            // física de la tabla (no se sabe de antemano cuál es la clave real).
+            using (var cmd = new OleDbCommand("SELECT TOP " + limite + " * FROM " + tabla + " ORDER BY 1", conn))
+            using (var reader = cmd.ExecuteReader())
+            {
+                while (reader.Read()) result.Add(ReadRow(reader));
+            }
         }
         return result;
     }

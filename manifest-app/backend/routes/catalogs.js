@@ -5,6 +5,7 @@
 const express = require('express');
 const db = require('../db/connection');
 const { VESSELS, PORT_MAPPINGS, VALID_CONTAINER_SIZES } = require('../db/catalogDefaults');
+const { buscarClientesSiscommate } = require('../services/siscommateClient');
 
 const router = express.Router();
 
@@ -95,6 +96,14 @@ router.get('/api/catalogs/clients', (req, res) => {
   res.json(db.prepare(
     `SELECT * FROM clients WHERE name LIKE ? OR taxid LIKE ? OR ss LIKE ? ORDER BY name LIMIT 20`
   ).all(`%${q}%`, `%${q}%`, `%${q}%`));
+});
+
+// Clientes reales de SISCOMMATE (tabla CUSTOMER, vía el bridge) — para
+// autocompletar el consignatario con datos que no están en nuestro catálogo
+// local. De solo lectura: nunca se guarda nada de vuelta en SISCOMMATE aquí.
+router.get('/api/catalogs/siscommate-clients', async (req, res) => {
+  const q = req.query.q || '';
+  res.json(await buscarClientesSiscommate(q));
 });
 
 router.post('/api/catalogs/clients', (req, res) => {

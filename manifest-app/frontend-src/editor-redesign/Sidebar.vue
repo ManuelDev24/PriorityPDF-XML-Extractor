@@ -28,6 +28,32 @@ const nuevoBlNo = ref('');
 const creandoBl = ref(false);
 let temporizador: ReturnType<typeof setTimeout> | undefined;
 
+// ── Nuevo viaje manual (sin XML/PDF) ──
+const nuevoViajeAbierto = ref(false);
+const nuevoViajeNo = ref('');
+const creandoViaje = ref(false);
+
+async function confirmarNuevoViaje() {
+  const voyageNo = nuevoViajeNo.value.trim();
+  if (!voyageNo || creandoViaje.value) return;
+  creandoViaje.value = true;
+  try {
+    const data = await api.crearManifiesto(voyageNo);
+    nuevoViajeAbierto.value = false;
+    await cargarManifiestos();
+    cargarStats();
+    pestana.value = 'active';
+    await seleccionarManifiesto(data.manifest.id);
+    toast(`Viaje ${voyageNo} creado`);
+  } catch (e) {
+    let msg = (e as Error).message;
+    try { msg = JSON.parse(msg).error || msg; } catch { /* texto plano */ }
+    toast('Error creando viaje: ' + msg, 'err');
+  } finally {
+    creandoViaje.value = false;
+  }
+}
+
 const lista = () => filtrados.value ?? manifiestosFiltrados.value;
 
 function cambiarPestana(p: string) {
@@ -198,6 +224,11 @@ async function confirmarMoverBL() {
     <div class="flex items-center gap-2 border-b border-border px-3 py-2">
       <Search class="size-3.5 shrink-0 text-ink-faint" />
       <Input v-model="busqueda" placeholder="Buscar viaje o B/L..." class="h-7 border-0 px-0 shadow-none focus-visible:ring-0" @input="alBuscar" />
+      <button
+        class="flex shrink-0 items-center gap-0.5 rounded bg-emerald-600 px-1.5 py-1 text-xs font-medium text-white hover:bg-emerald-700"
+        title="Nuevo viaje (manual, sin XML/PDF)"
+        @click="nuevoViajeAbierto = true; nuevoViajeNo = ''"
+      ><Plus class="size-3.5" />Viaje</button>
     </div>
 
     <div v-if="blsHallados.length" class="border-b border-border bg-paper">
@@ -269,6 +300,21 @@ async function confirmarMoverBL() {
         </div>
       </div>
     </div>
+
+    <Dialog :open="nuevoViajeAbierto" @update:open="(v) => nuevoViajeAbierto = v">
+      <DialogContent>
+        <DialogHeader><DialogTitle>Nuevo viaje</DialogTitle></DialogHeader>
+        <div class="flex flex-col gap-1">
+          <label class="text-xs text-ink-muted">Número de viaje</label>
+          <Input v-model="nuevoViajeNo" placeholder="ej. K1340" class="h-9 text-xs" @keyup.enter="confirmarNuevoViaje" />
+          <p class="text-xs text-ink-faint">Se crea vacío — todos los demás campos (buque, fechas, puertos, B/L) se completan luego en el editor.</p>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" @click="nuevoViajeAbierto = false">Cancelar</Button>
+          <Button class="bg-emerald-600 text-white hover:bg-emerald-700" :disabled="!nuevoViajeNo.trim() || creandoViaje" @click="confirmarNuevoViaje">{{ creandoViaje ? 'Creando...' : 'Crear viaje' }}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
 
     <Dialog :open="!!moviendoBl" @update:open="(v) => !v && (moviendoBl = null)">
       <DialogContent v-if="moviendoBl">

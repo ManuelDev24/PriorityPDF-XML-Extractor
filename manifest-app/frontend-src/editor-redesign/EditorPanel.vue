@@ -5,7 +5,7 @@
 // vez de fracciones iguales (era el reclamo original: IMO con 7 caracteres
 // ocupaba el mismo ancho que el nombre del buque).
 import { ref, computed, watch } from 'vue';
-import { api, type ItemHacienda, type Cliente } from '../editor/api';
+import { api, type ItemHacienda, type Cliente, type ClienteSiscommate } from '../editor/api';
 import {
   datosManifiesto, blActual, carriers, puertos, buques, contenedoresDelBL, tamanosValidos,
   actualizarBL, actualizarManifiesto, cerrarBL, setEstado, toast,
@@ -176,6 +176,7 @@ function alCambiarDescripcion(valor: string) {
 // ── Combobox: consignatario ──
 const clienteAbierto = ref(false);
 const clientesHallados = ref<Cliente[]>([]);
+const clientesSiscommate = ref<ClienteSiscommate[]>([]);
 const nombreCliente = ref('');
 const clienteId = ref<number | null>(null);
 const busquedaCliente = ref('');
@@ -184,26 +185,67 @@ let tCliente: ReturnType<typeof setTimeout> | undefined;
 function buscarCliente(q: string) {
   busquedaCliente.value = q;
   clearTimeout(tCliente);
-  if (!q || q.length < 2) { clientesHallados.value = []; return; }
+  if (!q || q.length < 2) { clientesHallados.value = []; clientesSiscommate.value = []; return; }
   tCliente = setTimeout(async () => {
     try { clientesHallados.value = await api.buscarClientes(q); } catch { clientesHallados.value = []; }
+    try { clientesSiscommate.value = await api.buscarClientesSiscommate(q); } catch { clientesSiscommate.value = []; }
   }, 200);
 }
+
+// Última línea no vacía = ciudad, el resto = calle. Con 1 sola línea, esa
+// línea se usa como calle y no hay ciudad — más seguro que adivinar.
+function partirDireccion(lineas: Array<string | undefined>) {
+  const validas = lineas.filter((l): l is string => !!l && l.trim() !== '');
+  if (validas.length <= 1) return { street: validas[0] || '', city: '' };
+  return { street: validas.slice(0, -1).join(', '), city: validas[validas.length - 1] };
+}
+// No pisa lo que el operador ya haya escrito a mano en el consignatario.
+function rellenarSiVacio(campo: 'consignee_name' | 'consignee_tel' | 'consignee_street' | 'consignee_city', valor: string) {
+  if (valor && !bl.value[campo]) actualizarBL(campo, valor);
+}
+
 function elegirCliente(c: Cliente) {
   actualizarBL('hacienda_client_ss', c.ss);
   clienteAbierto.value = false;
   nombreCliente.value = c.name;
   clienteId.value = c.id;
   if (c.ivu && !bl.value.hacienda_client_ivu) actualizarBL('hacienda_client_ivu', c.ivu);
+  rellenarSiVacio('consignee_name', c.name);
+  rellenarSiVacio('consignee_tel', c.phone1 || '');
+  rellenarSiVacio('consignee_street', c.add1 || '');
+  rellenarSiVacio('consignee_city', c.add2 || '');
 }
 function aplicarCliente(c: Cliente) { elegirCliente(c); }
 defineExpose({ aplicarCliente });
-// Igual que alElegirCodigo: el Combobox entrega el `value` (id como string),
-// más el caso especial "crear-nuevo" que antes vivía como CommandItem aparte.
+
+// Cliente real de SISCOMMATE (CUSTOMER) elegido — mismo llenado, pero sin id
+// local (no vive en nuestro catálogo `clients`) y con dirección de 3 líneas.
+function elegirClienteSiscommate(c: ClienteSiscommate) {
+  actualizarBL('hacienda_client_ss', c.ss);
+  clienteAbierto.value = false;
+  nombreCliente.value = c.name;
+  clienteId.value = null;
+  if (c.ivu && !bl.value.hacienda_client_ivu) actualizarBL('hacienda_client_ivu', c.ivu);
+  const { street, city } = partirDireccion([c.add1, c.add2, c.add3]);
+  rellenarSiVacio('consignee_name', c.name);
+  rellenarSiVacio('consignee_tel', c.phone1 || '');
+  rellenarSiVacio('consignee_street', street);
+  rellenarSiVacio('consignee_city', city);
+}
+
+// Igual que alElegirCodigo: el Combobox entrega el `value` (string), más los
+// casos especiales "crear-nuevo" y "sis:<indice>" para un resultado de
+// SISCOMMATE (no tiene id local; nunca puede ser value="" — ver bug de
+// CargoItems.vue con SelectItem value="").
 function alElegirClienteValor(valor: string) {
   if (valor === 'crear-nuevo') {
     clienteAbierto.value = false;
     emit('crearCliente', busquedaCliente.value);
+    return;
+  }
+  if (valor.startsWith('sis:')) {
+    const c = clientesSiscommate.value[Number(valor.slice(4))];
+    if (c) elegirClienteSiscommate(c);
     return;
   }
   const c = clientesHallados.value.find(x => String(x.id) === valor);
@@ -213,6 +255,7 @@ function alElegirClienteValor(valor: string) {
 watch(() => bl.value?.id, () => {
   itemAbierto.value = false; clienteAbierto.value = false;
   sugerencias.value = []; nombreCliente.value = ''; clienteId.value = null; descItem.value = '';
+  clientesHallados.value = []; clientesSiscommate.value = [];
   if (bl.value?.hacienda_item_code) cargarDescItem(bl.value.hacienda_item_code);
   else if (bl.value?.goods_name) sugerir(bl.value.goods_name);
 }, { immediate: true });
@@ -445,11 +488,19 @@ watch(() => bl.value?.id, () => {
               </ComboboxAnchor>
               <ComboboxList>
                 <ComboboxEmpty>Sin resultados</ComboboxEmpty>
-                <ComboboxGroup>
+                <ComboboxGroup v-if="clientesHallados.length" heading="Locales">
                   <ComboboxItem v-for="c in clientesHallados" :key="c.id" :value="String(c.id)">
                     <span class="flex-1 truncate">{{ c.name }}</span>
                     <span class="font-mono text-xs text-ink-faint">{{ c.ss || '—' }}</span>
                   </ComboboxItem>
+                </ComboboxGroup>
+                <ComboboxGroup v-if="clientesSiscommate.length" heading="SISCOMMATE">
+                  <ComboboxItem v-for="(c, i) in clientesSiscommate" :key="'sis:'+i" :value="'sis:'+i">
+                    <span class="flex-1 truncate">{{ c.name }}</span>
+                    <span class="font-mono text-xs text-ink-faint">{{ c.ss || '—' }}</span>
+                  </ComboboxItem>
+                </ComboboxGroup>
+                <ComboboxGroup>
                   <ComboboxItem value="crear-nuevo" class="text-accent">
                     + Crear nuevo consignatario…
                   </ComboboxItem>
@@ -458,7 +509,8 @@ watch(() => bl.value?.id, () => {
             </Combobox>
             <p v-if="nombreCliente" class="flex items-center gap-1 text-xs text-status-validated">
               <Check class="size-3" />{{ nombreCliente }}
-              <button class="text-accent underline" @click="emit('editarCliente', clienteId || 0, bl.hacienda_client_ss || '', nombreCliente)">Editar</button>
+              <button v-if="clienteId !== null" class="text-accent underline" @click="emit('editarCliente', clienteId || 0, bl.hacienda_client_ss || '', nombreCliente)">Editar</button>
+              <span v-else class="text-ink-faint">(SISCOMMATE)</span>
             </p>
           </div>
           <div class="col-span-12 md:col-span-3 flex flex-col gap-1">

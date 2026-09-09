@@ -58,7 +58,6 @@ function validateForSubmission(manifest, allBls) {
     bl.hacienda_item_code.trim() === '' ||
     /^0+$/.test(bl.hacienda_item_code.trim())
   );
-  const sinTarifa = validBls.filter(bl => !bl.hacienda_tariff);
   const sinSS     = validBls.filter(bl => !bl.hacienda_client_ss && !bl.consignee_document_no);
   const descLarga = validBls.filter(bl =>
     (bl.goods_name || '').replace(/[\r\n]+/g, ' ').length > DESC_MAX
@@ -66,7 +65,8 @@ function validateForSubmission(manifest, allBls) {
 
   const lista = arr => arr.map(b => b.bl_no).join(', ');
   if (sinCodigo.length) errors.push(`${sinCodigo.length} B/L sin código arancelario: ${lista(sinCodigo)}`);
-  if (sinTarifa.length) errors.push(`${sinTarifa.length} B/L sin tarifa (040/045): ${lista(sinTarifa)}`);
+  // Ya no se exige tarifa: si queda vacía, txtGenerator escribe el campo en
+  // blanco (tránsito/libre arancel) en vez de bloquear la exportación.
   if (sinSS.length)     errors.push(`${sinSS.length} B/L sin SS/EIN consignatario: ${lista(sinSS)}`);
   if (descLarga.length) errors.push(`${descLarga.length} B/L con descripción >${DESC_MAX} chars (se truncará): ${lista(descLarga)}`);
 
