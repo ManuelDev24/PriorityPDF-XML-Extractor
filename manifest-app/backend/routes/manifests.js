@@ -19,6 +19,35 @@ const { validateForSubmission } = require('../services/blValidation');
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
+/**
+ * Compara los B/L de un archivo recién parseado contra lo que ya existe en
+ * la base — en CUALQUIER manifiesto, no solo en el viaje destino — para que
+ * un B/L que el usuario movió a otro viaje (feature "mover B/L") no se
+ * reimporte ni duplique al volver a cargar el mismo PDF/XML.
+ * @param {string} voyageNo
+ * @param {{bl_no:string}[]} bls
+ */
+function clasificarBLs(voyageNo, bls) {
+  const manifiesto = db.prepare('SELECT id FROM manifests WHERE voyage_no=?').get(voyageNo);
+  const manifestId = manifiesto ? manifiesto.id : null;
+
+  // bl_no -> { manifest_id, voyage_no } en TODA la base, de un tirón
+  const ubicaciones = new Map();
+  db.prepare(`
+    SELECT b.bl_no, b.manifest_id, m.voyage_no
+    FROM bills_of_lading b JOIN manifests m ON m.id = b.manifest_id
+  `).all().forEach(r => ubicaciones.set(r.bl_no, r));
+
+  const nuevos = [], yaEnEsteViaje = [], enOtroViaje = [];
+  bls.forEach(bl => {
+    const u = ubicaciones.get(bl.bl_no);
+    if (!u) { nuevos.push(bl.bl_no); return; }
+    if (manifestId && u.manifest_id === manifestId) yaEnEsteViaje.push(bl.bl_no);
+    else enOtroViaje.push({ bl_no: bl.bl_no, voyage_no: u.voyage_no });
+  });
+  return { manifestId, nuevos, yaEnEsteViaje, enOtroViaje };
+}
+
 // ── CREAR VIAJE VACÍO (sin XML/PDF, se llena todo a mano) ────────────────────
 router.post('/api/manifests', (req, res) => {
   const voyageNo = String(req.body?.voyage_no || '').trim();
@@ -34,6 +63,32 @@ router.post('/api/manifests', (req, res) => {
   res.status(201).json({ ok: true, manifest });
 });
 
+// ── VISTA PREVIA DE CARGA (cuenta B/L nuevos/repetidos/movidos, no escribe nada) ─
+router.post('/api/manifests/upload/preview', upload.single('xml'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No se recibió ningún archivo' });
+
+    const isPdf = /\.pdf$/i.test(req.file.originalname || '') ||
+                  req.file.buffer.slice(0, 5).toString('latin1') === '%PDF-';
+    const parsed = isPdf
+      ? await parsePdfManifest(req.file.buffer)
+      : await parseXmlManifest(req.file.buffer.toString('utf8'));
+
+    const { manifestId, nuevos, yaEnEsteViaje, enOtroViaje } = clasificarBLs(parsed.header.voyage_no, parsed.bls);
+    res.json({
+      voyage_no: parsed.header.voyage_no,
+      existe_viaje: !!manifestId,
+      manifest_id: manifestId,
+      nuevos_count: nuevos.length,
+      ya_en_este_viaje_count: yaEnEsteViaje.length,
+      en_otro_viaje: enOtroViaje,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── SUBIR MANIFIESTO (XML de la DGA o PDF digital) ───────────────────────────
 router.post('/api/manifests/upload', upload.single('xml'), async (req, res) => {
   try {
@@ -45,19 +100,47 @@ router.post('/api/manifests/upload', upload.single('xml'), async (req, res) => {
       ? await parsePdfManifest(req.file.buffer)
       : await parseXmlManifest(req.file.buffer.toString('utf8'));
 
-    const info = db.prepare(`
-      INSERT INTO manifests (filename,voyage_no,vessel_code,biz_company_code,
-        loading_port,unloading_port,departure_date,arrival_date,carrier_code,manifest_no)
-      VALUES (?,?,?,?,?,?,?,?,?,?)
-    `).run(
-      req.file.originalname, parsed.header.voyage_no, parsed.header.vessel_code,
-      parsed.header.biz_company_code,
-      toSiscommatePort(parsed.header.loading_port),
-      toSiscommatePort(parsed.header.unloading_port),
-      parsed.header.departure_date,
-      parsed.header.arrival_date, 'MPRIORO', parsed.header.manifest_no || ''
-    );
-    const manifestId = info.lastInsertRowid;
+    // Reimportar el mismo viaje (p.ej. el transportista manda un PDF
+    // actualizado con B/L nuevos) no debe crear un manifiesto duplicado ni
+    // tocar los B/L que ya se trabajaron: se suman solo los B/L realmente
+    // nuevos. Un B/L que ya existe en OTRO viaje (porque el usuario lo movió
+    // ahí con "mover B/L") tampoco se reimporta — se deja donde está.
+    const { manifestId: manifestIdExistente, nuevos: nuevosBlNoArr } = clasificarBLs(parsed.header.voyage_no, parsed.bls);
+    const nuevosBlNo = new Set(nuevosBlNoArr);
+    parsed.bls = parsed.bls.filter(bl => nuevosBlNo.has(bl.bl_no));
+
+    let manifestId;
+    if (manifestIdExistente) {
+      manifestId = manifestIdExistente;
+      if (!parsed.bls.length) {
+        return res.json({
+          ok: true, manifest_id: manifestId, bl_count: 0, merged: true,
+          mensaje: `El viaje "${parsed.header.voyage_no}" ya tiene todos los B/L de este archivo (o están en otro viaje) — no se agregó nada.`,
+        });
+      }
+      parsed.cargoItems  = (parsed.cargoItems  || []).filter(ci => nuevosBlNo.has(ci.bl_no));
+      parsed.containerBLs = (parsed.containerBLs || []).filter(cb => nuevosBlNo.has(cb.bl_no));
+      const containeresYaExisten = new Set(
+        db.prepare('SELECT container_no FROM containers WHERE manifest_id=?').all(manifestId).map(r => r.container_no)
+      );
+      parsed.containers = (parsed.containers || []).filter(c => !containeresYaExisten.has(c.container_no));
+    } else if (!parsed.bls.length) {
+      return res.status(400).json({ error: 'Todos los B/L de este archivo ya están en otro viaje — no hay nada nuevo que cargar.' });
+    } else {
+      const info = db.prepare(`
+        INSERT INTO manifests (filename,voyage_no,vessel_code,biz_company_code,
+          loading_port,unloading_port,departure_date,arrival_date,carrier_code,manifest_no)
+        VALUES (?,?,?,?,?,?,?,?,?,?)
+      `).run(
+        req.file.originalname, parsed.header.voyage_no, parsed.header.vessel_code,
+        parsed.header.biz_company_code,
+        toSiscommatePort(parsed.header.loading_port),
+        toSiscommatePort(parsed.header.unloading_port),
+        parsed.header.departure_date,
+        parsed.header.arrival_date, 'MPRIORO', parsed.header.manifest_no || ''
+      );
+      manifestId = info.lastInsertRowid;
+    }
 
     // Catálogo de clientes para auto-match de SS/EIN e IVU
     /** @type {ClientRow[]} */
@@ -162,12 +245,13 @@ router.post('/api/manifests/upload', upload.single('xml'), async (req, res) => {
         insCont.run(manifestId, c.container_no, c.container_type, c.package_code,
                     c.amount, c.gross_weight, c.net_weight, c.seal_no1, size);
       });
-
+    }
+    if (parsed.containerBLs.length) {
       const insCBL = db.prepare(`INSERT INTO container_bl (container_no,bl_no,manifest_id) VALUES (?,?,?)`);
       parsed.containerBLs.forEach(cb => insCBL.run(cb.container_no, cb.bl_no, manifestId));
     }
 
-    res.json({ ok: true, manifest_id: manifestId, bl_count: parsed.bls.length });
+    res.json({ ok: true, manifest_id: manifestId, bl_count: parsed.bls.length, merged: !!manifestIdExistente });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });

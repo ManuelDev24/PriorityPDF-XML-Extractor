@@ -99,17 +99,61 @@ function abrirSubida() { archivoInput.value?.click(); }
 
 async function subir(archivo: File | undefined) {
   if (!archivo) return;
-  setEstado('Cargando manifiesto...');
+  setEstado('Revisando manifiesto...');
   const fd = new FormData(); fd.append('xml', archivo);
   try {
-    const r = await fetch('/api/manifests/upload', { method: 'POST', body: fd });
-    const data = await r.json();
-    if (!data.ok) throw new Error(data.error);
-    toast(`Manifiesto cargado: ${data.bl_count} B/L`);
-    await cargarManifiestos();
-    await seleccionarManifiesto(data.manifest_id);
-  } catch (e) { toast('Error: ' + (e as Error).message, 'err'); setEstado('Error cargando manifiesto'); }
-  if (archivoInput.value) archivoInput.value.value = '';
+    // Primero una vista previa (no escribe nada): cuenta cuántos B/L son
+    // nuevos, cuántos ya están en este mismo viaje (no se tocan al recargar
+    // el mismo PDF) y cuántos están en OTRO viaje porque el usuario los
+    // movió ahí ("mover B/L") — esos tampoco se reinsertan aquí.
+    const rp = await fetch('/api/manifests/upload/preview', { method: 'POST', body: fd });
+    const preview = await rp.json();
+    if (!rp.ok) throw new Error(preview.error);
+
+    const partes: string[] = [];
+    if (preview.existe_viaje) {
+      partes.push(preview.nuevos_count
+        ? `Se agregarán <strong>${preview.nuevos_count}</strong> B/L nuevos al viaje <strong>${preview.voyage_no}</strong>.`
+        : `El viaje <strong>${preview.voyage_no}</strong> ya tiene todos los B/L de este archivo — no se agregará nada.`);
+      if (preview.ya_en_este_viaje_count) {
+        partes.push(`${preview.ya_en_este_viaje_count} B/L de este archivo ya estaban en el viaje y no se tocan.`);
+      }
+    } else {
+      partes.push(`Se creará el viaje <strong>${preview.voyage_no}</strong> con <strong>${preview.nuevos_count}</strong> B/L.`);
+    }
+    if (preview.en_otro_viaje?.length) {
+      const lista = preview.en_otro_viaje.map((m: { bl_no: string; voyage_no: string }) => `${m.bl_no} → ${m.voyage_no}`).join(', ');
+      partes.push(`<span class="text-status-pending">${preview.en_otro_viaje.length} B/L de este archivo ya están en otro viaje y no se van a mover: ${lista}.</span>`);
+    }
+
+    const ejecutarCarga = async () => {
+      cerrarModal();
+      setEstado('Cargando manifiesto...');
+      try {
+        const r = await fetch('/api/manifests/upload', { method: 'POST', body: fd });
+        const data = await r.json();
+        if (!data.ok) throw new Error(data.error);
+        toast(data.mensaje || `Manifiesto cargado: ${data.bl_count} B/L`);
+        await cargarManifiestos();
+        await seleccionarManifiesto(data.manifest_id);
+      } catch (e) { toast('Error: ' + (e as Error).message, 'err'); setEstado('Error cargando manifiesto'); }
+      if (archivoInput.value) archivoInput.value.value = '';
+    };
+
+    if (!preview.nuevos_count) {
+      // Nada que agregar: un solo botón informativo, no hace falta
+      // confirmar una carga que no va a insertar nada.
+      modal.value = { titulo: 'Nada nuevo que cargar', cuerpo: partes.join(' '),
+        botones: [{ label: 'Entendido', variant: 'default', accion: () => { cerrarModal(); if (archivoInput.value) archivoInput.value.value = ''; } }] };
+      setEstado('Listo');
+      return;
+    }
+    modal.value = { titulo: 'Confirmar carga', cuerpo: partes.join(' '), botones: [
+      { label: 'Cancelar', variant: 'outline', accion: () => { cerrarModal(); if (archivoInput.value) archivoInput.value.value = ''; } },
+      { label: `Cargar ${preview.nuevos_count} B/L`, variant: 'default', accion: ejecutarCarga },
+    ] };
+    setEstado('Listo');
+  } catch (e) { toast('Error: ' + (e as Error).message, 'err'); setEstado('Error cargando manifiesto'); if (archivoInput.value) archivoInput.value.value = ''; }
 }
 function soltar(e: DragEvent) {
   arrastrando.value = false;
