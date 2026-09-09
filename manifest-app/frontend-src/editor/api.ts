@@ -181,20 +181,23 @@ export const api = {
 
   // B/L
   crearBL: (manifestId: number, blNo: string) =>
-    pedir<{ ok: true; bl: BL }>(`/api/manifests/${manifestId}/bl`, cuerpo('POST', { bl_no: blNo })),
+    pedir<{ ok: true; bl: BL; manifest_status?: string }>(`/api/manifests/${manifestId}/bl`, cuerpo('POST', { bl_no: blNo })),
   actualizarBL: (id: number, campos: Partial<BL>) =>
-    pedir<{ ok: true }>(`/api/bl/${id}`, cuerpo('PUT', campos)),
+    pedir<{ ok: true; manifest_status?: string }>(`/api/bl/${id}`, cuerpo('PUT', campos)),
   eliminarBL: (id: number) =>
-    pedir<{ ok: true }>(`/api/bl/${id}`, { method: 'DELETE' }),
+    pedir<{ ok: true; manifest_status?: string }>(`/api/bl/${id}`, { method: 'DELETE' }),
   moverBL: (id: number, manifestId: number) =>
-    pedir<{ ok: true; bl_no: string; manifest_id_anterior: number; manifest_id_nuevo: number }>(
-      `/api/bl/${id}/mover`, cuerpo('PUT', { manifest_id: manifestId })
-    ),
+    pedir<{
+      ok: true; bl_no: string; manifest_id_anterior: number; manifest_id_nuevo: number;
+      status_anterior?: string; status_nuevo?: string;
+    }>(`/api/bl/${id}/mover`, cuerpo('PUT', { manifest_id: manifestId })),
   vistaPreviaTxt: (id: number) => pedir<VistaPreviaTxt>(`/api/bl/${id}/txt-preview`),
 
   // Contenedores
   actualizarTamano: (id: number, size: string) =>
     pedir<{ ok: true }>(`/api/containers/${id}`, cuerpo('PUT', { size })),
+  actualizarContenedor: (id: number, campos: { size?: string; container_no?: string }) =>
+    pedir<{ ok: true; container_no: string }>(`/api/containers/${id}`, cuerpo('PUT', campos)),
 
   // Items de carga
   listarItems: (blId: number) => pedir<ItemCarga[]>(`/api/bl/${blId}/cargo-items`),

@@ -273,11 +273,15 @@ router.get('/api/manifests/:id/export-txt', (req, res) => {
   const marcaTiempo = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
   const filename = `${manifest.manifest_no || manifest.voyage_no}_HACIENDA_${marcaTiempo}.TXT`;
 
-  // Registrar export y marcar status ANTES de enviar (si res.send falla el
-  // cliente puede reintentar — es preferible a no registrarlo nunca)
+  // Registrar export ANTES de enviar (si res.send falla el cliente puede
+  // reintentar — es preferible a no registrarlo nunca). Ya no cambia el
+  // status del manifiesto: exportar el TXT no significa que el viaje esté
+  // completo — eso lo decide únicamente si todos los B/L quedaron validados
+  // (ver recalcularEstadoManifiesto en routes/bl.js). Se puede exportar
+  // cuantas veces haga falta, con o sin todos los B/L validados.
   db.prepare(`INSERT INTO export_log (manifest_id,filename,bl_count) VALUES (?,?,?)`)
     .run(manifest.id, filename, bls.length);
-  db.prepare(`UPDATE manifests SET status='exportado', exported_at=datetime('now') WHERE id=?`)
+  db.prepare(`UPDATE manifests SET exported_at=datetime('now') WHERE id=?`)
     .run(manifest.id);
 
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');

@@ -40,8 +40,13 @@ watch(blActual, (bl) => {
   else localStorage.removeItem(KEY_BL);
 });
 
+// "Completado" = todos los B/L quedaron validados (status 'validado', que el
+// backend recalcula solo) o ya se entregó de verdad a SISCOMMATE. Exportar
+// el TXT ya NO mueve el viaje aquí por sí solo — se puede exportar con B/L
+// sin validar cuantas veces haga falta sin que el viaje "desaparezca" de
+// "En curso".
+const completado = (m: Manifiesto) => m.status === 'siscommate' || m.status === 'validado';
 export const manifiestosFiltrados = computed(() => {
-  const completado = (m: Manifiesto) => m.status === 'siscommate' || m.status === 'exportado';
   return pestana.value === 'completed'
     ? manifiestos.value.filter(completado)
     : manifiestos.value.filter(m => !completado(m));
@@ -113,6 +118,17 @@ const guardadoManifiesto = crearGuardado<Manifiesto>(
   () => setEstado('Manifiesto actualizado', hora()),
   (e) => toast('Error guardando manifiesto: ' + e.message, 'err'),
 );
+
+/** Refleja en memoria el status de manifiesto que el backend recalculó (al
+ * validar/desvalidar un B/L, crearlo, borrarlo o moverlo) sin esperar un
+ * refetch completo — así el badge y la pestaña "Completados" se actualizan
+ * al toque. */
+export function sincronizarEstadoManifiesto(manifestId: number, status: string | undefined) {
+  if (!status) return;
+  if (datosManifiesto.value?.manifest.id === manifestId) datosManifiesto.value.manifest.status = status;
+  const m = manifiestos.value.find(x => x.id === manifestId);
+  if (m) m.status = status;
+}
 
 /** Actualiza un campo del B/L abierto: en memoria al instante, al servidor tras 600 ms. */
 export function actualizarBL<K extends keyof BL>(campo: K, valor: BL[K]) {
@@ -206,12 +222,12 @@ export async function restaurarSeleccion() {
   const blId = Number(localStorage.getItem(KEY_BL)) || 0;
   await seleccionarManifiesto(manifiestoId);
   if (blId && datosManifiesto.value) seleccionarBL(blId);
-  // Sin esto, restaurar un manifiesto "completado" (siscommate/exportado)
+  // Sin esto, restaurar un manifiesto "completado" (siscommate/validado)
   // dejaba la pestaña en "active" por defecto — el sidebar mostraba "Sin
   // manifiestos" aunque el panel principal ya tenía el B/L cargado, como si
   // no hubiera abierto nada.
   const m = datosManifiesto.value?.manifest;
-  if (m) pestana.value = (m.status === 'siscommate' || m.status === 'exportado') ? 'completed' : 'active';
+  if (m) pestana.value = completado(m) ? 'completed' : 'active';
 }
 
 /** Contenedores vinculados al B/L abierto, con su tamaño. */

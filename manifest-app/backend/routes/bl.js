@@ -11,6 +11,24 @@ const { generateTxtLine1, generateTxtLine2 } = require('../services/txtGenerator
 
 const router = express.Router();
 
+// ── ESTADO DEL MANIFIESTO SEGÚN SUS B/L ──────────────────────────────────────
+// El manifiesto pasa a 'validado' (pestaña "Completados") solo cuando TODOS
+// sus B/L están validados — no cuando se exporta el TXT ni al hacer push a
+// SISCOMMATE. 'siscommate' es un estado más fuerte (ya se entregó de verdad)
+// y no se recalcula: un B/L desvalidado después no debe "deshacer" un envío
+// que ya ocurrió.
+function recalcularEstadoManifiesto(manifestId) {
+  const manifest = db.prepare('SELECT status FROM manifests WHERE id=?').get(manifestId);
+  if (!manifest || manifest.status === 'siscommate') return manifest ? manifest.status : null;
+  const bls = db.prepare('SELECT status FROM bills_of_lading WHERE manifest_id=?').all(manifestId);
+  const todoValidado = bls.length > 0 && bls.every(b => b.status === 'validado');
+  const nuevo = todoValidado ? 'validado' : 'borrador';
+  if (nuevo !== manifest.status) {
+    db.prepare('UPDATE manifests SET status=? WHERE id=?').run(nuevo, manifestId);
+  }
+  return nuevo;
+}
+
 // ── ACTUALIZAR B/L ───────────────────────────────────────────────────────────
 const CAMPOS_EDITABLES_BL = [
   'goods_name','package_qty','gross_weight','value','package_unit_code',
@@ -41,7 +59,8 @@ router.post('/api/manifests/:manifestId/bl', (req, res) => {
     VALUES (?, ?, 0, 0, 0, 'pendiente')
   `).run(manifestId, blNo);
   const bl = db.prepare('SELECT * FROM bills_of_lading WHERE id=?').get(info.lastInsertRowid);
-  res.status(201).json({ ok: true, bl });
+  const manifest_status = recalcularEstadoManifiesto(manifestId);
+  res.status(201).json({ ok: true, bl, manifest_status });
 });
 
 router.put('/api/bl/:id', (req, res) => {
@@ -54,7 +73,12 @@ router.put('/api/bl/:id', (req, res) => {
     vals.push(req.params.id);
     db.prepare(`UPDATE bills_of_lading SET ${sets.join(',')} WHERE id=?`).run(...vals);
   }
-  res.json({ ok: true });
+  let manifest_status;
+  if (req.body.status !== undefined) {
+    const bl = db.prepare('SELECT manifest_id FROM bills_of_lading WHERE id=?').get(req.params.id);
+    if (bl) manifest_status = recalcularEstadoManifiesto(bl.manifest_id);
+  }
+  res.json({ ok: true, manifest_status });
 });
 
 // ── ELIMINAR UN B/L (y sus items y vínculos de contenedor) ───────────────────
@@ -72,7 +96,8 @@ router.delete('/api/bl/:id', (req, res) => {
   `).run(bl.manifest_id, bl.manifest_id);
   db.prepare('DELETE FROM bills_of_lading WHERE id=?').run(bl.id);
 
-  res.json({ ok: true, deleted: bl.bl_no, manifest_id: bl.manifest_id });
+  const manifest_status = recalcularEstadoManifiesto(bl.manifest_id);
+  res.json({ ok: true, deleted: bl.bl_no, manifest_id: bl.manifest_id, manifest_status });
 });
 
 // ── MOVER UN B/L A OTRO MANIFIESTO ────────────────────────────────────────────
@@ -111,7 +136,13 @@ router.put('/api/bl/:id/mover', (req, res) => {
   });
   mover();
 
-  res.json({ ok: true, bl_no: bl.bl_no, manifest_id_anterior: origenId, manifest_id_nuevo: destinoId });
+  const status_anterior = recalcularEstadoManifiesto(origenId);
+  const status_nuevo = recalcularEstadoManifiesto(destinoId);
+  res.json({
+    ok: true, bl_no: bl.bl_no,
+    manifest_id_anterior: origenId, manifest_id_nuevo: destinoId,
+    status_anterior, status_nuevo,
+  });
 });
 
 // ── PREVIEW TXT DE UN B/L ────────────────────────────────────────────────────
@@ -143,9 +174,30 @@ router.get('/api/bl/:id/txt-preview', (req, res) => {
 
 // ── CONTENEDORES ─────────────────────────────────────────────────────────────
 router.put('/api/containers/:id', (req, res) => {
-  const { size } = req.body;
-  db.prepare('UPDATE containers SET size=? WHERE id=?').run(size || '', req.params.id);
-  res.json({ ok: true });
+  const contenedor = db.prepare('SELECT * FROM containers WHERE id=?').get(req.params.id);
+  if (!contenedor) return res.status(404).json({ error: 'Contenedor no encontrado' });
+
+  const { size, container_no } = req.body;
+  const nuevoNo = container_no !== undefined ? String(container_no).trim() : contenedor.container_no;
+  if (container_no !== undefined && !nuevoNo) {
+    return res.status(400).json({ error: 'El número de contenedor no puede quedar vacío' });
+  }
+
+  const actualizar = db.transaction(() => {
+    db.prepare('UPDATE containers SET size=?, container_no=? WHERE id=?')
+      .run(size ?? contenedor.size ?? '', nuevoNo, contenedor.id);
+
+    if (nuevoNo !== contenedor.container_no) {
+      db.prepare('UPDATE container_bl SET container_no=? WHERE container_no=? AND manifest_id=?')
+        .run(nuevoNo, contenedor.container_no, contenedor.manifest_id);
+      db.prepare('UPDATE bl_cargo_items SET container_no=? WHERE container_no=? AND manifest_id=?')
+        .run(nuevoNo, contenedor.container_no, contenedor.manifest_id);
+      db.prepare('UPDATE bills_of_lading SET hacienda_container_no=? WHERE hacienda_container_no=? AND manifest_id=?')
+        .run(nuevoNo, contenedor.container_no, contenedor.manifest_id);
+    }
+  });
+  actualizar();
+  res.json({ ok: true, container_no: nuevoNo });
 });
 
 // ── CARGO ITEMS POR B/L ──────────────────────────────────────────────────────

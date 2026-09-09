@@ -7,7 +7,7 @@ import { api, type ResultadoBusqueda } from '../editor/api';
 import {
   manifiestos, manifiestosFiltrados, datosManifiesto, blActual, expandidos,
   pestana, seleccionarManifiesto, seleccionarBL, cargarManifiestos, cargarStats,
-  toast, setEstado,
+  toast, setEstado, sincronizarEstadoManifiesto,
 } from '../editor/store';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -130,13 +130,14 @@ function pedirBorrarBL(blId: number, blNo: string) {
     `¿Seguro que deseas eliminar el B/L <strong>${blNo}</strong> de este manifiesto? Esta acción no se puede deshacer.`,
     async () => {
       try {
-        await api.eliminarBL(blId);
+        const r = await api.eliminarBL(blId);
         toast('B/L eliminado correctamente');
         const id = datosManifiesto.value?.manifest.id;
         if (id) {
           datosManifiesto.value = await api.obtenerManifiesto(id);
           const m = manifiestos.value.find(x => x.id === id);
           if (m) m.bl_count = datosManifiesto.value.bls.length;
+          sincronizarEstadoManifiesto(id, r.manifest_status);
           cargarStats();
           if (blActual.value?.id === blId) blActual.value = datosManifiesto.value.bls[0] ?? null;
         }
@@ -153,6 +154,7 @@ async function crearNuevoBL(manifestId: number) {
     datosManifiesto.value = await api.obtenerManifiesto(manifestId);
     const m = manifiestos.value.find(x => x.id === manifestId);
     if (m) m.bl_count = datosManifiesto.value.bls.length;
+    sincronizarEstadoManifiesto(manifestId, data.manifest_status);
     blActual.value = datosManifiesto.value.bls.find(bl => bl.id === data.bl.id) ?? data.bl;
     nuevoBlNo.value = '';
     nuevoBlPara.value = null;
@@ -182,7 +184,7 @@ async function confirmarMoverBL() {
   if (!info || !destino || moviendo.value) return;
   moviendo.value = true;
   try {
-    await api.moverBL(info.id, destino);
+    const r = await api.moverBL(info.id, destino);
     toast(`B/L ${info.blNo} movido correctamente`);
     // Refrescar el viaje de origen (perdió el B/L) y, si el destino ya
     // estaba cargado en algún otro momento, también quedaría desactualizado
@@ -195,6 +197,8 @@ async function confirmarMoverBL() {
     if (origen && origen.bl_count) origen.bl_count -= 1;
     const dest = manifiestos.value.find(m => m.id === destino);
     if (dest) dest.bl_count = (dest.bl_count || 0) + 1;
+    sincronizarEstadoManifiesto(info.manifestId, r.status_anterior);
+    sincronizarEstadoManifiesto(destino, r.status_nuevo);
     cargarStats();
     moviendoBl.value = null;
   } catch (e) {

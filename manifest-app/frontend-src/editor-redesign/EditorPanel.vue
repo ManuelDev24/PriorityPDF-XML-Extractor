@@ -8,7 +8,7 @@ import { ref, computed, watch } from 'vue';
 import { api, type ItemHacienda, type Cliente, type ClienteSiscommate } from '../editor/api';
 import {
   datosManifiesto, blActual, carriers, puertos, buques, contenedoresDelBL, tamanosValidos,
-  actualizarBL, actualizarManifiesto, cerrarBL, setEstado, toast,
+  actualizarBL, actualizarManifiesto, cerrarBL, setEstado, toast, sincronizarEstadoManifiesto,
 } from '../editor/store';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -105,6 +105,22 @@ async function alCambiarTamano(id: number | null, size: string) {
   } catch (e) { toast('Error guardando tamaño: ' + (e as Error).message, 'err'); }
 }
 
+async function alCambiarNumeroContenedor(id: number | null, nuevoNo: string) {
+  if (!id) return;
+  const c = datosManifiesto.value?.containers.find(ct => ct.id === id);
+  const anterior = c?.container_no ?? '';
+  const limpio = nuevoNo.trim().toUpperCase();
+  if (!limpio || limpio === anterior) return;
+  try {
+    const eraHacienda = bl.value.hacienda_container_no === anterior;
+    await api.actualizarContenedor(id, { container_no: limpio });
+    if (c) c.container_no = limpio;
+    datosManifiesto.value?.container_bl.forEach(v => { if (v.container_no === anterior) v.container_no = limpio; });
+    if (eraHacienda) actualizarBL('hacienda_container_no', limpio);
+    setEstado('Contenedor guardado', new Date().toLocaleTimeString('es-PR'));
+  } catch (e) { toast('Error guardando contenedor: ' + (e as Error).message, 'err'); }
+}
+
 function opcionesTamano(size: string) {
   return tamanosValidos.value.includes(size)
     ? tamanosValidos.value
@@ -114,9 +130,11 @@ function opcionesTamano(size: string) {
 async function marcar(estado: 'validado' | 'pendiente') {
   if (!blActual.value) return;
   const id = blActual.value.id;
+  const manifestId = m.value.id;
   try {
-    await api.actualizarBL(id, { status: estado });
+    const r = await api.actualizarBL(id, { status: estado });
     if (blActual.value?.id === id) blActual.value.status = estado;
+    sincronizarEstadoManifiesto(manifestId, r.manifest_status);
     toast(estado === 'validado' ? 'B/L marcado como validado' : 'B/L regresado a pendiente');
   } catch { toast('Error', 'err'); }
 }
@@ -538,7 +556,14 @@ watch(() => bl.value?.id, () => {
               <div v-for="c in contenedoresDelBL" :key="c.container_no"
                 class="flex items-center justify-between gap-1.5 rounded-md border border-border bg-paper-raised p-1.5 text-xs"
                 :class="c.container_no === contenedorHacienda && 'border-accent/50 bg-accent-soft'">
-                <button type="button" class="rounded border border-accent/30 bg-accent-soft px-1.5 py-0.5 font-mono text-xs font-semibold text-accent" @click="actualizarBL('hacienda_container_no', c.container_no)">{{ c.container_no }}</button>
+                <div class="flex items-center gap-1">
+                  <button type="button" title="Usar como contenedor Hacienda de este B/L"
+                    class="rounded border border-accent/30 p-0.5"
+                    :class="c.container_no === contenedorHacienda ? 'bg-accent text-white' : 'bg-transparent text-accent hover:bg-accent-soft'"
+                    @click="actualizarBL('hacienda_container_no', c.container_no)"><Check class="size-3" /></button>
+                  <Input :model-value="c.container_no" :disabled="!c.id" class="h-7 w-32 font-mono text-xs font-semibold text-accent"
+                    @change="(e:Event) => alCambiarNumeroContenedor(c.id, (e.target as HTMLInputElement).value)" />
+                </div>
                 <Select :model-value="c.size" :disabled="!c.id" @update:model-value="(v) => alCambiarTamano(c.id, String(v))">
                   <SelectTrigger class="h-7 w-24 text-xs" :class="!c.size && 'border-danger bg-danger-soft'"><SelectValue placeholder="— tamaño —" /></SelectTrigger>
                   <SelectContent>
