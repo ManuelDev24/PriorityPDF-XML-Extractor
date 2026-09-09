@@ -19,6 +19,7 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem, SelectGr
 import { Combobox, ComboboxAnchor, ComboboxInput, ComboboxList, ComboboxEmpty, ComboboxGroup, ComboboxItem } from '@/components/ui/combobox';
 import CargoItems from './CargoItems.vue';
 import StatusBadge from './StatusBadge.vue';
+const cargoItemsRef = ref<InstanceType<typeof CargoItems> | null>(null);
 import { Check, Eye, X, Sparkles, Box } from '@lucide/vue';
 
 const emit = defineEmits<{
@@ -116,6 +117,7 @@ async function alCambiarNumeroContenedor(id: number | null, nuevoNo: string) {
     await api.actualizarContenedor(id, { container_no: limpio });
     if (c) c.container_no = limpio;
     datosManifiesto.value?.container_bl.forEach(v => { if (v.container_no === anterior) v.container_no = limpio; });
+    cargoItemsRef.value?.renombrarContenedor(anterior, limpio);
     if (eraHacienda) actualizarBL('hacienda_container_no', limpio);
     setEstado('Contenedor guardado', new Date().toLocaleTimeString('es-PR'));
   } catch (e) { toast('Error guardando contenedor: ' + (e as Error).message, 'err'); }
@@ -166,6 +168,14 @@ function elegirItem(it: ItemHacienda) {
   itemAbierto.value = false;
   sugerencias.value = [];
   descItem.value = it.description;
+  // Sugerencia de consignatario según qué cliente usa más este código en el
+  // historial real de SISCOMMATE (ver itemClientAnalysis.js) — no pisa un
+  // SS/nombre que el operador ya haya puesto a mano.
+  if (it.client_ss && !bl.value.hacienda_client_ss) {
+    actualizarBL('hacienda_client_ss', it.client_ss);
+    if (it.client_name) { nombreCliente.value = it.client_name; clienteId.value = null; }
+    rellenarSiVacio('consignee_name', it.client_name || '');
+  }
 }
 // El Combobox nativo emite el `value` del item elegido (el código, un
 // string), no el objeto completo — se busca en itemsHallados para reusar
@@ -644,7 +654,7 @@ watch(() => bl.value?.id, () => {
           </div>
           <Textarea :model-value="bl.goods_name || ''" class="min-h-16 w-full text-xs" @input="(e:Event) => alCambiarDescripcion((e.target as HTMLTextAreaElement).value)" />
         </div>
-        <div class="border-t border-border pt-4"><CargoItems /></div>
+        <div class="border-t border-border pt-4"><CargoItems ref="cargoItemsRef" /></div>
       </CardContent>
     </Card>
 

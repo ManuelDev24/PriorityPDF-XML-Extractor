@@ -108,6 +108,16 @@ async function eliminar(id: number) {
   await cargar();
   toast('Item eliminado');
 }
+
+// El backend ya renombra bl_cargo_items.container_no al editar un
+// contenedor (ver PUT /api/containers/:id), pero esta lista ya estaba
+// cargada en memoria con el nombre viejo — sin esto, el item quedaba sin
+// aparecer bajo ningún contenedor hasta recargar la página, porque
+// itemsDe() lo busca por el nombre nuevo y el item seguía con el viejo.
+function renombrarContenedor(viejo: string, nuevo: string) {
+  items.value.forEach(i => { if (i.container_no === viejo) i.container_no = nuevo; });
+}
+defineExpose({ renombrarContenedor });
 </script>
 
 <template>
