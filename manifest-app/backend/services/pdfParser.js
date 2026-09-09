@@ -336,7 +336,12 @@ function parseCustoms1302(text) {
         } else if (/^[A-HJ-NPR-Z0-9]{11,17}$/i.test(cleaned)) {
           vin = cleaned;
           equipmentType = 'VEHICLE';
-        } else {
+        } else if (!/^[—-]?(KG|LBS|N\/?A)$/i.test(cleaned) && cleaned.replace(/[^A-Z0-9]/gi, '').length >= 6) {
+          // Cuando la celda "No. de contenedor" viene vacía en el PDF (fila
+          // de un contenedor adicional del mismo B/L), lo que queda pegado a
+          // continuación del B/L en el texto extraído es la etiqueta de peso
+          // ("KG"/"LBS") de esa misma fila, no un número de contenedor. Sin
+          // este filtro se guardaba "KG" como si fuera el contenedor.
           containerNo = cleaned;
         }
       }
