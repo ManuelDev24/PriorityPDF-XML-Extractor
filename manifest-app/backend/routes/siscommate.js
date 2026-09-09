@@ -85,6 +85,13 @@ router.post('/api/manifests/:id/push-siscommate', async (req, res) => {
     if (result && result.error) {
       return res.status(502).json({ error: `Bridge reportó error: ${result.error}` });
     }
+    // Defensa adicional: un push real siempre trae un número de lote. Si
+    // llegó una respuesta 2xx pero sin lote (bridge equivocado, versión
+    // vieja, lo que sea), no se marca como enviado — mejor un error visible
+    // que un "siscommate" falso.
+    if (!result || result.lote == null) {
+      return res.status(502).json({ error: 'El bridge respondió sin número de lote — no parece haber escrito nada. No se marcó como enviado.' });
+    }
 
     db.prepare(`UPDATE manifests SET status='siscommate', exported_at=datetime('now') WHERE id=?`)
       .run(req.params.id);

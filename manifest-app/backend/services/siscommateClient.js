@@ -64,6 +64,18 @@ function bridgeRequest(method, path, body) {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
+        // Un status fuera de 2xx significa que NO fue el bridge real quien
+        // contestó (o que el bridge real rechazó la operación) — antes esto
+        // se resolvía igual que una respuesta válida en cuanto llegaba algo
+        // de texto, así que un 404 ajeno (otro proceso ocupando el puerto,
+        // ruta que no existe en una versión vieja del bridge) se trataba
+        // como éxito. Con /guardar eso marcó un manifiesto como enviado a
+        // SISCOMMATE sin haberse escrito nada real.
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          const preview = data.replace(/\s+/g, ' ').trim().substring(0, 200);
+          reject(new Error(`El bridge respondió ${res.statusCode} en ${path}: ${preview || '(sin cuerpo)'}`));
+          return;
+        }
         try { resolve(JSON.parse(data)); }
         catch (e) { resolve({ raw: data }); }
       });
