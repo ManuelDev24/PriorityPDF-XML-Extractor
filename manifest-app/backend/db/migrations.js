@@ -40,6 +40,17 @@ function runMigrations({
   addColumnIfMissing('containers',      'size',                'TEXT');
   addColumnIfMissing('manifests',       'docking_number',      'TEXT');
 
+  // Cliente que con más frecuencia usa cada código arancelario, según el
+  // historial real de SISCOMMATE (BOL.consigne cruzado con BOLITEM.code) —
+  // ver services/itemClientAnalysis.js. Texto plano, no FK a `clients`: el
+  // cliente puede venir del catálogo local o directo de CUSTOMER.DBF (la
+  // fuente real), y `clients` local puede no tener ni siquiera el registro
+  // (es solo un caché liviano, no el catálogo maestro). No es una relación
+  // 1-a-1 real — un código puede tener varios importadores — solo la
+  // sugerencia más probable para autocompletar el consignatario.
+  addColumnIfMissing('hacienda_items',  'client_name',         'TEXT');
+  addColumnIfMissing('hacienda_items',  'client_ss',           'TEXT');
+
   // El IMO del buque nunca tuvo columna, pese a que el editor lo pide, la ruta
   // lo declara editable y el TXT de Hacienda lo escribe en [174:181]. Cualquier
   // PUT que lo incluyera fallaba con "no such column: imo", perdiendo de paso

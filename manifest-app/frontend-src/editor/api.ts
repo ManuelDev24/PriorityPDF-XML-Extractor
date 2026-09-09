@@ -97,6 +97,12 @@ export interface ItemHacienda {
   unit?: string;
   tariff?: string;
   taxable?: number;
+  /** Cliente que con más frecuencia importa este código, según el historial
+   * real de SISCOMMATE — ver services/itemClientAnalysis.js. Sugerencia, no
+   * un dato fijo: puede no existir, y no corresponde a un id local (puede
+   * venir directo de CUSTOMER.DBF). */
+  client_name?: string | null;
+  client_ss?: string | null;
 }
 
 export interface Cliente {

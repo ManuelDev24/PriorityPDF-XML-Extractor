@@ -163,8 +163,19 @@ async function buscarClientesSiscommate(q) {
   catch (_) { return []; }
 }
 
+/**
+ * (code, consigne, n) para TODO el historial real de SISCOMMATE, agregado
+ * por el bridge en una sola consulta — ver services/itemClientAnalysis.js
+ * para cómo se procesa esto en "código arancelario → cliente más frecuente".
+ * @returns {Promise<{code:string, consigne:string, n:number}[]>}
+ */
+async function analizarItemClienteTodos() {
+  return bridgeRequest('GET', '/analisis-item-cliente-todos', null);
+}
+
 module.exports = {
   getBridgeConfig, bridgeRequest,
   getBridgeStatus, getLote, pushManifest, consultarManifiesto, buscarClientesSiscommate,
+  analizarItemClienteTodos,
   BRIDGE_TIMEOUT_MS,
 };

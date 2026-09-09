@@ -138,6 +138,27 @@ class SiscommateBridge
                         var filas = ObtenerMuestra(tabla, limite);
                         Send(resp, 200, new JavaScriptSerializer().Serialize(filas));
                     }
+                    // Uso puntual/manual: para un código arancelario, busca (cruzando
+                    // BOLITEM.code con BOL.consigne por manifest+bolno) cuál
+                    // consignatario lo ha usado con más frecuencia en el historial real
+                    // — no existe una tabla fija código→cliente en SISCOMMATE, así que
+                    // esto solo sirve para explorar qué tan confiable sería esa
+                    // asociación antes de guardarla en nuestro propio catálogo.
+                    else if (method == "GET" && path == "/analisis-item-cliente")
+                    {
+                        string code = req.QueryString["code"] ?? "";
+                        var analisis = AnalizarItemCliente(code);
+                        Send(resp, 200, new JavaScriptSerializer().Serialize(analisis));
+                    }
+                    // Igual que /analisis-item-cliente pero para TODOS los códigos de
+                    // un tirón (una sola consulta agregada en vez de una por código) —
+                    // se usa una sola vez para poblar el catálogo local, no en cada
+                    // carga del editor.
+                    else if (method == "GET" && path == "/analisis-item-cliente-todos")
+                    {
+                        var filas = AnalizarItemClienteTodos();
+                        Send(resp, 200, new JavaScriptSerializer().Serialize(filas));
+                    }
                     else if (method == "POST" && path == "/eliminar")
                     {
                         string body2 = new StreamReader(req.InputStream, Encoding.UTF8).ReadToEnd();
@@ -395,6 +416,62 @@ class SiscommateBridge
             {
                 cmd.Parameters.AddWithValue("name", like);
                 cmd.Parameters.AddWithValue("ss", like);
+                using (var reader = cmd.ExecuteReader())
+                {
+                    while (reader.Read()) result.Add(ReadRow(reader));
+                }
+            }
+        }
+        return result;
+    }
+
+    static Dictionary<string, object> AnalizarItemCliente(string code)
+    {
+        var result = new Dictionary<string, object>();
+        result["code"] = code;
+        var top = new List<Dictionary<string, object>>();
+        result["top_clientes"] = top;
+        if (string.IsNullOrWhiteSpace(code)) return result;
+        using (var conn = new OleDbConnection(GetConnectionString()))
+        {
+            conn.Open();
+            // GROUP BY + COUNT sobre el cruce BOLITEM (code) x BOL (consigne),
+            // vinculados por manifest+bolno — VFP SQL soporta esto sobre tablas
+            // libres en el mismo directorio. Trae hasta 5 consignatarios más
+            // frecuentes para ese código, de más a menos usado.
+            using (var cmd = new OleDbCommand(
+                "SELECT TOP 5 b.consigne, COUNT(*) AS n " +
+                "FROM bolitem bi INNER JOIN bol b ON b.manifest = bi.manifest AND b.bolno = bi.bolno " +
+                "WHERE bi.code = ? AND b.consigne <> '' " +
+                "GROUP BY b.consigne ORDER BY n DESC", conn))
+            {
+                cmd.Parameters.AddWithValue("code", code.Trim());
+                using (var reader = cmd.ExecuteReader())
+                {
+                    while (reader.Read()) top.Add(ReadRow(reader));
+                }
+            }
+        }
+        return result;
+    }
+
+    static List<Dictionary<string, object>> AnalizarItemClienteTodos()
+    {
+        var result = new List<Dictionary<string, object>>();
+        using (var conn = new OleDbConnection(GetConnectionString()))
+        {
+            conn.Open();
+            // Una sola pasada: (code, consigne, n) para TODO el historial real,
+            // agrupado. Elegir "el más frecuente por código" con n>=3 se hace del
+            // lado de Node, sobre esta lista ya agregada — evita miles de
+            // consultas individuales (una por código) contra VFPOLEDB.
+            using (var cmd = new OleDbCommand(
+                "SELECT bi.code, b.consigne, COUNT(*) AS n " +
+                "FROM bolitem bi INNER JOIN bol b ON b.manifest = bi.manifest AND b.bolno = bi.bolno " +
+                "WHERE bi.code <> '' AND b.consigne <> '' " +
+                "GROUP BY bi.code, b.consigne", conn))
+            {
+                cmd.CommandTimeout = 300;
                 using (var reader = cmd.ExecuteReader())
                 {
                     while (reader.Read()) result.Add(ReadRow(reader));

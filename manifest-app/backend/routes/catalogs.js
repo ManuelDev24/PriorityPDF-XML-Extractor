@@ -6,6 +6,7 @@ const express = require('express');
 const db = require('../db/connection');
 const { VESSELS, PORT_MAPPINGS, VALID_CONTAINER_SIZES } = require('../db/catalogDefaults');
 const { buscarClientesSiscommate } = require('../services/siscommateClient');
+const { analizarYGuardar } = require('../services/itemClientAnalysis');
 
 const router = express.Router();
 
@@ -26,6 +27,20 @@ router.get('/api/catalogs/items', (req, res) => {
     LIMIT 40
   `).all(`%${qLike}%`, `%${qLike}%`, q, `${qLike}%`, `${qLike}%`);
   res.json(rows);
+});
+
+// Corre el análisis código arancelario → cliente más frecuente contra el
+// historial real de SISCOMMATE (vía el bridge) y guarda el resultado en
+// hacienda_items.client_name/client_ss. Uso puntual desde Admin, no algo que
+// se dispare solo — el historial no cambia de un día para otro, y puede
+// tardar porque consulta el bridge repetidamente.
+router.post('/api/catalogs/items/analizar-clientes', async (req, res) => {
+  try {
+    const resultado = await analizarYGuardar();
+    res.json({ ok: true, ...resultado });
+  } catch (err) {
+    res.status(500).json({ error: 'No se pudo completar el análisis: ' + err.message });
+  }
 });
 
 // Sugerir código arancelario basado en descripción de la mercancía
