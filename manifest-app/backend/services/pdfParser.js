@@ -122,10 +122,11 @@ function normContainerNo(raw) {
   const m = raw.match(/^([A-Z]{4})\s*(\d{6})\s*-?\s*(\d)?$/);
   if (m) return m[1] + m[2] + (m[3] || '');
   // Fuera de ese patrón exacto (p.ej. cuando el PDF omite el prefijo de 4
-  // letras, o cuando es una marca tipo "PALLET-000123"), el guión no aporta
-  // nada — se quita igual que los espacios para no dejar contenedores con
-  // "-" a medias.
-  return raw.replace(/\s+/g, '').replace(/-/g, '');
+  // letras, o cuando es una marca tipo "PALLET-000123"), cualquier símbolo
+  // (guión, punto, dos puntos, etc.) no aporta nada al número de contenedor
+  // — se quita todo lo que no sea letra o número, igual que hace el TXT al
+  // escribirlo, para no depender de encontrar cada símbolo suelto a mano.
+  return raw.toUpperCase().replace(/[^A-Z0-9]/g, '');
 }
 
 /**
@@ -252,7 +253,7 @@ function collectPartyBlocks(lines, blIdx) {
       if (cur.length) { blocks.push(cur.reverse()); cur = []; }
       continue;
     }
-    if (/^(SH|CO|NO|NF|KG|LBS)$/.test(t) || /^P[aá]gina/i.test(t) || /^Page/i.test(t) ||
+    if (/^[—-]?\s*(SH|CO|NO|NF|KG|LBS)$/.test(t) || /^P[aá]gina/i.test(t) || /^Page/i.test(t) ||
         /CUSTOMS USE ONLY/i.test(t) || /^\d[\d,]*\.\d{2}$/.test(t)) break;
     cur.push(t);
   }
@@ -381,7 +382,10 @@ function parseCustoms1302(text) {
       let descStart = j;
       for (let k = 0; k < 6 && j + k < lines.length; k++) {
         const t = lines[j+k].trim();
-        if (/^(KG|LBS)$/.test(t)) break;
+        // El peso en blanco se imprime como "— KG"/"— LBS" (celda vacía +
+        // etiqueta de unidad) en vez de solo "KG"/"LBS" — sin el "—?" ese
+        // texto se colaba como si fuera parte de la descripción.
+        if (/^[—-]?\s*(KG|LBS)$/.test(t)) break;
         const qm = t.match(/^(\d+)\s*([A-Za-z]*)\s*:$/);
         if (qm) {
           e.qty = parseInt(qm[1]) || 0;
@@ -394,7 +398,7 @@ function parseCustoms1302(text) {
       const desc = [];
       for (j = descStart; j < lines.length; j++) {
         const t = lines[j].trim();
-        if (/^(KG|LBS|SH|CO|NO|NF)$/.test(t) || /^P[aá]gina/i.test(t) || /^Page/i.test(t) || /^1\.- Name/i.test(t)) break;
+        if (/^[—-]?\s*(KG|LBS|SH|CO|NO|NF)$/.test(t) || /^P[aá]gina/i.test(t) || /^Page/i.test(t) || /^1\.- Name/i.test(t)) break;
         desc.push(t);
         if (desc.join(' ').length > 400) break;
       }

@@ -178,7 +178,12 @@ router.put('/api/containers/:id', (req, res) => {
   if (!contenedor) return res.status(404).json({ error: 'Contenedor no encontrado' });
 
   const { size, container_no } = req.body;
-  const nuevoNo = container_no !== undefined ? String(container_no).trim().replace(/-/g, '') : contenedor.container_no;
+  // Cualquier símbolo (guión, punto, dos puntos, espacio) que el operador
+  // escriba a mano se quita aquí también — si llega sucio hasta el TXT,
+  // SISCOMMATE/Hacienda rechaza la línea.
+  const nuevoNo = container_no !== undefined
+    ? String(container_no).toUpperCase().replace(/[^A-Z0-9]/g, '')
+    : contenedor.container_no;
   if (container_no !== undefined && !nuevoNo) {
     return res.status(400).json({ error: 'El número de contenedor no puede quedar vacío' });
   }

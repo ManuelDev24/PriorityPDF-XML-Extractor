@@ -127,6 +127,19 @@ function sanitizeSS(ss) {
   return digits.padStart(9, '0').substring(digits.length > 9 ? digits.length - 9 : 0);
 }
 
+/**
+ * Quita cualquier carácter que no sea letra o número del número de
+ * contenedor antes de escribirlo en el TXT. Sea cual sea el origen del dato
+ * (PDF mal extraído, XML, o el operador escribiéndolo a mano en el editor),
+ * un punto, dos puntos, guión u otro símbolo colado en este campo hace que
+ * SISCOMMATE/Hacienda rechace la línea al recibir el TXT.
+ * @param {string|null|undefined} containerNo
+ * @returns {string}
+ */
+function sanitizeContainerNo(containerNo) {
+  return String(containerNo || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
 // Puerto XML/DGA → código SISCOMMATE (fuente: ports.dbf de SISCOMMATE)
 /**
  * Traduce un código de puerto XML/DGA al código de 3 letras de SISCOMMATE.
@@ -300,7 +313,7 @@ function generateTxtLine1(bl, manifest, containerNo) {
     '1' +
     pad(bl.bl_no, 16) +          // [1:17]
     'AM' +                        // [17:19]
-    pad(containerNo !== undefined ? containerNo : (bl.hacienda_container_no || ''), 18) + // [19:37]
+    pad(sanitizeContainerNo(containerNo !== undefined ? containerNo : bl.hacienda_container_no), 18) + // [19:37]
     pad(bl.consignee_name, 30) +  // [37:67]
     ss9 +                         // [67:76]
     'C      ' +                   // [76:83] tipo C + 6 espacios
