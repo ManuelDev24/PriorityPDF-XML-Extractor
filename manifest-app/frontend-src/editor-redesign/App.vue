@@ -362,13 +362,13 @@ onMounted(async () => {
     </Dialog>
 
     <Dialog :open="!!vivo" @update:open="(v) => !v && (vivo = null)">
-      <DialogContent v-if="vivo" class="max-w-2xl">
+      <DialogContent v-if="vivo" class="w-[95vw] max-w-[95vw]">
         <DialogHeader><DialogTitle>Lo que hay en SISCOMMATE — Viaje {{ datosManifiesto?.manifest.voyage_no }}</DialogTitle></DialogHeader>
         <p v-if="!vivo.encontrado" class="text-sm text-ink-faint">No se encontró ningún manifiesto con este número de viaje en las tablas de SISCOMMATE.</p>
-        <div v-else class="flex max-h-[70vh] flex-col gap-4 overflow-y-auto text-xs">
+        <div v-else class="flex max-h-[80vh] flex-col gap-4 overflow-y-auto text-xs">
           <div>
             <p class="mb-1 font-medium text-ink-muted">Manifiesto (MANIFEST)</p>
-            <div class="grid grid-cols-2 gap-x-4 gap-y-0.5 rounded border border-border p-2 font-mono">
+            <div class="grid grid-cols-2 gap-x-4 gap-y-0.5 rounded border border-border p-2 font-mono md:grid-cols-4">
               <template v-for="(val, key) in (vivo.manifest || {})" :key="key">
                 <span class="text-ink-faint">{{ key }}</span><span class="truncate">{{ val === null || val === '' ? '—' : String(val) }}</span>
               </template>
