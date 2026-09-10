@@ -3,7 +3,7 @@
 // cambia la presentación: Tabs de shadcn en vez de divs a mano, Card/Button
 // consistentes con el resto del rediseño.
 import { ref } from 'vue';
-import { api, type ResultadoBusqueda } from '../editor/api';
+import { api, type ResultadoBusqueda, type BL } from '../editor/api';
 import {
   manifiestos, manifiestosFiltrados, datosManifiesto, blActual, expandidos,
   pestana, seleccionarManifiesto, seleccionarBL, cargarManifiestos, cargarStats,
@@ -23,6 +23,15 @@ const emit = defineEmits<{ confirmar: [titulo: string, cuerpo: string, accion: (
 const busqueda = ref('');
 const blsHallados = ref<ResultadoBusqueda['bls']>([]);
 const filtrados = ref<typeof manifiestos.value | null>(null);
+// Mismo criterio que backend/services/blValidation.js (validateForSubmission)
+// para que el punto de color en el sidebar nunca contradiga lo que después
+// bloquea el export TXT / push a SISCOMMATE — se marca en rojo aunque el B/L
+// ya esté "validado", porque marcar validado no revisa estos campos.
+function blIncompleto(bl: BL): boolean {
+  const sinCodigo = !bl.hacienda_item_code || bl.hacienda_item_code.trim() === '' || /^0+$/.test(bl.hacienda_item_code.trim());
+  const sinSS = !bl.hacienda_client_ss && !bl.consignee_document_no;
+  return sinCodigo || sinSS;
+}
 const nuevoBlPara = ref<number | null>(null);
 const nuevoBlNo = ref('');
 const creandoBl = ref(false);
@@ -285,10 +294,11 @@ async function confirmarMoverBL() {
           <button
             v-for="(bl, idx) in datosManifiesto.bls" :key="bl.id"
             class="group/bl flex w-full items-center gap-2 border-b border-border py-1.5 pl-8 pr-2 text-left text-xs hover:bg-accent-soft"
-            :class="blActual?.id === bl.id ? 'bg-accent-soft font-medium text-accent' : bl.status === 'validado' ? 'font-medium text-status-validated' : 'text-ink-muted'"
+            :class="blActual?.id === bl.id ? 'bg-accent-soft font-medium text-accent' : blIncompleto(bl) ? 'font-medium text-danger' : bl.status === 'validado' ? 'font-medium text-status-validated' : 'text-ink-muted'"
             @click="seleccionarBL(bl.id)"
           >
-            <span class="size-1.5 shrink-0 rounded-full" :class="blActual?.id === bl.id ? 'bg-accent' : bl.status === 'validado' ? 'bg-status-validated' : 'bg-ink-faint'" />
+            <span class="size-1.5 shrink-0 rounded-full" :class="blActual?.id === bl.id ? 'bg-accent' : blIncompleto(bl) ? 'bg-danger' : bl.status === 'validado' ? 'bg-status-validated' : 'bg-ink-faint'"
+              :title="blIncompleto(bl) ? 'Falta código arancelario y/o SS/EIN consignatario' : undefined" />
             <span class="w-7 shrink-0 text-right font-mono text-[10px] text-ink-faint">{{ idx + 1 }}</span>
             <span class="min-w-0 flex-1 truncate">{{ bl.bl_no }}</span>
             <button

@@ -27,6 +27,9 @@ const modalAbierto = ref(false);
 const modalTitulo = ref('');
 const editandoId = ref<number | null>(null);
 const fGoods = ref(''); const fCantidad = ref(0); const fPeso = ref(0); const fCodigo = ref(''); const fTarifa = ref('');
+// Antes un guardado sin descripción solo mostraba un toast — el textarea se
+// quedaba igual, sin señalar cuál campo faltaba.
+const fGoodsError = ref(false);
 const fCont = ref(''); const contForzado = ref<string | null>(null);
 
 async function cargar() {
@@ -75,6 +78,7 @@ function abrirAgregar(forzarCno: string | null) {
   fCantidad.value = contenedor?.amount || Number(bl?.package_qty) || 0;
   fGoods.value = bl?.goods_name || ''; fPeso.value = Number(bl?.gross_weight) || 0;
   fCodigo.value = bl?.hacienda_item_code || ''; fTarifa.value = bl?.hacienda_tariff || ''; fCont.value = forzarCno ?? TODOS_LOS_CONTENEDORES;
+  fGoodsError.value = false;
   modalAbierto.value = true;
 }
 function abrirEditar(id: number) {
@@ -84,11 +88,13 @@ function abrirEditar(id: number) {
   fCantidad.value = Number(it.package_qty) || 0;
   fGoods.value = it.goods_name; fPeso.value = Number(it.gross_weight) || 0;
   fCodigo.value = it.hacienda_item_code || ''; fTarifa.value = it.hacienda_tariff || '';
+  fGoodsError.value = false;
   modalAbierto.value = true;
 }
 async function guardarModal() {
   const bl = blActual.value;
-  if (!bl || !fGoods.value.trim()) { toast('La descripción es requerida', 'err'); return; }
+  if (!bl || !fGoods.value.trim()) { fGoodsError.value = true; toast('La descripción es requerida', 'err'); return; }
+  fGoodsError.value = false;
   try {
     if (editandoId.value !== null) {
       await api.actualizarItem(editandoId.value, { goods_name: fGoods.value.trim(), package_qty: fCantidad.value, gross_weight: fPeso.value, hacienda_item_code: fCodigo.value.trim() || null, hacienda_tariff: fTarifa.value || null });
@@ -199,7 +205,7 @@ defineExpose({ renombrarContenedor });
       <div class="flex flex-col gap-3">
         <div class="flex flex-col gap-1">
           <Label class="text-xs">Descripción de mercancía <span class="text-danger">*</span></Label>
-          <Textarea v-model="fGoods" rows="3" class="text-xs" />
+          <Textarea v-model="fGoods" rows="3" class="text-xs" :class="fGoodsError && 'border-danger focus-visible:ring-danger'" @input="fGoodsError = false" />
         </div>
         <div class="grid grid-cols-4 gap-3">
           <div class="flex flex-col gap-1"><Label class="text-xs">Cantidad</Label><Input type="number" step="1" v-model.number="fCantidad" class="h-9 text-xs" /></div>

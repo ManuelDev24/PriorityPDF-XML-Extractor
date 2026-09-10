@@ -44,25 +44,31 @@ function avisar(titulo: string, cuerpo: string) {
 
 const cliente = ref<{ id: number | null; name: string; ss: string; ivu: string; add1: string; add2: string; phone1: string } | null>(null);
 const clienteError = ref('');
+// Qué input(s) marcar en rojo además del texto de error — antes solo se veía
+// el mensaje abajo, sin señalar cuál campo exactamente estaba vacío/mal.
+const clienteCamposError = ref<Set<'name' | 'ss'>>(new Set());
 const ssDigitos = computed(() => (cliente.value?.ss || '').replace(/[^0-9]/g, ''));
 
 function abrirCrearCliente(prefill: string) {
   const digitos = prefill.replace(/[^0-9]/g, '');
   cliente.value = { id: null, name: digitos.length >= 9 ? '' : prefill, ss: digitos.length >= 9 ? digitos.substring(0, 9) : '', ivu: '', add1: '', add2: '', phone1: '' };
   clienteError.value = '';
+  clienteCamposError.value = new Set();
 }
 async function abrirEditarCliente(id: number, ss: string, nombre: string) {
   let c: Partial<Cliente> = { id, ss, name: nombre };
   try { c = (await api.buscarClientes(ss)).find(x => x.id === id || x.ss === ss) ?? c; } catch { /* usar lo que se sabe */ }
   cliente.value = { id: c.id ?? id, name: c.name ?? '', ss: c.ss ?? '', ivu: c.ivu ?? '', add1: c.add1 ?? '', add2: c.add2 ?? '', phone1: c.phone1 ?? '' };
   clienteError.value = '';
+  clienteCamposError.value = new Set();
 }
 async function guardarCliente() {
   const c = cliente.value;
   if (!c) return;
   const ss = ssDigitos.value.substring(0, 9);
-  if (!c.name.trim()) { clienteError.value = 'El nombre es requerido'; return; }
-  if (ss.length < 9) { clienteError.value = 'El SS/EIN debe tener exactamente 9 dígitos'; return; }
+  if (!c.name.trim()) { clienteError.value = 'El nombre es requerido'; clienteCamposError.value = new Set(['name']); return; }
+  if (ss.length < 9) { clienteError.value = 'El SS/EIN debe tener exactamente 9 dígitos'; clienteCamposError.value = new Set(['ss']); return; }
+  clienteCamposError.value = new Set();
   try {
     const datos = { name: c.name.trim(), ss, ivu: c.ivu, add1: c.add1, add2: c.add2, phone1: c.phone1 };
     const r = c.id !== null ? await api.actualizarCliente(c.id, datos) : await api.crearCliente(datos);
@@ -431,11 +437,14 @@ onMounted(async () => {
       <DialogContent v-if="cliente">
         <DialogHeader><DialogTitle>{{ cliente.id !== null ? 'Editar consignatario' : 'Nuevo consignatario — Hacienda PR' }}</DialogTitle></DialogHeader>
         <div class="flex flex-col gap-3">
-          <div class="flex flex-col gap-1"><Label class="text-xs">Nombre / Razón social <span class="text-danger">*</span></Label><Input v-model="cliente.name" placeholder="Ej. LANCO MANUFACTURING CORP" /></div>
+          <div class="flex flex-col gap-1">
+            <Label class="text-xs">Nombre / Razón social <span class="text-danger">*</span></Label>
+            <Input v-model="cliente.name" placeholder="Ej. LANCO MANUFACTURING CORP" :class="clienteCamposError.has('name') && 'border-danger focus-visible:ring-danger'" />
+          </div>
           <div class="grid grid-cols-2 gap-3">
             <div class="flex flex-col gap-1">
               <Label class="text-xs">SS / EIN (9 dígitos) <span class="text-danger">*</span></Label>
-              <Input v-model="cliente.ss" placeholder="660123456" maxlength="11" class="font-mono" @input="cliente.ss = cliente.ss.replace(/[^0-9-]/g,'')" />
+              <Input v-model="cliente.ss" placeholder="660123456" maxlength="11" class="font-mono" :class="clienteCamposError.has('ss') && 'border-danger focus-visible:ring-danger'" @input="cliente.ss = cliente.ss.replace(/[^0-9-]/g,'')" />
               <p class="text-xs" :class="ssDigitos.length === 9 ? 'text-status-validated' : 'text-status-pending'">
                 <template v-if="ssDigitos.length === 9">✓ 9 dígitos — formato correcto</template>
                 <template v-else-if="ssDigitos.length">{{ ssDigitos.length }}/9 dígitos</template>
