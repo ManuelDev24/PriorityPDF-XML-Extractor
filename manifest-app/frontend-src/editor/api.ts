@@ -22,6 +22,10 @@ export interface Manifiesto {
   docking_number?: string;
   imo?: string;
   bl_count?: number;
+  /** B/L de este viaje que NO están validado — 0 cuando todos lo están.
+   * Se calcula en vivo (no viene del campo `status`, que el backend deja de
+   * recalcular en cuanto el viaje pasa a 'siscommate'). */
+  pending_count?: number;
 }
 
 export interface BL {

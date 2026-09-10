@@ -261,7 +261,8 @@ router.post('/api/manifests/upload', upload.single('xml'), async (req, res) => {
 // ── LISTAR / OBTENER ─────────────────────────────────────────────────────────
 router.get('/api/manifests', (req, res) => {
   res.json(db.prepare(`
-    SELECT m.*, COUNT(b.id) as bl_count
+    SELECT m.*, COUNT(b.id) as bl_count,
+      SUM(CASE WHEN b.status != 'validado' THEN 1 ELSE 0 END) as pending_count
     FROM manifests m LEFT JOIN bills_of_lading b ON b.manifest_id=m.id
     GROUP BY m.id ORDER BY m.created_at DESC
   `).all());

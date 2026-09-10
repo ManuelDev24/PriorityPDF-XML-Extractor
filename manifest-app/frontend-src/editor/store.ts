@@ -40,12 +40,14 @@ watch(blActual, (bl) => {
   else localStorage.removeItem(KEY_BL);
 });
 
-// "Completado" = todos los B/L quedaron validados (status 'validado', que el
-// backend recalcula solo) o ya se entregó de verdad a SISCOMMATE. Exportar
-// el TXT ya NO mueve el viaje aquí por sí solo — se puede exportar con B/L
-// sin validar cuantas veces haga falta sin que el viaje "desaparezca" de
-// "En curso".
-const completado = (m: Manifiesto) => m.status === 'siscommate' || m.status === 'validado';
+// "Completado" = TODOS los B/L del viaje están validado ahora mismo — no
+// que se haya empujado a SISCOMMATE. Antes se usaba m.status, pero el
+// backend deja de recalcularlo en cuanto pasa a 'siscommate' (ver
+// recalcularEstadoManifiesto en routes/bl.js), así que un viaje ya
+// empujado con B/L agregados después sin validar se quedaba mostrado como
+// "Completado" aunque en realidad le faltaba trabajo. pending_count se
+// calcula en vivo en cada listado, así que siempre refleja el estado real.
+const completado = (m: Manifiesto) => (m.bl_count ?? 0) > 0 && (m.pending_count ?? 0) === 0;
 export const manifiestosFiltrados = computed(() => {
   return pestana.value === 'completed'
     ? manifiestos.value.filter(completado)
