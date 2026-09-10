@@ -30,6 +30,15 @@ const emit = defineEmits<{
 
 const m = computed(() => datosManifiesto.value!.manifest);
 const bl = computed(() => blActual.value!);
+// Posición del B/L abierto dentro del viaje ("12 de 97") — para saber en
+// qué punto de la lista se está trabajando, sobre todo en viajes con
+// decenas de B/L donde el sidebar por sí solo no lo deja claro.
+const posicionBL = computed(() => {
+  const lista = datosManifiesto.value?.bls;
+  if (!lista || !blActual.value) return '';
+  const idx = lista.findIndex(b => b.id === blActual.value!.id);
+  return idx === -1 ? '' : `${idx + 1} de ${lista.length}`;
+});
 
 const PAISES: Record<string, string> = {
   PR: 'Puerto Rico', DO: 'Rep. Dominicana', US: 'Estados Unidos', VI: 'Islas Vírgenes (US)',
@@ -437,6 +446,7 @@ watch(() => bl.value?.id, () => {
         class="h-7 w-40 border-transparent bg-transparent px-1 font-mono text-sm font-semibold hover:border-border focus:border-border focus:bg-paper-raised"
         @change="(e:Event) => renombrarBL((e.target as HTMLInputElement).value)" />
       <StatusBadge :status="bl.status" />
+      <span v-if="posicionBL" class="text-xs text-ink-faint" title="Posición de este B/L dentro del viaje">B/L {{ posicionBL }}</span>
       <div class="flex-1"></div>
       <Button v-if="bl.status === 'validado'" variant="outline" size="sm" @click="blActual && marcar('pendiente')"><X class="size-3.5" />Desvalidar</Button>
       <Button v-else variant="outline" size="sm" class="border-status-validated text-status-validated hover:bg-status-validated-soft hover:text-status-validated" @click="blActual && marcar('validado')"><Check class="size-3.5" />Validado</Button>

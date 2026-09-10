@@ -283,12 +283,13 @@ async function confirmarMoverBL() {
             <Button v-else size="sm" class="h-7 bg-emerald-600 px-2 text-xs text-white hover:bg-emerald-700" @click="nuevoBlPara = m.id; nuevoBlNo = ''"><Plus class="size-3.5" />Nuevo B/L</Button>
           </div>
           <button
-            v-for="bl in datosManifiesto.bls" :key="bl.id"
+            v-for="(bl, idx) in datosManifiesto.bls" :key="bl.id"
             class="group/bl flex w-full items-center gap-2 border-b border-border py-1.5 pl-8 pr-2 text-left text-xs hover:bg-accent-soft"
             :class="blActual?.id === bl.id ? 'bg-accent-soft font-medium text-accent' : bl.status === 'validado' ? 'font-medium text-status-validated' : 'text-ink-muted'"
             @click="seleccionarBL(bl.id)"
           >
             <span class="size-1.5 shrink-0 rounded-full" :class="blActual?.id === bl.id ? 'bg-accent' : bl.status === 'validado' ? 'bg-status-validated' : 'bg-ink-faint'" />
+            <span class="w-7 shrink-0 text-right font-mono text-[10px] text-ink-faint">{{ idx + 1 }}</span>
             <span class="min-w-0 flex-1 truncate">{{ bl.bl_no }}</span>
             <button
               class="shrink-0 rounded p-0.5 text-ink-faint opacity-0 hover:bg-accent-soft hover:text-accent group-hover/bl:opacity-100"
