@@ -323,11 +323,21 @@ function parseCustoms1302(text) {
     // ("PYRR2624176") — se exige el guión para reconocer la línea (evita
     // confundir con otro texto), pero se guarda sin él para que ambas fuentes
     // usen el mismo formato.
+    //
+    // El patrón PREFIJO-DÍGITOS no es exclusivo del B/L: una marca de carga
+    // suelta como "PALLET-0000138879" (que en otras filas del mismo PDF
+    // aparece como container_no de un B/L real) tiene la misma forma. Si esa
+    // marca cae al inicio de una línea — típicamente cuando el B/L real que
+    // la precedía se perdió en un salto de página, el mismo patrón que ya
+    // afecta a Consignador — el parser la confundía con un B/L nuevo,
+    // reemplazando el "PYRR..." real. Se excluyen los prefijos conocidos de
+    // tipo de empaque/carga suelta, nunca códigos de transportista reales.
+    const PREFIJOS_NO_BL = /^(PALLET|BOX|LCL|CRATE|CARTON|DRUM|SKID|BUNDLE|ROLL|PACKAGE|PKG|LOOSE)$/i;
     const blLineRe = /^([A-Z]{2,6})-(\d{5,10})(?:\s+(\S.*))?$/;
     const pageEntries = [];
     for (let i = 0; i < lines.length; i++) {
       const m = lines[i].trim().match(blLineRe);
-      if (!m) continue;
+      if (!m || PREFIJOS_NO_BL.test(m[1])) continue;
 
       const rawSecondToken = (m[3] || '').trim();
       let containerNo = '';
