@@ -145,6 +145,43 @@ function sanitizeIdentificador(valor) {
   return String(valor || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 }
 
+// Vocabulario real confirmado contra BOLITEM.ptype de SISCOMMATE — mismo
+// catálogo que ya usa el combobox del editor (TIPOS_EMPAQUE en
+// EditorPanel.vue). Cualquier otro valor no es un código de empaque válido
+// para SISCOMMATE, aunque sea texto real (ej. "PACK", "UNIT") o un código de
+// la DGA que no corresponde a este catálogo (ej. "IG013", o un "1" suelto).
+const TIPOS_EMPAQUE_VALIDOS = new Set([
+  'AUTO', 'AUTO-T', 'BARREL', 'BBL', 'BBLS', 'BOX', 'BUNDLE', 'CRATE', 'DRUMS', 'LSE', 'PALETS', 'PIECES',
+]);
+// Variantes de ortografía/plural/idioma con una traducción obvia y segura —
+// a diferencia de "PACK" o "UNIT", que son genéricos y podrían mapear a
+// varias cosas, estas no dejan duda de a qué código corresponden.
+const SINONIMOS_EMPAQUE = {
+  'PALLET': 'PALETS',
+  'VEHICLE': 'AUTO',
+  'DRUM': 'DRUMS',
+  'CARTON': 'BOX',
+};
+/**
+ * Código empaque (DGA) que el operador eligió o que trajo el PDF/XML de
+ * origen — validado contra el vocabulario real de SISCOMMATE antes de
+ * escribirlo al TXT. Antes se mandaba cualquier valor tal cual llegara
+ * (confirmado con datos reales: "PACK", "UNIT", "1", "IG013"... — códigos
+ * internos de la DGA o palabras genéricas del PDF que SISCOMMATE no
+ * reconoce), lo que mandaba basura al campo en ~85% de los B/L con este
+ * campo lleno. Ahora solo pasa un valor si es válido o tiene una traducción
+ * segura; cualquier otro se descarta — mejor caer al respaldo BOX/LSE que
+ * mandar un código inventado o desconocido.
+ * @param {string|null|undefined} valor
+ * @returns {string} El código válido, o '' si no se reconoce
+ */
+function normalizarEmpaque(valor) {
+  const v = String(valor || '').trim().toUpperCase();
+  if (!v) return '';
+  if (TIPOS_EMPAQUE_VALIDOS.has(v)) return v;
+  return SINONIMOS_EMPAQUE[v] || '';
+}
+
 const MAPA_ACENTOS = {
   'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u', 'ü': 'u', 'ñ': 'n',
   'Á': 'A', 'É': 'E', 'Í': 'I', 'Ó': 'O', 'Ú': 'U', 'Ü': 'U', 'Ñ': 'N',
@@ -410,9 +447,9 @@ function generateTxtLine2(bl, containerNo, containerCount, item) {
   // ignoraba por completo y siempre se mandaba "BOX"/"LSE" fijo según si
   // había contenedor. La data real de SISCOMMATE confirma que BOLITEM.ptype
   // sí varía (BOX, BUNDLE, PALETS, BARREL...) y coincide con esta lista, así
-  // que el valor elegido va primero; el fijo queda solo de respaldo cuando
-  // el campo está vacío.
-  const empaqueElegido = String(bl.package_unit_code || '').trim().toUpperCase();
+  // que el valor elegido va primero — pero solo si normalizarEmpaque() lo
+  // reconoce como válido; si no, cae al mismo respaldo que cuando está vacío.
+  const empaqueElegido = normalizarEmpaque(bl.package_unit_code);
   const unitType  = pad(empaqueElegido || (hasContainer ? 'BOX' : 'LSE'), 6);
   return (
     '2' +

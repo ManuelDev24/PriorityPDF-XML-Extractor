@@ -144,6 +144,43 @@ test('sin contenedor, la unidad es LSE en vez de BOX', () => {
   assert.strictEqual(l2.substring(22, 28), 'LSE   ');
 });
 
+// ── Código empaque (DGA): solo vocabulario real de SISCOMMATE ──────────────
+// Con datos reales se confirmó que ~85% de los B/L con este campo lleno
+// traían algo que SISCOMMATE no reconoce (palabras genéricas del PDF como
+// "PACK"/"UNIT", o códigos internos de la DGA como "IG013" o un "1" suelto)
+// y se mandaban tal cual al TXT.
+test('un código de empaque válido se manda tal cual (mayúsculas)', () => {
+  const conBox = { ...bl, package_unit_code: 'bundle' };
+  const l2 = generateTxtLine2(conBox, 'PRRU2010106', 1, null);
+  assert.strictEqual(l2.substring(22, 28), 'BUNDLE');
+});
+
+test('sinónimos con traducción segura se corrigen al código real', () => {
+  const casos = [
+    ['pallet',  'PALETS'],
+    ['VEHICLE', 'AUTO  '],
+    ['Drum',    'DRUMS '],
+    ['carton',  'BOX   '],
+  ];
+  casos.forEach(([entrada, esperado]) => {
+    const conEmpaque = { ...bl, package_unit_code: entrada };
+    const l2 = generateTxtLine2(conEmpaque, 'PRRU2010106', 1, null);
+    assert.strictEqual(l2.substring(22, 28), esperado, `"${entrada}" debería dar "${esperado}"`);
+  });
+});
+
+test('un código no reconocido no se manda — cae al respaldo BOX/LSE', () => {
+  const casosConContenedor = ['PACK', 'UNIT', 'PKG', 'bags', 'case', 'rolls', 'container', '1', 'IG013', 'IG001'];
+  casosConContenedor.forEach(valor => {
+    const conEmpaque = { ...bl, package_unit_code: valor };
+    const l2 = generateTxtLine2(conEmpaque, 'PRRU2010106', 1, null);
+    assert.strictEqual(l2.substring(22, 28), 'BOX   ', `"${valor}" con contenedor debería caer a BOX`);
+  });
+  const sinContenedor = { ...bl, hacienda_container_no: '', package_unit_code: 'IG013' };
+  const l2b = generateTxtLine2(sinContenedor, '', 1, null);
+  assert.strictEqual(l2b.substring(22, 28), 'LSE   ', 'sin contenedor debería caer a LSE');
+});
+
 test('el IVU del carrier se usa cuando el consignatario no tiene', () => {
   const sinIvu = { ...bl, hacienda_client_ivu: '' };
   const l1 = generateTxtLine1(sinIvu, manifest, 'PRRU2010106');
