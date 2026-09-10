@@ -40,7 +40,7 @@ router.post('/api/manifests/:id/push-siscommate', async (req, res) => {
 
     // Mismas validaciones que la exportación TXT. Antes este camino solo
     // exigía el docking number y enviaba todos los B/L, validados o no.
-    const { validBls, errors } = validateForSubmission(manifest, allBls);
+    const { validBls, errors, warnings } = validateForSubmission(manifest, allBls);
     if (errors.length) return res.status(400).json({ error: errors.join(' | ') });
 
     /** @type {ContainerBLRow[]} */
@@ -114,6 +114,7 @@ router.post('/api/manifests/:id/push-siscommate', async (req, res) => {
       lote_nuevo: result.lote,
       bls: result.bls,
       enviados: validBls.length,
+      warnings,
     });
   } catch (err) {
     console.error('[PUSH-SISCOMMATE]', err.message);

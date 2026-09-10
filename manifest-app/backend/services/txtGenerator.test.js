@@ -263,3 +263,45 @@ test('el TXT usa CRLF como separador de línea', () => {
   const txt = generateFullTxt(manifest, [bl]);
   assert.ok(txt.includes('\r\n'), 'debe separar con CRLF');
 });
+
+// ── Acentos: el TXT es de ancho fijo por BYTE, no por carácter ──────────────
+// Una letra acentuada ocupa 2 bytes en UTF-8 — sin quitarla, corre 1 posición
+// todo lo que sigue en la línea aunque la longitud en caracteres JS dé bien.
+test('nombre de consignatario/consignador con acentos no rompe el ancho fijo', () => {
+  const conAcentos = { ...bl, consignee_name: 'COMPAÑÍA MUÑOZ, S.A.', consignor_name: 'ALMACÉN CAÑAS' };
+  const l1 = generateTxtLine1(conAcentos, manifest, 'PRRU2010106');
+  assert.strictEqual(l1.length, 205);
+  assert.strictEqual(Buffer.byteLength(l1, 'utf8'), 205, 'en bytes UTF-8 también debe medir 205');
+  assert.strictEqual(l1.substring(37, 67), pad('COMPANIA MUNOZ, S.A.', 30), 'quita acentos, conserva puntuación');
+  assert.strictEqual(l1.substring(83, 143), pad('ALMACEN CANAS', 60));
+});
+
+test('descripción de mercancía con acentos no rompe el ancho fijo', () => {
+  const conAcentos = { ...bl, goods_name: 'CONTIENE: PAÑALES Y ALMOHADAS PEQUEÑAS' };
+  const l2 = generateTxtLine2(conAcentos, 'PRRU2010106', 1, null);
+  assert.strictEqual(l2.length, 205);
+  assert.strictEqual(Buffer.byteLength(l2, 'utf8'), 205);
+});
+
+test('nombre del buque con acentos no rompe el ancho fijo', () => {
+  const conAcentos = { ...manifest, vessel_name: 'NIÑO DE ÁVILA' };
+  const l0 = generateTxtLine0(conAcentos, 1);
+  assert.strictEqual(l0.length, 205);
+  assert.strictEqual(Buffer.byteLength(l0, 'utf8'), 205);
+});
+
+test('comillas curvas de un PDF (8" copiado como comilla) no rompen el ancho fijo', () => {
+  // Caso real: "JAR CANDLES 8” QUALITY..." — la comilla curva (U+201D) mide
+  // 3 bytes en UTF-8, no 1, y desalineaba el resto de la línea sin avisar.
+  const conComillas = { ...bl, goods_name: 'JAR CANDLES 8” QUALITY 12/1 — VARIOS COLORS' };
+  const l2 = generateTxtLine2(conComillas, 'PRRU2010106', 1, null);
+  assert.strictEqual(l2.length, 205);
+  assert.strictEqual(Buffer.byteLength(l2, 'utf8'), 205);
+});
+
+test('un símbolo no previsto se quita en vez de desalinear la línea', () => {
+  const raro = { ...bl, consignee_name: 'CAFÉ ★ EXPRESS' };
+  const l1 = generateTxtLine1(raro, manifest, 'PRRU2010106');
+  assert.strictEqual(l1.length, 205);
+  assert.strictEqual(Buffer.byteLength(l1, 'utf8'), 205);
+});

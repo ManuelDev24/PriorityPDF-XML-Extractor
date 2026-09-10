@@ -15,8 +15,13 @@
 // Reglas de negocio, en un solo lugar:
 //  - Solo se entregan B/L marcados como 'validado'
 //  - El docking number es obligatorio y numérico
-//  - Cada B/L necesita código arancelario, tarifa y SS/EIN del consignatario
-//  - La descripción se trunca a 121 caracteres en el TXT: avisar antes
+//  - Cada B/L necesita código arancelario y SS/EIN del consignatario
+//  - La descripción >121 caracteres NO bloquea nada: txtGenerator ya la
+//    trunca sola vía pad() (mismo truco que usa para todos los campos de
+//    ancho fijo del TXT). Antes bloqueaba el push a SISCOMMATE igual que un
+//    error real, aunque el mensaje decía "se truncará" — quedaba B/L
+//    validados sin poder enviarse por un campo que de todos modos se iba a
+//    recortar solo. Ahora es aviso (warnings), no error.
 const DESC_MAX = 121;
 
 /** @typedef {import('../types').ManifestRow} ManifestRow */
@@ -26,7 +31,8 @@ const DESC_MAX = 121;
  * Resultado de validar un manifiesto antes de entregarlo.
  * @typedef {object} ResultadoValidacion
  * @property {BLRow[]} validBls Los B/L que se pueden entregar (status 'validado')
- * @property {string[]} errors  Vacío si todo está en orden
+ * @property {string[]} errors  Vacío si todo está en orden — bloquean la entrega
+ * @property {string[]} warnings Informativos, no bloquean — ej. descripción larga
  */
 
 /**
@@ -40,12 +46,14 @@ const DESC_MAX = 121;
  */
 function validateForSubmission(manifest, allBls) {
   const errors = [];
+  const warnings = [];
 
   const validBls = allBls.filter(bl => bl.status === 'validado');
   if (!validBls.length) {
     return {
       validBls: [],
       errors: ['No hay B/L validados en este manifiesto. Marca al menos uno como Validado antes de continuar.'],
+      warnings: [],
     };
   }
 
@@ -68,9 +76,9 @@ function validateForSubmission(manifest, allBls) {
   // Ya no se exige tarifa: si queda vacía, txtGenerator escribe el campo en
   // blanco (tránsito/libre arancel) en vez de bloquear la exportación.
   if (sinSS.length)     errors.push(`${sinSS.length} B/L sin SS/EIN consignatario: ${lista(sinSS)}`);
-  if (descLarga.length) errors.push(`${descLarga.length} B/L con descripción >${DESC_MAX} chars (se truncará): ${lista(descLarga)}`);
+  if (descLarga.length) warnings.push(`${descLarga.length} B/L con descripción >${DESC_MAX} chars (se truncará automáticamente): ${lista(descLarga)}`);
 
-  return { validBls, errors };
+  return { validBls, errors, warnings };
 }
 
 module.exports = { validateForSubmission, DESC_MAX };

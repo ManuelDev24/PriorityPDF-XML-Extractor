@@ -145,6 +145,38 @@ function sanitizeIdentificador(valor) {
   return String(valor || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 }
 
+const MAPA_ACENTOS = {
+  'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u', 'ü': 'u', 'ñ': 'n',
+  'Á': 'A', 'É': 'E', 'Í': 'I', 'Ó': 'O', 'Ú': 'U', 'Ü': 'U', 'Ñ': 'N',
+  // Comillas/rayas "curvas" y puntos suspensivos — típico artefacto de
+  // copiar texto de un PDF (ej. 8" de pulgadas queda como comilla curva).
+  '“': '"', '”': '"', '‘': "'", '’': "'",
+  '–': '-', '—': '-', '…': '...',
+};
+/**
+ * Quita acentos, diéresis (á→a, ñ→n, ü→u, Ñ→N...) y cualquier otro carácter
+ * fuera de ASCII, sin tocar el resto del texto — a diferencia de
+ * sanitizeIdentificador, aquí sí importa conservar la puntuación real
+ * (comas, puntos, "&", números). El TXT de Hacienda es de ancho fijo por
+ * BYTE, y el archivo se sirve como UTF-8: cualquier carácter fuera de ASCII
+ * ocupa 2 o más bytes en vez de 1, así que corre posiciones todo lo que
+ * sigue en la línea sin que nada lo avise en pantalla — visto en datos
+ * reales con acentos (CAÑAS, PLÁSTICOS) y con comillas curvas coladas desde
+ * un PDF ("8" QUALITY..."). Los caracteres conocidos se transliteran
+ * (mapa arriba); cualquier otro que aparezca y no se haya previsto se quita
+ * directo — es preferible perder un símbolo raro a desalinear el resto de
+ * la línea. Se usa en nombre/descripción/buque, los únicos campos de texto
+ * libre (no controlado) que van al TXT.
+ * @param {string|null|undefined} texto
+ * @returns {string}
+ */
+function quitarAcentos(texto) {
+  const conMapa = String(texto || '').replace(/[áéíóúüñÁÉÍÓÚÜÑ“”‘’–—…]/g, c => MAPA_ACENTOS[c]);
+  // Red de seguridad: cualquier carácter fuera de ASCII que no esté en el
+  // mapa (símbolo raro, artefacto de OCR/PDF que no anticipamos) se quita.
+  return conMapa.replace(/[^\x00-\x7F]/g, '');
+}
+
 // Puerto XML/DGA → código SISCOMMATE (fuente: ports.dbf de SISCOMMATE)
 /**
  * Traduce un código de puerto XML/DGA al código de 3 letras de SISCOMMATE.
@@ -238,7 +270,7 @@ function toSiscommatePort(code) {
 function generateTxtLine0(manifest, blCount) {
   const carrier = pad(manifest.carrier_code || setting('default_carrier_code', 'MPRIORO'), 7);
   const manNo   = pad(sanitizeIdentificador(manifest.manifest_no), 7);
-  const vessel  = pad(manifest.vessel_name || '', 16);
+  const vessel  = pad(quitarAcentos(manifest.vessel_name), 16);
   const voyNo   = pad(sanitizeIdentificador(manifest.voyage_no), 6);
   const imo     = padZ(manifest.imo || '0', 7);
   const dep     = (manifest.departure_date || '').replace(/-/g, '').substring(0, 8).padEnd(8, ' ');
@@ -319,10 +351,10 @@ function generateTxtLine1(bl, manifest, containerNo) {
     pad(sanitizeIdentificador(bl.bl_no), 16) + // [1:17]
     'AM' +                        // [17:19]
     pad(sanitizeIdentificador(containerNo !== undefined ? containerNo : bl.hacienda_container_no), 18) + // [19:37]
-    pad(bl.consignee_name, 30) +  // [37:67]
+    pad(quitarAcentos(bl.consignee_name), 30) +  // [37:67]
     ss9 +                         // [67:76]
     'C      ' +                   // [76:83] tipo C + 6 espacios
-    pad(bl.consignor_name, 60) +  // [83:143]
+    pad(quitarAcentos(bl.consignor_name), 60) +  // [83:143]
     pad(loadPort, 3) +            // [143:146]
     pad(discPort, 3) +            // [146:149]
     pad(discPort, 3) +            // [149:152]
@@ -370,7 +402,7 @@ function generateTxtLine2(bl, containerNo, containerCount, item) {
   const totalWeight = toNum(src.gross_weight);
   const weightPerCont = (!item && containerCount > 1) ? totalWeight / containerCount : totalWeight;
   const weightG   = padZ(Math.round(weightPerCont * 100), 7);
-  const goodsDesc = pad((src.goods_name || '').replace(/[\r\n]+/g, ' '), 121);
+  const goodsDesc = pad(quitarAcentos((src.goods_name || '').replace(/[\r\n]+/g, ' ')), 121);
   const qty       = padZ(src.package_qty || bl.package_qty || 0, 5);
   const itemCode  = padZ(parseInt(src.hacienda_item_code || bl.hacienda_item_code) || 0, 15);
   const hasContainer = !!(containerNo !== undefined ? containerNo : bl.hacienda_container_no || '').trim();
