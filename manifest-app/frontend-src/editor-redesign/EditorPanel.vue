@@ -270,16 +270,20 @@ function rellenarSiVacio(campo: 'consignee_name' | 'consignee_tel' | 'consignee_
   if (valor && !bl.value[campo]) actualizarBL(campo, valor);
 }
 
+// A diferencia de rellenarSiVacio: esto es una elección explícita del
+// operador (combobox de SS/EIN), no una sugerencia — si ya había datos de
+// OTRO consignatario, se reemplazan para que no quede un nombre/dirección
+// que ya no corresponde al SS/EIN recién elegido.
 function elegirCliente(c: Cliente) {
   actualizarBL('hacienda_client_ss', c.ss);
   clienteAbierto.value = false;
   nombreCliente.value = c.name;
   clienteId.value = c.id;
-  if (c.ivu && !bl.value.hacienda_client_ivu) actualizarBL('hacienda_client_ivu', c.ivu);
-  rellenarSiVacio('consignee_name', c.name);
-  rellenarSiVacio('consignee_tel', c.phone1 || '');
-  rellenarSiVacio('consignee_street', c.add1 || '');
-  rellenarSiVacio('consignee_city', c.add2 || '');
+  actualizarBL('hacienda_client_ivu', c.ivu || '');
+  actualizarBL('consignee_name', c.name);
+  actualizarBL('consignee_tel', c.phone1 || '');
+  actualizarBL('consignee_street', c.add1 || '');
+  actualizarBL('consignee_city', c.add2 || '');
 }
 function aplicarCliente(c: Cliente) { elegirCliente(c); }
 defineExpose({ aplicarCliente });
@@ -291,12 +295,12 @@ function elegirClienteSiscommate(c: ClienteSiscommate) {
   clienteAbierto.value = false;
   nombreCliente.value = c.name;
   clienteId.value = null;
-  if (c.ivu && !bl.value.hacienda_client_ivu) actualizarBL('hacienda_client_ivu', c.ivu);
+  actualizarBL('hacienda_client_ivu', c.ivu || '');
   const { street, city } = partirDireccion([c.add1, c.add2, c.add3]);
-  rellenarSiVacio('consignee_name', c.name);
-  rellenarSiVacio('consignee_tel', c.phone1 || '');
-  rellenarSiVacio('consignee_street', street);
-  rellenarSiVacio('consignee_city', city);
+  actualizarBL('consignee_name', c.name);
+  actualizarBL('consignee_tel', c.phone1 || '');
+  actualizarBL('consignee_street', street);
+  actualizarBL('consignee_city', city);
 }
 
 // Igual que alElegirCodigo: el Combobox entrega el `value` (string), más los
