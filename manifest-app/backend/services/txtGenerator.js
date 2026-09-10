@@ -374,7 +374,14 @@ function generateTxtLine2(bl, containerNo, containerCount, item) {
   const qty       = padZ(src.package_qty || bl.package_qty || 0, 5);
   const itemCode  = padZ(parseInt(src.hacienda_item_code || bl.hacienda_item_code) || 0, 15);
   const hasContainer = !!(containerNo !== undefined ? containerNo : bl.hacienda_container_no || '').trim();
-  const unitType  = pad(hasContainer ? 'BOX' : 'LSE', 6);
+  // Código empaque (DGA) que el operador elige en el editor — antes se
+  // ignoraba por completo y siempre se mandaba "BOX"/"LSE" fijo según si
+  // había contenedor. La data real de SISCOMMATE confirma que BOLITEM.ptype
+  // sí varía (BOX, BUNDLE, PALETS, BARREL...) y coincide con esta lista, así
+  // que el valor elegido va primero; el fijo queda solo de respaldo cuando
+  // el campo está vacío.
+  const empaqueElegido = String(bl.package_unit_code || '').trim().toUpperCase();
+  const unitType  = pad(empaqueElegido || (hasContainer ? 'BOX' : 'LSE'), 6);
   return (
     '2' +
     pad(sanitizeIdentificador(bl.bl_no), 16) +
