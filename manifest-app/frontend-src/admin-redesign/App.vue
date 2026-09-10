@@ -129,6 +129,45 @@ async function agregarTipo() {
   }
 }
 
+// ── Sugerencias inteligentes: código arancelario, SS/EIN, nombre ───────────
+// Dos fuentes de historial distintas para el mismo objetivo (ver
+// backend/services/itemClientAnalysis.js y localHistoryAnalysis.js):
+// SISCOMMATE completo (todos los usuarios) vs. el uso real de Priority en
+// esta app. Ninguna corre sola — el historial no cambia de un día para
+// otro y consultar SISCOMMATE repetidamente puede tardar.
+const corriendoSiscommate = ref(false);
+const corriendoLocal = ref(false);
+const resultadoSiscommate = ref<Record<string, unknown> | null>(null);
+const resultadoLocal = ref<Record<string, unknown> | null>(null);
+
+async function correrAnalisisSiscommate() {
+  corriendoSiscommate.value = true;
+  resultadoSiscommate.value = null;
+  try {
+    const r = await api.analizarClientesSiscommate();
+    resultadoSiscommate.value = r;
+    toast('Análisis contra SISCOMMATE completado');
+  } catch (e) {
+    let msg = 'Error al analizar';
+    try { msg = JSON.parse((e as Error).message).error || msg; } catch { /* texto plano */ }
+    toast(msg, 'err');
+  } finally { corriendoSiscommate.value = false; }
+}
+
+async function correrAnalisisLocal() {
+  corriendoLocal.value = true;
+  resultadoLocal.value = null;
+  try {
+    const r = await api.analizarHistorialLocal();
+    resultadoLocal.value = r;
+    toast('Análisis del historial local completado');
+  } catch (e) {
+    let msg = 'Error al analizar';
+    try { msg = JSON.parse((e as Error).message).error || msg; } catch { /* texto plano */ }
+    toast(msg, 'err');
+  } finally { corriendoLocal.value = false; }
+}
+
 onMounted(() => { cargarSettings(); cargarTipos(); cargarTamanos(); checkBridge(); cargarHistorial(); });
 </script>
 
@@ -314,6 +353,60 @@ onMounted(() => { cargarSettings(); cargarTipos(); cargarTamanos(); checkBridge(
             </TableBody>
           </Table>
           <p v-else class="text-sm text-ink-faint">Todavía no se hizo ningún envío a SISCOMMATE.</p>
+        </CardContent>
+      </Card>
+
+      <!-- ── Sugerencias inteligentes (código, SS/EIN, nombre consignatario) ── -->
+      <Card class="mt-6">
+        <CardHeader>
+          <CardTitle>Sugerencias inteligentes</CardTitle>
+          <CardDescription>
+            Mejoran solo con el uso, pero no se recalculan automáticamente — el
+            historial no cambia de un día para otro. Corré el análisis que
+            corresponda cuando quieras refrescar las sugerencias.
+          </CardDescription>
+        </CardHeader>
+        <CardContent class="flex flex-col gap-5">
+          <div class="flex flex-col gap-2 rounded-lg border border-border p-3.5">
+            <div class="flex items-center justify-between gap-3">
+              <div>
+                <p class="text-sm font-medium">Historial local de Priority</p>
+                <p class="text-xs text-ink-faint">
+                  Descripción → código y código → consignatario, según lo que tus
+                  propios operadores ya escogieron en esta app.
+                </p>
+              </div>
+              <Button size="sm" :disabled="corriendoLocal" @click="correrAnalisisLocal">
+                {{ corriendoLocal ? 'Analizando…' : 'Analizar historial local' }}
+              </Button>
+            </div>
+            <p v-if="resultadoLocal" class="text-xs text-status-validated">
+              {{ resultadoLocal.descripciones_aprendidas }} de {{ resultadoLocal.descripciones_con_historial }}
+              descripciones aprendidas · {{ resultadoLocal.codigos_aprendidos }} de {{ resultadoLocal.codigos_con_historial }}
+              códigos con consignatario aprendido.
+            </p>
+          </div>
+
+          <div class="flex flex-col gap-2 rounded-lg border border-border p-3.5">
+            <div class="flex items-center justify-between gap-3">
+              <div>
+                <p class="text-sm font-medium">Historial completo de SISCOMMATE</p>
+                <p class="text-xs text-ink-faint">
+                  Código → consignatario más frecuente entre TODOS los usuarios de
+                  SISCOMMATE, no solo Priority. Consulta el bridge repetidamente —
+                  puede tardar.
+                </p>
+              </div>
+              <Button size="sm" variant="outline" :disabled="corriendoSiscommate" @click="correrAnalisisSiscommate">
+                {{ corriendoSiscommate ? 'Analizando…' : 'Analizar SISCOMMATE' }}
+              </Button>
+            </div>
+            <p v-if="resultadoSiscommate" class="text-xs text-status-validated">
+              {{ resultadoSiscommate.codigos_asociados_local }} asociados por catálogo local ·
+              {{ resultadoSiscommate.codigos_asociados_siscommate }} por CUSTOMER.DBF ·
+              {{ resultadoSiscommate.sin_ss }} sin SS/EIN encontrado.
+            </p>
+          </div>
         </CardContent>
       </Card>
     </main>

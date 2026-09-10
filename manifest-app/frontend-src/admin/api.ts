@@ -46,6 +46,9 @@ function json(body: unknown): RequestInit {
   };
 }
 
+/** Resultado de correr un análisis de sugerencias — las claves varían según cuál. */
+export interface ResultadoAnalisis { ok: true; [clave: string]: unknown; }
+
 export const api = {
   getSettings: () => pedir<Settings>('/api/settings'),
 
@@ -76,4 +79,10 @@ export const api = {
     ),
 
   getHistorialSiscommate: () => pedir<EnvioSiscommate[]>('/api/siscommate/history'),
+
+  // Sugerencias inteligentes (código arancelario, SS/EIN, nombre consignatario)
+  analizarClientesSiscommate: () =>
+    pedir<ResultadoAnalisis>('/api/catalogs/items/analizar-clientes', { method: 'POST' }),
+  analizarHistorialLocal: () =>
+    pedir<ResultadoAnalisis>('/api/catalogs/items/analizar-historial-local', { method: 'POST' }),
 };

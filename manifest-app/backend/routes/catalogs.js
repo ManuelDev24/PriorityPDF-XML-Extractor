@@ -7,6 +7,7 @@ const db = require('../db/connection');
 const { VESSELS, PORT_MAPPINGS, VALID_CONTAINER_SIZES } = require('../db/catalogDefaults');
 const { buscarClientesSiscommate } = require('../services/siscommateClient');
 const { analizarYGuardar } = require('../services/itemClientAnalysis');
+const { analizarHistorialLocal, normalizarDescripcion } = require('../services/localHistoryAnalysis');
 
 const router = express.Router();
 
@@ -43,19 +44,43 @@ router.post('/api/catalogs/items/analizar-clientes', async (req, res) => {
   }
 });
 
+// Corre el análisis del historial LOCAL (bills_of_lading de esta app, no
+// SISCOMMATE) — ver services/localHistoryAnalysis.js. Síncrono y rápido
+// (no toca el bridge), pero igual manual: el historial no cambia de un día
+// para otro.
+router.post('/api/catalogs/items/analizar-historial-local', (req, res) => {
+  try {
+    const resultado = analizarHistorialLocal();
+    res.json({ ok: true, ...resultado });
+  } catch (err) {
+    res.status(500).json({ error: 'No se pudo completar el análisis: ' + err.message });
+  }
+});
+
 // Sugerir código arancelario basado en descripción de la mercancía
 router.get('/api/catalogs/items/suggest', (req, res) => {
   const desc = (req.query.desc || '').toLowerCase();
   if (!desc || desc.length < 3) return res.json([]);
 
+  // Aprendido del historial local (ver localHistoryAnalysis.js): si esta
+  // descripción exacta (normalizada) ya se usó antes con un código
+  // consistente, va de primero — es más confiable que el match por palabra
+  // clave contra el catálogo genérico.
+  const seen = new Set();
+  const candidates = [];
+  const aprendido = db.prepare(`
+    SELECT hi.*, la.n as veces_usado FROM learned_item_by_desc la
+    JOIN hacienda_items hi ON hi.code = la.item_code
+    WHERE la.desc_norm = ?
+  `).get(normalizarDescripcion(req.query.desc || ''));
+  if (aprendido) { seen.add(aprendido.code); candidates.push({ ...aprendido, score: 1000 }); }
+
   // Extraer palabras clave de la descripción (ignorar palabras cortas y comunes)
   const stopWords = new Set(['and','the','for','with','not','per','are','fue','los','las','del','con','para','que','una','uno']);
   const words = desc.split(/\s+/).filter(w => w.length >= 3 && !stopWords.has(w)).slice(0, 5);
-  if (!words.length) return res.json([]);
+  if (!words.length) return res.json(candidates);
 
   // Buscar coincidencias por cada palabra clave
-  const candidates = [];
-  const seen = new Set();
   const stmt = db.prepare(`SELECT *, ? as match_word FROM hacienda_items WHERE description LIKE ? LIMIT 10`);
   words.forEach(word => {
     stmt.all(word, `%${word}%`).forEach(row => {
@@ -63,8 +88,10 @@ router.get('/api/catalogs/items/suggest', (req, res) => {
     });
   });
 
-  // Puntuar: cuántas palabras clave aparecen en la descripción
+  // Puntuar: cuántas palabras clave aparecen en la descripción (el
+  // aprendido ya trae score:1000, se queda de primero sin recalcularlo)
   const scored = candidates.map(item => {
+    if (item.score === 1000) return item;
     let score = 0;
     words.forEach(w => { if (item.description.toLowerCase().includes(w)) score++; });
     return { ...item, score };

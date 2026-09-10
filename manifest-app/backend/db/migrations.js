@@ -80,6 +80,16 @@ function runMigrations({
   // solo faltaba la columna para no perderla al guardar. Pedido 2026-09-03.
   addColumnIfMissing('bl_cargo_items',  'package_qty',         'INTEGER DEFAULT 0');
 
+  // Descripción de mercancía → código arancelario, aprendido del historial
+  // LOCAL de bills_of_lading (no de SISCOMMATE) — ver
+  // services/localHistoryAnalysis.js. Se recalcula manualmente desde Admin
+  // a medida que se acumula más historial de uso real de Priority.
+  db.exec(`CREATE TABLE IF NOT EXISTS learned_item_by_desc (
+    desc_norm TEXT PRIMARY KEY,
+    item_code TEXT NOT NULL,
+    n         INTEGER NOT NULL
+  )`);
+
   // ── Configuración persistente (bridge host/port, ruta DBF) ─────────────────
   db.exec(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')`);
   // Parametrizado: antes se interpolaban las variables de entorno en el SQL
