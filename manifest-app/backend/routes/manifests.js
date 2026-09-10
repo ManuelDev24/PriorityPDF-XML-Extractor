@@ -274,14 +274,13 @@ router.get('/api/manifests/:id', (req, res) => {
   if (!manifest) return res.status(404).json({ error: 'No encontrado' });
   res.json({
     manifest,
-    // Validados primero, pendientes (incluye los recién agregados) después —
-    // así el sidebar deja arriba lo ya trabajado y abajo lo que falta. Se
-    // ordena por id (orden real de inserción) y no por bl_no: un B/L nuevo
-    // creado a mano (p.ej. "PENDIENTE-...") podría caer alfabéticamente en
-    // medio de la lista en vez de al final si se ordenara por texto.
+    // Mismo orden en que aparecen en el PDF, uno detrás de otro — se ordena
+    // por id (orden real de inserción, que sigue el orden de extracción del
+    // PDF/XML) y no por bl_no ni por status. Pedido explícito: no priorizar
+    // los validados arriba, respetar la posición original del documento.
     bls:          db.prepare(`
       SELECT * FROM bills_of_lading WHERE manifest_id=?
-      ORDER BY CASE WHEN status='validado' THEN 0 ELSE 1 END, id
+      ORDER BY id
     `).all(req.params.id),
     containers:   db.prepare('SELECT * FROM containers WHERE manifest_id=?').all(req.params.id),
     container_bl: db.prepare('SELECT * FROM container_bl WHERE manifest_id=?').all(req.params.id),

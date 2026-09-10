@@ -167,15 +167,6 @@ async function marcar(estado: 'validado' | 'pendiente') {
     const r = await api.actualizarBL(id, { status: estado });
     if (blActual.value?.id === id) blActual.value.status = estado;
     sincronizarEstadoManifiesto(manifestId, r.manifest_status);
-    // Reordena en el sidebar sin esperar un refetch: validados arriba,
-    // pendientes abajo — mismo orden que ya aplica el backend al cargar.
-    // sort() de JS es estable, así que dentro de cada grupo no se pierde
-    // el orden relativo que ya traía la lista.
-    datosManifiesto.value?.bls.sort((a, b) => {
-      const av = a.status === 'validado' ? 0 : 1;
-      const bv = b.status === 'validado' ? 0 : 1;
-      return av - bv;
-    });
     toast(estado === 'validado' ? 'B/L marcado como validado' : 'B/L regresado a pendiente');
   } catch { toast('Error', 'err'); }
 }
