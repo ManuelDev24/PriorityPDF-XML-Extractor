@@ -606,20 +606,19 @@ class SiscommateBridge
         {
             conn.Open();
 
-            // Verificar duplicado de viaje
+            // Reenvío incremental: antes esto rechazaba CUALQUIER reenvío del
+            // mismo viaje con una excepción, así que un B/L validado después
+            // de un primer push no se podía mandar sin borrar el viaje entero
+            // primero. Ahora Node (routes/siscommate.js) ya filtra y solo
+            // manda B/L que todavía no se hayan enviado, así que si el
+            // MANIFEST ya existe simplemente no se reinserta — pero sí se
+            // insertan BOL/BOLCONT/BOLITEM de los B/L nuevos que llegaron.
             string voyageNo = GetStr(mDict, "voyage_no");
+            bool manifiestoExiste;
             using (var chk = new OleDbCommand("SELECT COUNT(*) FROM MANIFEST WHERE manifest = ?", conn))
             {
                 chk.Parameters.AddWithValue("manifest", voyageNo);
-                int exists = Convert.ToInt32(chk.ExecuteScalar());
-                // Antes esto hacía "return" con un string de error, y el
-                // handler de /guardar lo envolvía igual en {"ok":true,...} —
-                // Node nunca se enteraba de que no se escribió nada. Tirar la
-                // excepción lo hace pasar por el mismo camino de error que ya
-                // usan el resto de los fallos (BOL/BOLITEM), que sí llega a
-                // Node como {"error":...}.
-                if (exists > 0)
-                    throw new Exception("El viaje " + voyageNo + " ya existe en SISCOMMATE. Eliminelo primero para reenviarlo.");
+                manifiestoExiste = Convert.ToInt32(chk.ExecuteScalar()) > 0;
             }
 
             int lotenum = ObtenerUltimoLote() + 1;
@@ -641,7 +640,10 @@ class SiscommateBridge
             else if (unloadingPort == "MGE") unloadingPort = "XMG";
 
             // ── MANIFEST ─────────────────────────────────────────────────────
+            // Solo se inserta la primera vez — un reenvío incremental agrega
+            // BOL/BOLCONT/BOLITEM nuevos al mismo MANIFEST que ya existe.
             // NOTA: "default" es palabra reservada en VFP, se escapa con comillas dobles
+            if (!manifiestoExiste)
             using (var cmd = new OleDbCommand(
                 "INSERT INTO MANIFEST " +
                 "(manifest,date,mawb,vessel,voyfli,sdate,idate,dtime,forigin," +
@@ -695,6 +697,18 @@ class SiscommateBridge
             // ── BOL ───────────────────────────────────────────────────────────
             foreach (var bl in blsList)
             {
+                string blNo = GetStr(bl, "bl_no");
+
+                // Red de seguridad: aunque Node ya filtra a B/L no enviados,
+                // si por algún bug llegara uno que ya está en BOL para este
+                // mismo viaje, se salta en vez de duplicarlo en la base real.
+                using (var chkBol = new OleDbCommand("SELECT COUNT(*) FROM BOL WHERE manifest = ? AND bolno = ?", conn))
+                {
+                    chkBol.Parameters.AddWithValue("manifest", voyageNo);
+                    chkBol.Parameters.AddWithValue("bolno", blNo);
+                    if (Convert.ToInt32(chkBol.ExecuteScalar()) > 0) continue;
+                }
+
                 string blDiscPort = unloadingPort;
 
                 using (var cmd = new OleDbCommand(

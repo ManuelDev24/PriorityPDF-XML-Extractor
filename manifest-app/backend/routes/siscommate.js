@@ -43,6 +43,25 @@ router.post('/api/manifests/:id/push-siscommate', async (req, res) => {
     const { validBls, errors, warnings } = validateForSubmission(manifest, allBls);
     if (errors.length) return res.status(400).json({ error: errors.join(' | ') });
 
+    // Reenvío incremental: el bridge rechaza con error un viaje cuyo MANIFEST
+    // ya existe, así que si se valida un B/L nuevo DESPUÉS de un primer push
+    // ya no se podía enviar nada sin borrar el viaje completo primero. Ahora
+    // solo se manda lo que todavía no tiene siscommate_sent_at — si ya se
+    // envió todo, ni siquiera se llama al bridge, se avisa y ya.
+    const porEnviar = validBls.filter(bl => !bl.siscommate_sent_at);
+    const yaEnviados = validBls.length - porEnviar.length;
+    if (!porEnviar.length) {
+      return res.json({
+        ok: true,
+        enviados: 0,
+        ya_enviados: yaEnviados,
+        mensaje: yaEnviados
+          ? `${yaEnviados === 1 ? 'El único B/L validado' : `Los ${yaEnviados} B/L validados`} de este viaje ya se ${yaEnviados === 1 ? 'había enviado' : 'habían enviado'} antes a SISCOMMATE. No hay nada nuevo que enviar.`
+          : 'No hay B/L validados en este viaje.',
+        warnings,
+      });
+    }
+
     /** @type {ContainerBLRow[]} */
     const container_bl = db.prepare('SELECT * FROM container_bl WHERE manifest_id=?').all(req.params.id);
     /** @type {ContainerRow[]} */
@@ -54,8 +73,8 @@ router.post('/api/manifests/:id/push-siscommate', async (req, res) => {
     const sizeMap = {};
     containers.forEach(c => { sizeMap[c.container_no] = c.size || ''; });
 
-    // Solo los contenedores de los B/L que sí se envían
-    const blNosEnviados = new Set(validBls.map(b => b.bl_no));
+    // Solo los contenedores de los B/L que sí se envían esta vez
+    const blNosEnviados = new Set(porEnviar.map(b => b.bl_no));
     const bridgeContainers = container_bl
       .filter(cb => blNosEnviados.has(cb.bl_no))
       .map(cb => ({
@@ -70,7 +89,7 @@ router.post('/api/manifests/:id/push-siscommate', async (req, res) => {
     cargoItems.forEach(it => {
       (itemsByBl[it.bl_id] = itemsByBl[it.bl_id] || []).push(it);
     });
-    validBls.forEach(bl => {
+    porEnviar.forEach(bl => {
       const items = itemsByBl[bl.id];
       if (items && items.length > 0) bl.cargoItems = items;
     });
@@ -78,7 +97,7 @@ router.post('/api/manifests/:id/push-siscommate', async (req, res) => {
     const loteInfo = await getLote();
     const result = await pushManifest({
       manifest,
-      bls: validBls,
+      bls: porEnviar,
       containers: bridgeContainers,
     });
 
@@ -96,6 +115,13 @@ router.post('/api/manifests/:id/push-siscommate', async (req, res) => {
     db.prepare(`UPDATE manifests SET status='siscommate', exported_at=datetime('now') WHERE id=?`)
       .run(req.params.id);
 
+    // Marcar SOLO los B/L que de verdad se acaban de enviar — así un push
+    // posterior sabe cuáles quedan pendientes sin volver a preguntarle a
+    // SISCOMMATE.
+    const marcarEnviado = db.prepare(`UPDATE bills_of_lading SET siscommate_sent_at=datetime('now') WHERE id=?`);
+    const marcarTodos = db.transaction(() => { porEnviar.forEach(bl => marcarEnviado.run(bl.id)); });
+    marcarTodos();
+
     // Historial: el lote es lo único que permite ubicar este envío en la base
     // real de SISCOMMATE después, y antes no se guardaba en ningún lado.
     db.prepare(`
@@ -105,7 +131,7 @@ router.post('/api/manifests/:id/push-siscommate', async (req, res) => {
       Number(req.params.id),
       manifest.voyage_no || '',
       String(result && result.lote != null ? result.lote : ''),
-      validBls.length
+      porEnviar.length
     );
 
     res.json({
@@ -113,7 +139,8 @@ router.post('/api/manifests/:id/push-siscommate', async (req, res) => {
       lote_anterior: loteInfo.lote,
       lote_nuevo: result.lote,
       bls: result.bls,
-      enviados: validBls.length,
+      enviados: porEnviar.length,
+      ya_enviados: yaEnviados,
       warnings,
     });
   } catch (err) {

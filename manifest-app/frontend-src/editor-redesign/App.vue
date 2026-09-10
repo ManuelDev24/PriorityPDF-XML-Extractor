@@ -15,7 +15,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { Upload, Settings, Ship, Eye, FileOutput, DatabaseZap, Database, Loader2, FileUp, X, PanelLeftClose, PanelLeftOpen } from '@lucide/vue';
+import { Upload, Settings, Ship, Eye, FileOutput, DatabaseZap, Database, Loader2, FileUp, X, PanelLeftClose, PanelLeftOpen, Check } from '@lucide/vue';
 
 const bridgeOnline = ref(false);
 const archivoInput = ref<HTMLInputElement | null>(null);
@@ -192,6 +192,16 @@ async function exportarTxt() {
 }
 
 const enviando = ref(false);
+// Check grande animado en el centro de la pantalla — confirmación visual de
+// que SÍ se envió algo de verdad, más notoria que un toast que se puede
+// perder de vista. Se cierra sola; también con clic o tecla Escape.
+const envioExitoso = ref(false);
+let envioExitosoTimer: ReturnType<typeof setTimeout> | undefined;
+function mostrarEnvioExitoso() {
+  envioExitoso.value = true;
+  clearTimeout(envioExitosoTimer);
+  envioExitosoTimer = setTimeout(() => { envioExitoso.value = false; }, 2200);
+}
 async function pushSiscommate() {
   const m = datosManifiesto.value?.manifest;
   if (!m) { toast('Selecciona un manifiesto', 'err'); return; }
@@ -206,8 +216,16 @@ async function pushSiscommate() {
   setEstado('Enviando al SISCOMMATE...');
   try {
     const r = await api.pushSiscommate(m.id);
-    toast(`Guardado en SISCOMMATE — Lote ${r.lote_nuevo}`);
-    setEstado(`Guardado en SISCOMMATE. Lote anterior: ${r.lote_anterior} → nuevo: ${r.lote_nuevo}`);
+    if (r.enviados > 0) {
+      mostrarEnvioExitoso();
+      toast(`Guardado en SISCOMMATE — ${r.enviados} B/L nuevos, lote ${r.lote_nuevo}`);
+      setEstado(`Guardado en SISCOMMATE. Lote anterior: ${r.lote_anterior} → nuevo: ${r.lote_nuevo}`);
+    } else {
+      // Reenvío incremental sin nada nuevo que mandar — no es un error, solo
+      // no había B/L pendientes de enviar. Sin check grande: no se envió nada.
+      toast(r.mensaje || 'No hay B/L nuevos que enviar');
+      setEstado(r.mensaje || 'No hay B/L nuevos que enviar');
+    }
     await cargarManifiestos();
     await seleccionarManifiesto(m.id);
   } catch (e) {
@@ -467,5 +485,28 @@ onMounted(async () => {
     <div v-if="toastMsg" class="fixed bottom-5 right-5 rounded-md px-4 py-2.5 text-sm shadow-lg" :class="toastTipo === 'ok' ? 'bg-ink text-status-validated-soft' : 'bg-danger text-white'">
       {{ toastTipo === 'ok' ? '✓ ' : '⚠ ' }}{{ toastMsg }}
     </div>
+
+    <!-- Check grande animado: confirmación visual de un envío real a
+         SISCOMMATE (enviados > 0) — más notorio que el toast, que se puede
+         perder de vista con la pantalla llena de campos. -->
+    <Transition name="check-envio">
+      <div v-if="envioExitoso" class="fixed inset-0 z-50 flex items-center justify-center bg-ink/40" @click="envioExitoso = false">
+        <div class="check-envio-circulo flex size-36 items-center justify-center rounded-full bg-status-validated shadow-2xl">
+          <Check class="size-20 text-white" stroke-width="3" />
+        </div>
+      </div>
+    </Transition>
   </div>
 </template>
+
+<style scoped>
+.check-envio-enter-active .check-envio-circulo { animation: check-envio-pop 0.45s cubic-bezier(0.34, 1.56, 0.64, 1); }
+.check-envio-enter-active { transition: opacity 0.15s ease; }
+.check-envio-leave-active { transition: opacity 0.25s ease; }
+.check-envio-enter-from, .check-envio-leave-to { opacity: 0; }
+@keyframes check-envio-pop {
+  0%   { transform: scale(0.4); opacity: 0; }
+  60%  { transform: scale(1.08); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+</style>

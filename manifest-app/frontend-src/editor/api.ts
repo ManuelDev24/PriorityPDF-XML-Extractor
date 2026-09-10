@@ -247,9 +247,10 @@ export const api = {
   buscar: (q: string) => pedir<ResultadoBusqueda>(`/api/search?q=${encodeURIComponent(q)}`),
   estadoBridge: () => pedir<EstadoBridge>('/api/bridge/status'),
   pushSiscommate: (id: number) =>
-    pedir<{ ok: true; lote_anterior: number | null; lote_nuevo: number; enviados: number }>(
-      `/api/manifests/${id}/push-siscommate`, { method: 'POST' }
-    ),
+    pedir<{
+      ok: true; enviados: number; ya_enviados?: number; mensaje?: string; warnings?: string[];
+      lote_anterior?: number | null; lote_nuevo?: number; bls?: unknown;
+    }>(`/api/manifests/${id}/push-siscommate`, { method: 'POST' }),
   siscommateVivo: (id: number) =>
     pedir<DatosSiscommateVivo>(`/api/manifests/${id}/siscommate-live`),
 };

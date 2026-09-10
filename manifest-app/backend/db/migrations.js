@@ -74,6 +74,15 @@ function runMigrations({
   // antes de continuar hacia el destino. Pedido explícito 2026-09-03.
   addColumnIfMissing('manifests',       'discharge_port',      'TEXT');
 
+  // Marca de fecha en que ESTE B/L en particular se envió realmente a
+  // SISCOMMATE — antes solo se sabía a nivel de todo el viaje
+  // (manifests.status='siscommate'), así que si se validaban B/L nuevos
+  // después de un primer envío, no había forma de saber cuáles ya estaban
+  // allá y cuáles faltaban. El bridge además rechaza reenviar un viaje que
+  // ya existe en MANIFEST — con esta columna, push-siscommate solo manda
+  // los B/L que todavía no tienen esta marca, en vez de fallar por completo.
+  addColumnIfMissing('bills_of_lading', 'siscommate_sent_at',  'TEXT');
+
   // Cantidad de bultos por item de carga. txtGenerator ya la escribía
   // (src.package_qty || bl.package_qty) desde antes de que existiera esta
   // columna, y pdfParser ya la extrae por item (cargoItems[].package_qty) —
