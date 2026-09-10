@@ -53,7 +53,7 @@ async function analizarYGuardar() {
     porCodigo.get(f.code).push(f);
   });
 
-  const clients = db.prepare(`SELECT name, ss FROM clients WHERE name IS NOT NULL AND name != '' AND ss IS NOT NULL AND ss != ''`).all();
+  const clients = db.prepare(`SELECT name, ss, phone1, add1, add2, ivu FROM clients WHERE name IS NOT NULL AND name != '' AND ss IS NOT NULL AND ss != ''`).all();
   const clientMap = new Map();
   clients.forEach(c => { const k = c.name.trim().toUpperCase(); if (!clientMap.has(k)) clientMap.set(k, c); });
 
@@ -70,12 +70,16 @@ async function analizarYGuardar() {
   });
 
   let asociadosLocal = 0, asociadosSiscommate = 0, sinSS = 0;
-  const actualizar = db.prepare(`UPDATE hacienda_items SET client_name=?, client_ss=? WHERE code=?`);
+  const actualizar = db.prepare(`
+    UPDATE hacienda_items
+    SET client_name=?, client_ss=?, client_phone=?, client_add1=?, client_add2=?, client_add3=?, client_ivu=?
+    WHERE code=?
+  `);
 
   for (const { code, consigne } of candidatos) {
     const local = emparejarClienteLocal(consigne, clientMap);
     if (local) {
-      actualizar.run(local.name, local.ss, code);
+      actualizar.run(local.name, local.ss, local.phone1 || '', local.add1 || '', local.add2 || '', '', local.ivu || '', code);
       asociadosLocal++;
       continue;
     }
@@ -88,7 +92,7 @@ async function analizarYGuardar() {
     const normConsigne = consigne.trim().toUpperCase();
     const exacto = real.find(c => (c.name || '').trim().toUpperCase() === normConsigne && c.ss);
     if (exacto) {
-      actualizar.run(exacto.name, exacto.ss, code);
+      actualizar.run(exacto.name, exacto.ss, exacto.phone1 || '', exacto.add1 || '', exacto.add2 || '', exacto.add3 || '', exacto.ivu || '', code);
       asociadosSiscommate++;
     } else {
       sinSS++;

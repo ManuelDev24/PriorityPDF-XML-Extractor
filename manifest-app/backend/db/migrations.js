@@ -51,6 +51,18 @@ function runMigrations({
   addColumnIfMissing('hacienda_items',  'client_name',         'TEXT');
   addColumnIfMissing('hacienda_items',  'client_ss',           'TEXT');
 
+  // Resto del registro de CUSTOMER.DBF para el cliente sugerido arriba —
+  // itemClientAnalysis.js ya lo trae al resolver la asociación código→cliente
+  // pero antes se descartaba, obligando a re-elegir el consignatario a mano
+  // solo para completar teléfono/dirección/IVU. Mismas 3 líneas de dirección
+  // que CUSTOMER (add1/add2/add3), sin partir en calle/ciudad — eso lo hace
+  // partirDireccion() en el frontend, igual que con un cliente elegido a mano.
+  addColumnIfMissing('hacienda_items',  'client_phone',        'TEXT');
+  addColumnIfMissing('hacienda_items',  'client_add1',         'TEXT');
+  addColumnIfMissing('hacienda_items',  'client_add2',         'TEXT');
+  addColumnIfMissing('hacienda_items',  'client_add3',         'TEXT');
+  addColumnIfMissing('hacienda_items',  'client_ivu',          'TEXT');
+
   // El IMO del buque nunca tuvo columna, pese a que el editor lo pide, la ruta
   // lo declara editable y el TXT de Hacienda lo escribe en [174:181]. Cualquier
   // PUT que lo incluyera fallaba con "no such column: imo", perdiendo de paso

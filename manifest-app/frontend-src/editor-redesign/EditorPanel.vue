@@ -167,6 +167,15 @@ async function marcar(estado: 'validado' | 'pendiente') {
     const r = await api.actualizarBL(id, { status: estado });
     if (blActual.value?.id === id) blActual.value.status = estado;
     sincronizarEstadoManifiesto(manifestId, r.manifest_status);
+    // Reordena en el sidebar sin esperar un refetch: validados arriba,
+    // pendientes abajo — mismo orden que ya aplica el backend al cargar.
+    // sort() de JS es estable, así que dentro de cada grupo no se pierde
+    // el orden relativo que ya traía la lista.
+    datosManifiesto.value?.bls.sort((a, b) => {
+      const av = a.status === 'validado' ? 0 : 1;
+      const bv = b.status === 'validado' ? 0 : 1;
+      return av - bv;
+    });
     toast(estado === 'validado' ? 'B/L marcado como validado' : 'B/L regresado a pendiente');
   } catch { toast('Error', 'err'); }
 }
@@ -200,11 +209,19 @@ function elegirItem(it: ItemHacienda) {
   descItem.value = it.description;
   // Sugerencia de consignatario según qué cliente usa más este código en el
   // historial real de SISCOMMATE (ver itemClientAnalysis.js) — no pisa un
-  // SS/nombre que el operador ya haya puesto a mano.
+  // SS/nombre que el operador ya haya puesto a mano. Mismo autofill completo
+  // que elegir el consignatario a mano (elegirClienteSiscommate): antes solo
+  // llenaba SS y nombre, dejando teléfono/dirección/IVU vacíos aunque el
+  // análisis ya los trae de CUSTOMER.DBF.
   if (it.client_ss && !bl.value.hacienda_client_ss) {
     actualizarBL('hacienda_client_ss', it.client_ss);
     if (it.client_name) { nombreCliente.value = it.client_name; clienteId.value = null; }
+    if (it.client_ivu && !bl.value.hacienda_client_ivu) actualizarBL('hacienda_client_ivu', it.client_ivu);
+    const { street, city } = partirDireccion([it.client_add1, it.client_add2, it.client_add3]);
     rellenarSiVacio('consignee_name', it.client_name || '');
+    rellenarSiVacio('consignee_tel', it.client_phone || '');
+    rellenarSiVacio('consignee_street', street);
+    rellenarSiVacio('consignee_city', city);
   }
 }
 // El Combobox nativo emite el `value` del item elegido (el código, un
@@ -529,9 +546,9 @@ watch(() => bl.value?.id, () => {
           </div>
         </div>
 
-        <!-- Fila 3: SS/EIN consignatario (5) · IVU (3) · Notas internas (4) -->
+        <!-- Fila 3: SS/EIN consignatario (4) · Nombre consignatario (5) · IVU (3) -->
         <div class="grid grid-cols-12 gap-x-3 gap-y-2.5">
-          <div class="col-span-12 md:col-span-5 flex flex-col gap-1">
+          <div class="col-span-12 md:col-span-4 flex flex-col gap-1">
             <Label class="text-xs">SS / EIN consignatario <span class="text-danger">*</span></Label>
             <Combobox
               :model-value="bl.hacienda_client_ss || ''"
@@ -568,10 +585,19 @@ watch(() => bl.value?.id, () => {
                 </ComboboxGroup>
               </ComboboxList>
             </Combobox>
+          </div>
+          <!-- Nombre consignatario: antes solo aparecía como texto verde debajo
+               del SS/EIN (nombreCliente), sin poder verse/editarse sin bajar
+               hasta la tarjeta "Consignatario" — mismo campo (consignee_name),
+               ahora también editable aquí donde se elige el código/SS. -->
+          <div class="col-span-12 md:col-span-5 flex flex-col gap-1">
+            <Label class="text-xs">Nombre consignatario</Label>
+            <Input :model-value="bl.consignee_name || ''" placeholder="Se completa al elegir código o SS/EIN" class="text-xs"
+              @change="(e:Event) => actualizarBL('consignee_name', (e.target as HTMLInputElement).value)" />
             <p v-if="nombreCliente" class="flex items-center gap-1 text-xs text-status-validated">
-              <Check class="size-3" />{{ nombreCliente }}
-              <button v-if="clienteId !== null" class="text-accent underline" @click="emit('editarCliente', clienteId || 0, bl.hacienda_client_ss || '', nombreCliente)">Editar</button>
-              <span v-else class="text-ink-faint">(SISCOMMATE)</span>
+              <Check class="size-3" />
+              <button v-if="clienteId !== null" class="text-accent underline" @click="emit('editarCliente', clienteId || 0, bl.hacienda_client_ss || '', nombreCliente)">Editar cliente local</button>
+              <span v-else class="text-ink-faint">Sugerido desde SISCOMMATE</span>
             </p>
           </div>
           <div class="col-span-12 md:col-span-3 flex flex-col gap-1">
@@ -580,7 +606,7 @@ watch(() => bl.value?.id, () => {
               @input="(e:Event) => { const el = e.target as HTMLInputElement; el.value = el.value.replace(/[^0-9]/g,''); }"
               @change="(e:Event) => actualizarBL('hacienda_client_ivu', (e.target as HTMLInputElement).value)" />
           </div>
-          <div class="col-span-12 md:col-span-4 flex flex-col gap-1">
+          <div class="col-span-12 flex flex-col gap-1">
             <Label class="text-xs">Notas internas</Label>
             <Input :model-value="bl.notes || ''" placeholder="Observaciones..." class="h-9 bg-paper-raised text-xs"
               @change="(e:Event) => actualizarBL('notes', (e.target as HTMLInputElement).value)" />

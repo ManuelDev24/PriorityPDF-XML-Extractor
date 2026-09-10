@@ -103,6 +103,13 @@ export interface ItemHacienda {
    * venir directo de CUSTOMER.DBF). */
   client_name?: string | null;
   client_ss?: string | null;
+  /** Resto del registro de CUSTOMER.DBF para el cliente sugerido — mismas
+   * 3 líneas de dirección que SISCOMMATE, sin partir en calle/ciudad. */
+  client_phone?: string | null;
+  client_add1?: string | null;
+  client_add2?: string | null;
+  client_add3?: string | null;
+  client_ivu?: string | null;
 }
 
 export interface Cliente {
