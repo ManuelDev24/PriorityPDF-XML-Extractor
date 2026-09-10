@@ -129,6 +129,27 @@ function opcionesTamano(size: string) {
     : [...tamanosValidos.value, size];
 }
 
+// bl_no no se puede cambiar con actualizarBL (no está en los campos
+// editables del backend a propósito — cambiarlo requiere arrastrar
+// container_bl, que lo referencia por texto, no por id). Se usa la ruta
+// dedicada /renombrar y se refleja a mano en los mismos tres lugares que
+// ya hacía falta actualizar para el contenedor.
+async function renombrarBL(nuevoNo: string) {
+  if (!blActual.value) return;
+  const limpio = nuevoNo.trim().toUpperCase();
+  const anterior = blActual.value.bl_no;
+  if (!limpio || limpio === anterior) return;
+  try {
+    await api.renombrarBL(blActual.value.id, limpio);
+    if (blActual.value) blActual.value.bl_no = limpio;
+    const enLista = datosManifiesto.value?.bls.find(b => b.id === blActual.value?.id);
+    if (enLista) enLista.bl_no = limpio;
+    datosManifiesto.value?.container_bl.forEach(v => { if (v.bl_no === anterior) v.bl_no = limpio; });
+    setEstado('B/L renombrado', new Date().toLocaleTimeString('es-PR'));
+    toast(`B/L renombrado a ${limpio}`);
+  } catch (e) { toast('Error renombrando B/L: ' + (e as Error).message, 'err'); }
+}
+
 async function marcar(estado: 'validado' | 'pendiente') {
   if (!blActual.value) return;
   const id = blActual.value.id;
@@ -412,7 +433,9 @@ watch(() => bl.value?.id, () => {
 
     <!-- ── B/L HEADER ── -->
     <div class="flex items-center gap-2">
-      <h2 class="text-sm font-semibold">{{ bl.bl_no }}</h2>
+      <Input :model-value="bl.bl_no" title="Número de B/L (editable)"
+        class="h-7 w-40 border-transparent bg-transparent px-1 font-mono text-sm font-semibold hover:border-border focus:border-border focus:bg-paper-raised"
+        @change="(e:Event) => renombrarBL((e.target as HTMLInputElement).value)" />
       <StatusBadge :status="bl.status" />
       <div class="flex-1"></div>
       <Button v-if="bl.status === 'validado'" variant="outline" size="sm" @click="blActual && marcar('pendiente')"><X class="size-3.5" />Desvalidar</Button>

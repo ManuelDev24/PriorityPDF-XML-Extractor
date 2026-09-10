@@ -63,6 +63,34 @@ router.post('/api/manifests/:manifestId/bl', (req, res) => {
   res.status(201).json({ ok: true, bl, manifest_status });
 });
 
+// ── RENOMBRAR EL NÚMERO DE B/L ────────────────────────────────────────────────
+// bl_no no está en CAMPOS_EDITABLES_BL a propósito: cambiarlo con un UPDATE
+// simple dejaría container_bl (que lo referencia por string, no por bl_id)
+// apuntando al número viejo. Hace falta esta ruta dedicada, con cascada,
+// para los casos donde el B/L se crea con un número provisional (p.ej.
+// cuando el número real se perdió en el PDF y se sabe el consignatario
+// pero no el número todavía) y se corrige después.
+router.put('/api/bl/:id/renombrar', (req, res) => {
+  const bl = db.prepare('SELECT * FROM bills_of_lading WHERE id=?').get(req.params.id);
+  if (!bl) return res.status(404).json({ error: 'B/L no encontrado' });
+
+  const nuevoNo = String(req.body?.bl_no || '').trim();
+  if (!nuevoNo) return res.status(400).json({ error: 'El número de B/L no puede quedar vacío' });
+  if (nuevoNo === bl.bl_no) return res.json({ ok: true, bl_no: nuevoNo });
+
+  if (db.prepare('SELECT 1 FROM bills_of_lading WHERE manifest_id=? AND bl_no=?').get(bl.manifest_id, nuevoNo)) {
+    return res.status(409).json({ error: `Ya existe un B/L "${nuevoNo}" en este manifiesto` });
+  }
+
+  const renombrar = db.transaction(() => {
+    db.prepare('UPDATE bills_of_lading SET bl_no=? WHERE id=?').run(nuevoNo, bl.id);
+    db.prepare('UPDATE container_bl SET bl_no=? WHERE bl_no=? AND manifest_id=?')
+      .run(nuevoNo, bl.bl_no, bl.manifest_id);
+  });
+  renombrar();
+  res.json({ ok: true, bl_no: nuevoNo });
+});
+
 router.put('/api/bl/:id', (req, res) => {
   const sets = []; const vals = [];
   CAMPOS_EDITABLES_BL.forEach(f => {

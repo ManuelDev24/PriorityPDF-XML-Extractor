@@ -192,6 +192,8 @@ export const api = {
     pedir<{ ok: true; manifest_status?: string }>(`/api/bl/${id}`, cuerpo('PUT', campos)),
   eliminarBL: (id: number) =>
     pedir<{ ok: true; manifest_status?: string }>(`/api/bl/${id}`, { method: 'DELETE' }),
+  renombrarBL: (id: number, blNo: string) =>
+    pedir<{ ok: true; bl_no: string }>(`/api/bl/${id}/renombrar`, cuerpo('PUT', { bl_no: blNo })),
   moverBL: (id: number, manifestId: number) =>
     pedir<{
       ok: true; bl_no: string; manifest_id_anterior: number; manifest_id_nuevo: number;
