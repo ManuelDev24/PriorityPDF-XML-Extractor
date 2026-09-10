@@ -764,6 +764,22 @@ class SiscommateBridge
             }
 
             // ── BOLITEM ───────────────────────────────────────────────────────
+            // BOLITEM.volume (numérico) se mandaba siempre en 0 — vacío. Se
+            // llena con el tamaño del contenedor (el primero, si el B/L tiene
+            // varios) como número entero puro: a diferencia de BOLCONT.size
+            // (CHAR(3), "040"/"020" confirmado contra manifiestos reales),
+            // volume es DBTYPE_NUMERIC — ahí el valor va sin ceros a la
+            // izquierda, es solo el entero (40, no "040").
+            var sizePorBl = new Dictionary<string, decimal>();
+            foreach (var cbl in contList)
+            {
+                string blNo = GetStr(cbl, "bl_no");
+                if (blNo == "" || sizePorBl.ContainsKey(blNo)) continue;
+                string digitos = System.Text.RegularExpressions.Regex.Replace(GetStr(cbl, "size") ?? "", "[^0-9]", "");
+                decimal size;
+                if (digitos != "" && decimal.TryParse(digitos, out size)) sizePorBl[blNo] = size;
+            }
+
             control = ObtenerUltimoControl(conn, "BOLITEM") + 1;
             foreach (var bl in blsList)
             {
@@ -781,7 +797,9 @@ class SiscommateBridge
                     AddNumeric(cmd, "qty",   GetDec(bl, "package_qty"));
                     cmd.Parameters.AddWithValue("ptype",    pkgType);
                     AddNumeric(cmd, "weight", GetDec(bl, "gross_weight"));
-                    AddNumeric(cmd, "volume", 0m);
+                    decimal volSize;
+                    sizePorBl.TryGetValue(GetStr(bl, "bl_no"), out volSize);
+                    AddNumeric(cmd, "volume", volSize);
                     cmd.Parameters.AddWithValue("desc",     GetStr(bl, "goods_name"));
                     cmd.Parameters.AddWithValue("sind",     "");
                     AddNumeric(cmd, "qrec",  GetDec(bl, "package_qty"));
