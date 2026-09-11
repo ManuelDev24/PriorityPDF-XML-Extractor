@@ -12,7 +12,7 @@
 
 const http = require('http');
 const db = require('../db/connection');
-const { quitarAcentos, sanitizeIdentificador } = require('./txtGenerator');
+const { quitarAcentos, sanitizeIdentificador, normalizarEmpaque } = require('./txtGenerator');
 
 /**
  * Para el push a SISCOMMATE: más estricto que quitarAcentos() (que se usa
@@ -172,7 +172,24 @@ async function getLote() {
  * @param {{manifest: import('../types').ManifestRow, bls: import('../types').BLRow[], containers: import('../types').BridgeContainer[]}} payload
  * @returns {Promise<any>}
  */
+/**
+ * Mismo par de reglas que ya usa el TXT local (generateTxtLine2) — antes el
+ * bridge decidía el ptype por su cuenta, sin mirar si el B/L de verdad tiene
+ * contenedor (si package_unit_code venía vacío, siempre ponía "BOX" fijo,
+ * nunca "LSE") ni validar el valor contra el vocabulario real de SISCOMMATE.
+ * Eso podía divergir de lo que el TXT decía para el mismo B/L. Calculado
+ * aquí con la misma lógica, lo que queda en SISCOMMATE ya no se desalinea.
+ * @param {string|null|undefined} packageUnitCode
+ * @param {boolean} hasContainer
+ * @returns {string}
+ */
+function calcularPackageUnitCode(packageUnitCode, hasContainer) {
+  const empaqueValido = normalizarEmpaque(packageUnitCode);
+  return empaqueValido || (hasContainer ? 'BOX' : 'LSE');
+}
+
 function pushManifest({ manifest, bls, containers }) {
+  const blNosConContenedor = new Set(containers.map(c => c.bl_no));
   const manifestLimpio = { ...manifest, vessel_name: limpiarTextoLibre(manifest.vessel_name) };
   const blsLimpios = bls.map(bl => ({
     ...bl,
@@ -180,6 +197,7 @@ function pushManifest({ manifest, bls, containers }) {
     consignee_name: limpiarTextoLibre(bl.consignee_name),
     consignor_name: limpiarTextoLibre(bl.consignor_name),
     goods_name: limpiarTextoLibre(bl.goods_name),
+    package_unit_code: calcularPackageUnitCode(bl.package_unit_code, blNosConContenedor.has(bl.bl_no)),
   }));
   const containersLimpios = containers.map(c => ({
     ...c,
@@ -226,6 +244,6 @@ async function analizarItemClienteTodos() {
 module.exports = {
   getBridgeConfig, bridgeRequest,
   getBridgeStatus, getLote, pushManifest, consultarManifiesto, buscarClientesSiscommate,
-  analizarItemClienteTodos, limpiarTextoLibre,
+  analizarItemClienteTodos, limpiarTextoLibre, calcularPackageUnitCode,
   BRIDGE_TIMEOUT_MS,
 };

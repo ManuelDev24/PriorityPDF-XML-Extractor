@@ -4,7 +4,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { limpiarTextoLibre } = require('./siscommateClient');
+const { limpiarTextoLibre, calcularPackageUnitCode } = require('./siscommateClient');
 
 test('limpiarTextoLibre quita acentos conservando la letra', () => {
   assert.strictEqual(limpiarTextoLibre('GOMAS Y PLÁSTICOS'), 'GOMAS Y PLASTICOS');
@@ -32,4 +32,26 @@ test('limpiarTextoLibre con vacío/null/undefined da string vacío', () => {
   assert.strictEqual(limpiarTextoLibre(''), '');
   assert.strictEqual(limpiarTextoLibre(null), '');
   assert.strictEqual(limpiarTextoLibre(undefined), '');
+});
+
+test('calcularPackageUnitCode respeta un valor ya válido', () => {
+  assert.strictEqual(calcularPackageUnitCode('BOX', false), 'BOX');
+  assert.strictEqual(calcularPackageUnitCode('LSE', true), 'LSE');
+});
+
+test('calcularPackageUnitCode vacío: LSE sin contenedor, BOX con contenedor', () => {
+  assert.strictEqual(calcularPackageUnitCode('', false), 'LSE');
+  assert.strictEqual(calcularPackageUnitCode(null, false), 'LSE');
+  assert.strictEqual(calcularPackageUnitCode(undefined, true), 'BOX');
+  assert.strictEqual(calcularPackageUnitCode('', true), 'BOX');
+});
+
+test('calcularPackageUnitCode normaliza sinónimos antes de decidir', () => {
+  assert.strictEqual(calcularPackageUnitCode('carton', false), 'BOX');
+  assert.strictEqual(calcularPackageUnitCode('pallet', true), 'PALETS');
+});
+
+test('calcularPackageUnitCode descarta un valor no reconocido y cae al respaldo', () => {
+  assert.strictEqual(calcularPackageUnitCode('PACK', false), 'LSE');
+  assert.strictEqual(calcularPackageUnitCode('IG013', true), 'BOX');
 });

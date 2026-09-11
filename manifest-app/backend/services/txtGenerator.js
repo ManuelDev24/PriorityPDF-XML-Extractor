@@ -507,5 +507,5 @@ module.exports = {
   toSiscommatePort,
   generateTxtLine0, generateTxtLine1, generateTxtLine2,
   generateFullTxt,
-  quitarAcentos, sanitizeIdentificador,
+  quitarAcentos, sanitizeIdentificador, normalizarEmpaque,
 };
