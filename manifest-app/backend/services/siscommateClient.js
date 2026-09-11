@@ -12,6 +12,26 @@
 
 const http = require('http');
 const db = require('../db/connection');
+const { quitarAcentos, sanitizeIdentificador } = require('./txtGenerator');
+
+/**
+ * Para el push a SISCOMMATE: más estricto que quitarAcentos() (que se usa
+ * para el TXT local y sí conserva puntuación real como "S.A." o "KM. 72.2").
+ * Pedido explícito: NINGÚN carácter especial debe llegar a la base real de
+ * SISCOMMATE — ni dos puntos, ni guiones, ni barras, ni comas, nada que no
+ * sea letra/número/espacio. Se quitan acentos primero (para no perder la
+ * letra, solo el acento) y despues cualquier otra cosa que no sea A-Z, 0-9
+ * o espacio.
+ * @param {string|null|undefined} texto
+ * @returns {string}
+ */
+function limpiarTextoLibre(texto) {
+  return quitarAcentos(String(texto || ''))
+    .toUpperCase()
+    .replace(/[^A-Z0-9 ]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 const DEFAULT_HOST = process.env.BRIDGE_HOST || 'localhost';
 const DEFAULT_PORT = process.env.BRIDGE_PORT || 5001;
@@ -144,11 +164,29 @@ async function getLote() {
 
 /**
  * Envía el manifiesto al bridge para que lo escriba en las tablas DBF.
+ * Limpia caracteres especiales antes de mandar — ver limpiarTextoLibre() y
+ * sanitizeIdentificador() (mismas reglas que ya usa el TXT local, para que
+ * lo que queda en SISCOMMATE nunca diverja de lo que dice el TXT). No muta
+ * los objetos originales: el caller (routes/siscommate.js) los sigue usando
+ * después para marcar siscommate_sent_at por id.
  * @param {{manifest: import('../types').ManifestRow, bls: import('../types').BLRow[], containers: import('../types').BridgeContainer[]}} payload
  * @returns {Promise<any>}
  */
 function pushManifest({ manifest, bls, containers }) {
-  return bridgeRequest('POST', '/guardar', { manifest, bls, containers });
+  const manifestLimpio = { ...manifest, vessel_name: limpiarTextoLibre(manifest.vessel_name) };
+  const blsLimpios = bls.map(bl => ({
+    ...bl,
+    bl_no: sanitizeIdentificador(bl.bl_no),
+    consignee_name: limpiarTextoLibre(bl.consignee_name),
+    consignor_name: limpiarTextoLibre(bl.consignor_name),
+    goods_name: limpiarTextoLibre(bl.goods_name),
+  }));
+  const containersLimpios = containers.map(c => ({
+    ...c,
+    bl_no: sanitizeIdentificador(c.bl_no),
+    container_no: sanitizeIdentificador(c.container_no),
+  }));
+  return bridgeRequest('POST', '/guardar', { manifest: manifestLimpio, bls: blsLimpios, containers: containersLimpios });
 }
 
 /**
@@ -188,6 +226,6 @@ async function analizarItemClienteTodos() {
 module.exports = {
   getBridgeConfig, bridgeRequest,
   getBridgeStatus, getLote, pushManifest, consultarManifiesto, buscarClientesSiscommate,
-  analizarItemClienteTodos,
+  analizarItemClienteTodos, limpiarTextoLibre,
   BRIDGE_TIMEOUT_MS,
 };
