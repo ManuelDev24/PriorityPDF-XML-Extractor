@@ -4,7 +4,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { limpiarTextoLibre, calcularPackageUnitCode } = require('./siscommateClient');
+const { limpiarTextoLibre, calcularPackageUnitCode, calcularPuertos } = require('./siscommateClient');
 
 test('limpiarTextoLibre quita acentos conservando la letra', () => {
   assert.strictEqual(limpiarTextoLibre('GOMAS Y PLÁSTICOS'), 'GOMAS Y PLASTICOS');
@@ -54,4 +54,19 @@ test('calcularPackageUnitCode normaliza sinónimos antes de decidir', () => {
 test('calcularPackageUnitCode descarta un valor no reconocido y cae al respaldo', () => {
   assert.strictEqual(calcularPackageUnitCode('PACK', false), 'LSE');
   assert.strictEqual(calcularPackageUnitCode('IG013', true), 'BOX');
+});
+
+test('calcularPuertos traduce origen y destino igual que el TXT local', () => {
+  assert.deepStrictEqual(
+    calcularPuertos({ loading_port: 'USMIA', unloading_port: 'PRSJU' }),
+    { origport: 'MIA', discport: 'XSJ' }
+  );
+  assert.deepStrictEqual(
+    calcularPuertos({ loading_port: 'VISTT', unloading_port: 'MGE' }),
+    { origport: 'STT', discport: 'MGE' }
+  );
+});
+
+test('calcularPuertos sin puerto cae al respaldo (Santo Domingo / San Juan)', () => {
+  assert.deepStrictEqual(calcularPuertos({}), { origport: 'DRP', discport: 'XSJ' });
 });

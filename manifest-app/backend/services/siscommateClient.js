@@ -12,7 +12,7 @@
 
 const http = require('http');
 const db = require('../db/connection');
-const { quitarAcentos, sanitizeIdentificador, normalizarEmpaque } = require('./txtGenerator');
+const { quitarAcentos, sanitizeIdentificador, normalizarEmpaque, toSiscommatePort, setting } = require('./txtGenerator');
 
 /**
  * Para el push a SISCOMMATE: más estricto que quitarAcentos() (que se usa
@@ -188,9 +188,30 @@ function calcularPackageUnitCode(packageUnitCode, hasContainer) {
   return empaqueValido || (hasContainer ? 'BOX' : 'LSE');
 }
 
+/**
+ * Puerto de origen y de descarga/destino, ya traducidos al código de 3
+ * letras que SISCOMMATE espera — misma toSiscommatePort() que ya usa el
+ * TXT local (generateTxtLine1). Antes el bridge calculaba esto por su
+ * cuenta: origport quedaba SIEMPRE fijo en "DRP" (nunca miraba
+ * manifest.loading_port) y discport/destport solo traducían 2 casos a mano
+ * (SJU y MGE), mandando el código crudo sin traducir para cualquier otro
+ * puerto (Miami, St. Thomas, etc.) — reportado como "Origin/Discharge/
+ * Destination Port no se envían bien". Calculado aquí, lo que llega a
+ * SISCOMMATE ya no puede divergir de lo que dice el TXT del mismo viaje.
+ * @param {import('../types').ManifestRow} manifest
+ * @returns {{origport: string, discport: string}}
+ */
+function calcularPuertos(manifest) {
+  return {
+    origport: toSiscommatePort(manifest.loading_port || setting('default_loading_port', 'DRP')),
+    discport: toSiscommatePort(manifest.unloading_port || setting('default_unloading_port', 'SJU')),
+  };
+}
+
 function pushManifest({ manifest, bls, containers }) {
   const blNosConContenedor = new Set(containers.map(c => c.bl_no));
-  const manifestLimpio = { ...manifest, vessel_name: limpiarTextoLibre(manifest.vessel_name) };
+  const { origport, discport } = calcularPuertos(manifest);
+  const manifestLimpio = { ...manifest, vessel_name: limpiarTextoLibre(manifest.vessel_name), origport, discport };
   const blsLimpios = bls.map(bl => ({
     ...bl,
     bl_no: sanitizeIdentificador(bl.bl_no),
@@ -244,6 +265,6 @@ async function analizarItemClienteTodos() {
 module.exports = {
   getBridgeConfig, bridgeRequest,
   getBridgeStatus, getLote, pushManifest, consultarManifiesto, buscarClientesSiscommate,
-  analizarItemClienteTodos, limpiarTextoLibre, calcularPackageUnitCode,
+  analizarItemClienteTodos, limpiarTextoLibre, calcularPackageUnitCode, calcularPuertos,
   BRIDGE_TIMEOUT_MS,
 };

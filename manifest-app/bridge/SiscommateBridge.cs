@@ -634,10 +634,17 @@ class SiscommateBridge
             string carrierCode = GetStr(mDict, "carrier_code");
             if (string.IsNullOrEmpty(carrierCode)) carrierCode = "MXS";
 
-            // Puerto descarga desde manifiesto
-            string unloadingPort = GetStr(mDict, "unloading_port");
-            if (unloadingPort == "SJU" || unloadingPort == "") unloadingPort = "XSJ";
-            else if (unloadingPort == "MGE") unloadingPort = "XMG";
+            // Puertos de origen y descarga/destino, YA traducidos al código de
+            // 3 letras de SISCOMMATE por Node (pushManifest -> calcularPuertos,
+            // misma toSiscommatePort() que usa el TXT local con ~30 puertos
+            // mapeados y respaldo en la tabla port_mappings). Antes esto se
+            // recalculaba aquí a mano: origport quedaba SIEMPRE fijo en "DRP"
+            // (nunca miraba loading_port) y discport/destport solo traducían
+            // 2 casos (SJU, MGE), mandando cualquier otro puerto sin traducir.
+            string origPort = GetStr(mDict, "origport");
+            if (string.IsNullOrEmpty(origPort)) origPort = "DRP";
+            string unloadingPort = GetStr(mDict, "discport");
+            if (string.IsNullOrEmpty(unloadingPort)) unloadingPort = "XSJ";
 
             // ── MANIFEST ─────────────────────────────────────────────────────
             // Solo se inserta la primera vez — un reenvío incremental agrega
@@ -672,7 +679,7 @@ class SiscommateBridge
                 cmd.Parameters.AddWithValue("master4",  "");
                 cmd.Parameters.AddWithValue("master5",  "");
                 cmd.Parameters.AddWithValue("tind",     "");
-                cmd.Parameters.AddWithValue("origport", "DRP");
+                cmd.Parameters.AddWithValue("origport", origPort);
                 cmd.Parameters.AddWithValue("discport", unloadingPort);
                 cmd.Parameters.AddWithValue("destport", unloadingPort);
                 cmd.Parameters.AddWithValue("lotnum",   lotenum.ToString());

@@ -508,4 +508,5 @@ module.exports = {
   generateTxtLine0, generateTxtLine1, generateTxtLine2,
   generateFullTxt,
   quitarAcentos, sanitizeIdentificador, normalizarEmpaque,
+  setting,
 };
