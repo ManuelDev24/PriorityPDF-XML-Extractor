@@ -82,6 +82,10 @@ router.post('/api/manifests/upload/preview', upload.single('xml'), async (req, r
       nuevos_count: nuevos.length,
       ya_en_este_viaje_count: yaEnEsteViaje.length,
       en_otro_viaje: enOtroViaje,
+      // Advertencias de consistencia del parser (peso que no cuadra,
+      // contenedores reconectados a mano, B/L sin contenedor) — solo el
+      // parser de PDF 1302 las genera hoy; el resto de formatos manda [].
+      warnings: parsed.warnings || [],
     });
   } catch (err) {
     console.error(err);

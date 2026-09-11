@@ -304,6 +304,18 @@ function parseCustoms1302(text) {
   const rawPages = text.split(/(?:Page\s+\d+\/\d+|P[aá]gina\s*(?:\d+\/\d+)?)/i);
   const allEntries = [];
 
+  // Último B/L reconocido — persiste entre páginas porque un mismo B/L con
+  // varios contenedores puede partirse en un salto de página (ver más abajo).
+  let lastBlNo = '';
+  // Contadores para las advertencias de consistencia al final del parseo —
+  // cada carrier/barco imprime su PDF con variaciones de formato distintas
+  // (la de hoy: celdas de B/L fusionadas), y no hay forma de "aprender" un
+  // layout nuevo sin verlo antes. Esto no evita el problema, pero lo saca a
+  // la luz al momento de cargar en vez de perderse en silencio como pasó con
+  // CF365 — quien carga el PDF ve la advertencia y puede revisar a mano.
+  let contenedoresReconectados = 0;
+  let totalWeightPdf = 0;
+
   rawPages.forEach((pageText, pIdx) => {
     if (!pageText.trim()) return;
     const lines = pageText.split('\n');
@@ -317,6 +329,7 @@ function parseCustoms1302(text) {
     }
     const pageWeightsKg = [];
     for (let i = 0; i + 1 < pureNums.length; i += 2) pageWeightsKg.push(pureNums[i]);
+    totalWeightPdf += pageWeightsKg.reduce((a, b) => a + b, 0);
 
     // Entradas de B/L en la página. El PDF imprime el B/L con guión
     // ("PYRR-2624176"), pero el mismo número en el XML de la DGA no lo trae
@@ -336,10 +349,32 @@ function parseCustoms1302(text) {
     const blLineRe = /^([A-Z]{2,6})-(\d{5,10})(?:\s+(\S.*))?$/;
     const pageEntries = [];
     for (let i = 0; i < lines.length; i++) {
-      const m = lines[i].trim().match(blLineRe);
-      if (!m || PREFIJOS_NO_BL.test(m[1])) continue;
+      const raw = lines[i].trim();
+      const m = raw.match(blLineRe);
+      let blNo = '';
+      let rawSecondToken = '';
 
-      const rawSecondToken = (m[3] || '').trim();
+      if (m && !PREFIJOS_NO_BL.test(m[1])) {
+        blNo = m[1] + m[2];
+        rawSecondToken = (m[3] || '').trim();
+        lastBlNo = blNo;
+      } else {
+        // Contenedor "huérfano": cuando un B/L tiene más de un contenedor, la
+        // celda del B/L en el PDF original está fusionada visualmente para
+        // esas filas extra — el texto extraído no repite "PYRR-1234567" y la
+        // línea llega sola, solo con el número de contenedor. Sin esto la
+        // línea no hacía match con nada y se perdía entera (contenedor Y
+        // peso), aunque sí perteneciera a un B/L real — confirmado contra
+        // manifiestos reales de flatbed/rebar con muchos contenedores por B/L
+        // (ej. CF365: PYRR-2631003, PYRR-2631004).
+        if (!lastBlNo) continue;
+        const cleanedOrphan = normContainerNo(raw);
+        if (!isIsoContainer(cleanedOrphan)) continue;
+        blNo = lastBlNo;
+        rawSecondToken = raw;
+        contenedoresReconectados++;
+      }
+
       let containerNo = '';
       let vin = '';
       let equipmentType = '';
@@ -362,7 +397,7 @@ function parseCustoms1302(text) {
       }
 
       const e = {
-        bl_no: m[1] + m[2],
+        bl_no: blNo,
         container_no: containerNo,
         vin: vin,
         size: '',
@@ -505,7 +540,42 @@ function parseCustoms1302(text) {
     });
   });
 
-  return { header, bls: [...blMap.values()], containers, containerBLs, cargoItems };
+  const bls = [...blMap.values()];
+
+  // ── Advertencias de consistencia ──────────────────────────────────────────
+  // No detectan un layout nuevo por sí solas — comparan cifras que deberían
+  // cuadrar sin importar el formato del PDF, así que cualquier fila que el
+  // parser haya perdido o malinterpretado (el bug de hoy, o uno futuro con
+  // otro carrier) deja una diferencia medible en vez de pasar inadvertido.
+  const warnings = [];
+  const totalWeightAsignado = bls.reduce((a, bl) => a + bl.gross_weight, 0);
+  // Margen de 1 kg: redondeos de parsePdfNum entre páginas, no un error real.
+  if (Math.abs(totalWeightAsignado - totalWeightPdf) > 1) {
+    warnings.push(
+      `El peso total repartido entre los B/L (${totalWeightAsignado.toFixed(2)} kg) no coincide ` +
+      `con el peso total impreso en el PDF (${totalWeightPdf.toFixed(2)} kg) — puede haberse ` +
+      `perdido o duplicado una fila. Revisa los B/L antes de continuar.`
+    );
+  }
+  if (contenedoresReconectados > 0) {
+    warnings.push(
+      `${contenedoresReconectados} contenedor${contenedoresReconectados > 1 ? 'es' : ''} ` +
+      `aparecía${contenedoresReconectados > 1 ? 'n' : ''} en el PDF sin el número de B/L junto ` +
+      `(celda fusionada en el PDF original) y se reconectó automáticamente con el B/L anterior — ` +
+      `confirma que quedó en el B/L correcto.`
+    );
+  }
+  const conContenedor = new Set(containerBLs.map(cb => cb.bl_no));
+  const blsSinContenedor = bls.filter(bl => !conContenedor.has(bl.bl_no)).length;
+  if (blsSinContenedor > 0) {
+    warnings.push(
+      `${blsSinContenedor} B/L no trae${blsSinContenedor > 1 ? 'n' : ''} ningún número de ` +
+      `contenedor en el PDF — puede ser carga suelta real, o un dato que faltó digitar en el ` +
+      `manifiesto original.`
+    );
+  }
+
+  return { header, bls, containers, containerBLs, cargoItems, warnings };
 }
 
 // ¿El texto corresponde al formato US Customs 1302 de Priority RORO?
@@ -613,7 +683,7 @@ function parseGenericDga(text) {
     throw new Error('No se encontraron B/L en el PDF. Verifica que sea un manifiesto DGA digital; si el formato es distinto, envía un ejemplo para ajustar el lector.');
   }
 
-  return { header, bls, containers, containerBLs };
+  return { header, bls, containers, containerBLs, warnings: [] };
 }
 
 // Punto de entrada: extrae el texto del PDF y elige el parser según el formato.

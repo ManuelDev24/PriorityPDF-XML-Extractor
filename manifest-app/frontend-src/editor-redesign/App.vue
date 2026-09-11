@@ -131,6 +131,14 @@ async function subir(archivo: File | undefined) {
       const lista = preview.en_otro_viaje.map((m: { bl_no: string; voyage_no: string }) => `${m.bl_no} → ${m.voyage_no}`).join(', ');
       partes.push(`<span class="text-status-pending">${preview.en_otro_viaje.length} B/L de este archivo ya están en otro viaje y no se van a mover: ${lista}.</span>`);
     }
+    // Advertencias del parser (peso que no cuadra, contenedores reconectados
+    // a mano por celda fusionada, B/L sin contenedor) — se muestran ANTES de
+    // cargar para que se puedan revisar a mano si algo se ve raro, en vez de
+    // notarlo días después como pasó con CF365.
+    if (preview.warnings?.length) {
+      const avisos = preview.warnings.map((w: string) => `<li>${w}</li>`).join('');
+      partes.push(`<div class="mt-2 rounded border border-status-pending/40 bg-status-pending/10 p-2 text-status-pending"><strong>Revisar antes de continuar:</strong><ul class="ml-4 list-disc">${avisos}</ul></div>`);
+    }
 
     const ejecutarCarga = async () => {
       cerrarModal();

@@ -158,6 +158,71 @@ test('1302: el mismo B/L en dos contenedores consolida pesos y cantidades', () =
   assert.strictEqual(r.cargoItems.length, 2, 'un item por contenedor');
 });
 
+test('1302: contenedor sin B/L al inicio de línea (celda fusionada) se reconecta con el último B/L', () => {
+  // Caso real: un B/L con varios contenedores donde el PDF original fusiona
+  // visualmente la celda del B/L para las filas extra — el texto extraído
+  // no repite "PYRR-1234567" en esas filas, solo el contenedor (ver CF365:
+  // PYRR-2631003 con PRRU 350178-1 y, en una fila huérfana, PRRU 433387-5).
+  const texto = [
+    'Page 1/1',
+    '1,000.00', '2,204.00',
+    '500.00', '1,102.00',
+    '1.- Name of Ship',
+    'KYDON                    K1327',
+    'BL Numbers',
+    '',
+    'SHIPPER UNO',
+    'CALLE X',
+    '',
+    'CONSIGNEE UNO',
+    'CALLE Y',
+    '',
+    'NOTIFY UNO',
+    'CALLE Z',
+    'PYRR-2631003 PRRU 350178-1',
+    "40' FR",
+    'N/A',
+    '17 rolls:',
+    'REBAR IN COIL',
+    'KG',
+    'PRRU 433387-5',
+    "40' FR",
+    'N/A',
+    '17 rolls:',
+    'REBAR IN COIL',
+    'KG',
+  ].join('\n');
+  const r = parseCustoms1302(texto);
+  assert.strictEqual(r.bls.length, 1, 'ambos contenedores pertenecen al mismo B/L');
+  assert.strictEqual(r.bls[0].bl_no, 'PYRR2631003');
+  assert.strictEqual(r.containers.length, 2, 'no se pierde el segundo contenedor');
+  assert.deepStrictEqual(
+    r.containers.map(c => c.container_no).sort(),
+    ['PRRU3501781', 'PRRU4333875'].sort()
+  );
+  assert.strictEqual(r.bls[0].gross_weight, 1500, 'se suma el peso de ambos contenedores, no se pierde el segundo');
+  assert.strictEqual(r.cargoItems.length, 2, 'un cargo item por contenedor, incluido el huérfano');
+});
+
+test('1302: una línea huérfana sin B/L previo ni forma de contenedor se ignora sin romper', () => {
+  const texto = [
+    'Page 1/1',
+    '1,000.00', '2,204.00',
+    '1.- Name of Ship',
+    'KYDON                    K1328',
+    'BL Numbers',
+    'RANDOM TEXT THAT LOOKS LIKE NOTHING',
+    'PYRR-2631010 PRRU 999999-9',
+    "40' CONT",
+    '10 carton:',
+    'ALGO',
+    'KG',
+  ].join('\n');
+  const r = parseCustoms1302(texto);
+  assert.strictEqual(r.bls.length, 1);
+  assert.strictEqual(r.bls[0].bl_no, 'PYRR2631010');
+});
+
 // ═══════════════════════════════════════════════════════════════════
 // TIPO 2 — PDF genérico de la DGA
 // ═══════════════════════════════════════════════════════════════════
