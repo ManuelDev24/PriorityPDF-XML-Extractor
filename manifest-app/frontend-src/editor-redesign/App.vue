@@ -15,7 +15,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { Upload, Settings, Ship, Eye, FileOutput, DatabaseZap, Database, Loader2, FileUp, X, PanelLeftClose, PanelLeftOpen, Check } from '@lucide/vue';
+import { Upload, Settings, Ship, Eye, FileOutput, DatabaseZap, Database, Loader2, FileUp, X, PanelLeftClose, PanelLeftOpen, Check, RefreshCw } from '@lucide/vue';
 
 const bridgeOnline = ref(false);
 const archivoInput = ref<HTMLInputElement | null>(null);
@@ -237,6 +237,44 @@ async function pushSiscommate() {
   enviando.value = false;
 }
 
+const sincronizando = ref(false);
+async function sincronizarDesdeSiscommate() {
+  const m = datosManifiesto.value?.manifest;
+  if (!m) { toast('Selecciona un manifiesto', 'err'); return; }
+  modal.value = { titulo: 'Sincronizar desde SISCOMMATE', cuerpo:
+    `Se va a traer lo que haya en SISCOMMATE ahora mismo para el viaje ${m.voyage_no} y va a `
+    + 'SOBREESCRIBIR nombre, código arancelario, descripción, peso, cantidad, valor y contenedor '
+    + 'de cada B/L que encuentre allá — sin mostrar qué cambió antes de aplicarlo. Cada B/L '
+    + 'encontrado en SISCOMMATE queda marcado como validado. ¿Continuar?',
+    botones: [
+      { label: 'Cancelar', variant: 'outline', accion: cerrarModal },
+      { label: 'Sincronizar', variant: 'default', accion: () => { cerrarModal(); ejecutarSincronizacion(m.id); } },
+    ] };
+}
+async function ejecutarSincronizacion(manifestId: number) {
+  sincronizando.value = true;
+  setEstado('Sincronizando desde SISCOMMATE...');
+  try {
+    const r = await api.sincronizarDesdeSiscommate(manifestId);
+    if (r.actualizados > 0) {
+      mostrarEnvioExitoso();
+      toast(`${r.actualizados} B/L actualizados y validados desde SISCOMMATE`);
+      setEstado(`Sincronizado: ${r.actualizados} de ${r.total_en_siscommate} B/L en SISCOMMATE aplicados localmente.`);
+    } else {
+      toast(r.mensaje || 'No se encontró nada que sincronizar');
+      setEstado(r.mensaje || 'No se encontró nada que sincronizar');
+    }
+    await cargarManifiestos();
+    await seleccionarManifiesto(manifestId);
+  } catch (e) {
+    let msg = (e as Error).message;
+    try { msg = JSON.parse(msg).error || msg; } catch { /* texto plano */ }
+    avisar('No se pudo sincronizar desde SISCOMMATE', msg);
+    setEstado('Error al sincronizar desde SISCOMMATE');
+  }
+  sincronizando.value = false;
+}
+
 const viendoVivo = ref(false);
 const vivo = ref<DatosSiscommateVivo | null>(null);
 
@@ -331,6 +369,10 @@ onMounted(async () => {
           <Button variant="outline" size="sm" :disabled="viendoVivo" @click="verSiscommateVivo">
             <Loader2 v-if="viendoVivo" class="size-3.5 animate-spin" /><Database v-else class="size-3.5" />
             Ver en SISCOMMATE
+          </Button>
+          <Button variant="outline" size="sm" :disabled="sincronizando" title="Trae lo que haya en SISCOMMATE ahora mismo y sobreescribe estos B/L localmente, marcándolos validado" @click="sincronizarDesdeSiscommate">
+            <Loader2 v-if="sincronizando" class="size-3.5 animate-spin" /><RefreshCw v-else class="size-3.5" />
+            {{ sincronizando ? 'Sincronizando...' : 'Sincronizar desde SISCOMMATE' }}
           </Button>
         </div>
 

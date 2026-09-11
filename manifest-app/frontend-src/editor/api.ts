@@ -114,6 +114,15 @@ export interface ItemHacienda {
   client_add2?: string | null;
   client_add3?: string | null;
   client_ivu?: string | null;
+  /** Consignador (shipper/exportador) más frecuente para este código, según
+   * el historial local — ver analizarConsignadorPorCodigo() en
+   * localHistoryAnalysis.js. Solo local: no existe un CUSTOMER.DBF de
+   * SISCOMMATE para exportadores extranjeros. */
+  consignor_name?: string | null;
+  consignor_document_no?: string | null;
+  consignor_phone?: string | null;
+  consignor_add1?: string | null;
+  consignor_add2?: string | null;
 }
 
 export interface Cliente {
@@ -253,4 +262,8 @@ export const api = {
     }>(`/api/manifests/${id}/push-siscommate`, { method: 'POST' }),
   siscommateVivo: (id: number) =>
     pedir<DatosSiscommateVivo>(`/api/manifests/${id}/siscommate-live`),
+  sincronizarDesdeSiscommate: (id: number) =>
+    pedir<{ ok: true; actualizados: number; sin_encontrar_local: number; total_en_siscommate: number; mensaje?: string }>(
+      `/api/manifests/${id}/sync-from-siscommate`, { method: 'POST' }
+    ),
 };

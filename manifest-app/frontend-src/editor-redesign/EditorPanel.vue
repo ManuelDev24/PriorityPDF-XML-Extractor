@@ -214,6 +214,17 @@ function elegirItem(it: ItemHacienda) {
     rellenarSiVacio('consignee_street', street);
     rellenarSiVacio('consignee_city', city);
   }
+  // Mismo aprendizaje que arriba, pero para el consignador (shipper/
+  // exportador) — ver analizarConsignadorPorCodigo() en
+  // localHistoryAnalysis.js. Solo del historial local: no hay un catálogo
+  // tipo CUSTOMER.DBF de SISCOMMATE para exportadores extranjeros.
+  if (it.consignor_name && !bl.value.consignor_name) {
+    rellenarSiVacio('consignor_name', it.consignor_name);
+    rellenarSiVacio('consignor_document_no', it.consignor_document_no || '');
+    rellenarSiVacio('consignor_tel', it.consignor_phone || '');
+    rellenarSiVacio('consignor_street', it.consignor_add1 || '');
+    rellenarSiVacio('consignor_city', it.consignor_add2 || '');
+  }
 }
 // El Combobox nativo emite el `value` del item elegido (el código, un
 // string), no el objeto completo — se busca en itemsHallados para reusar
@@ -266,7 +277,8 @@ function partirDireccion(lineas: Array<string | undefined>) {
   return { street: validas.slice(0, -1).join(', '), city: validas[validas.length - 1] };
 }
 // No pisa lo que el operador ya haya escrito a mano en el consignatario.
-function rellenarSiVacio(campo: 'consignee_name' | 'consignee_tel' | 'consignee_street' | 'consignee_city', valor: string) {
+function rellenarSiVacio(campo: 'consignee_name' | 'consignee_tel' | 'consignee_street' | 'consignee_city'
+    | 'consignor_name' | 'consignor_tel' | 'consignor_street' | 'consignor_city' | 'consignor_document_no', valor: string) {
   if (valor && !bl.value[campo]) actualizarBL(campo, valor);
 }
 

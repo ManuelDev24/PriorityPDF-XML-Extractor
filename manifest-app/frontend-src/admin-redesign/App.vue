@@ -383,7 +383,8 @@ onMounted(() => { cargarSettings(); cargarTipos(); cargarTamanos(); checkBridge(
             <p v-if="resultadoLocal" class="text-xs text-status-validated">
               {{ resultadoLocal.descripciones_aprendidas }} de {{ resultadoLocal.descripciones_con_historial }}
               descripciones aprendidas · {{ resultadoLocal.codigos_aprendidos }} de {{ resultadoLocal.codigos_con_historial }}
-              códigos con consignatario aprendido.
+              códigos con consignatario aprendido · {{ resultadoLocal.consignadores_aprendidos }} de
+              {{ resultadoLocal.consignadores_con_historial }} códigos con consignador aprendido.
             </p>
           </div>
 

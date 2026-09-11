@@ -63,6 +63,17 @@ function runMigrations({
   addColumnIfMissing('hacienda_items',  'client_add3',         'TEXT');
   addColumnIfMissing('hacienda_items',  'client_ivu',          'TEXT');
 
+  // Espejo de las columnas client_* de arriba, pero para el CONSIGNADOR
+  // (shipper/exportador) en vez del consignatario — ver
+  // localHistoryAnalysis.js. No hay columna consignor_ivu: a diferencia del
+  // consignatario, el B/L no trae un IVU de PR/DO para el consignador (suele
+  // ser un exportador extranjero), así que no hay nada real que aprender ahí.
+  addColumnIfMissing('hacienda_items',  'consignor_name',      'TEXT');
+  addColumnIfMissing('hacienda_items',  'consignor_document_no', 'TEXT');
+  addColumnIfMissing('hacienda_items',  'consignor_phone',     'TEXT');
+  addColumnIfMissing('hacienda_items',  'consignor_add1',      'TEXT');
+  addColumnIfMissing('hacienda_items',  'consignor_add2',      'TEXT');
+
   // El IMO del buque nunca tuvo columna, pese a que el editor lo pide, la ruta
   // lo declara editable y el TXT de Hacienda lo escribe en [174:181]. Cualquier
   // PUT que lo incluyera fallaba con "no such column: imo", perdiendo de paso

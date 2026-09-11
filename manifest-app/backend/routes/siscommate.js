@@ -170,6 +170,81 @@ router.get('/api/manifests/:id/siscommate-live', async (req, res) => {
   }
 });
 
+// ── SINCRONIZAR DESDE SISCOMMATE (ella edita directo en la base real) ───────
+// Dirección inversa al push: trae lo que SISCOMMATE tiene AHORA para este
+// viaje y sobreescribe la copia local — sin diff ni confirmación campo por
+// campo, SISCOMMATE siempre gana para estos campos. No incluye SS/EIN, IVU
+// ni tarifa: no existen en BOL/BOLITEM (SS/EIN vive en CUSTOMER), así que no
+// hay nada real que traer de vuelta para esos tres.
+router.post('/api/manifests/:id/sync-from-siscommate', async (req, res) => {
+  const manifest = db.prepare('SELECT * FROM manifests WHERE id=?').get(req.params.id);
+  if (!manifest) return res.status(404).json({ error: 'No encontrado' });
+
+  let datos;
+  try {
+    datos = await consultarManifiesto(manifest.voyage_no);
+  } catch (err) {
+    return res.status(503).json({
+      error: 'No se pudo conectar con SiscommateBridge: ' + err.message,
+      hint: 'Verifica que SiscommateBridge está corriendo en el servidor (puerto 5001)',
+    });
+  }
+  if (!datos.encontrado) {
+    return res.json({
+      ok: true, actualizados: 0, sin_encontrar_local: 0, total_en_siscommate: 0,
+      mensaje: `No se encontró el viaje ${manifest.voyage_no} en SISCOMMATE.`,
+    });
+  }
+
+  const localBls = db.prepare('SELECT * FROM bills_of_lading WHERE manifest_id=?').all(req.params.id);
+  const localByBlNo = new Map(localBls.map(b => [b.bl_no, b]));
+
+  // Un item/contenedor por bolno (el primero si hay varios — el B/L es la
+  // unidad que se sincroniza, no cada línea suelta de BOLITEM/BOLCONT).
+  const itemPorBolno = new Map();
+  (datos.items || []).forEach(it => { if (!itemPorBolno.has(it.bolno)) itemPorBolno.set(it.bolno, it); });
+  const contPorBolno = new Map();
+  (datos.containers || []).forEach(c => { if (!contPorBolno.has(c.bolno)) contPorBolno.set(c.bolno, c); });
+
+  const actualizar = db.prepare(`
+    UPDATE bills_of_lading
+    SET consignee_name=?, consignor_name=?, hacienda_item_code=?, goods_name=?,
+        gross_weight=?, package_qty=?, value=?, hacienda_container_no=?, status='validado'
+    WHERE id=?
+  `);
+
+  let actualizados = 0;
+  let sinEncontrarLocal = 0;
+  const hacer = db.transaction(() => {
+    (datos.bls || []).forEach(remoto => {
+      const local = localByBlNo.get(remoto.bolno);
+      if (!local) { sinEncontrarLocal++; return; }
+      const item = itemPorBolno.get(remoto.bolno) || {};
+      const cont = contPorBolno.get(remoto.bolno) || {};
+      actualizar.run(
+        remoto.consigne || local.consignee_name,
+        remoto.exporter || local.consignor_name,
+        item.code || local.hacienda_item_code,
+        item.desc || local.goods_name,
+        item.weight ?? local.gross_weight,
+        item.qty ?? local.package_qty,
+        item.value ?? local.value,
+        cont.contain || local.hacienda_container_no,
+        local.id
+      );
+      actualizados++;
+    });
+  });
+  hacer();
+
+  res.json({
+    ok: true,
+    actualizados,
+    sin_encontrar_local: sinEncontrarLocal,
+    total_en_siscommate: (datos.bls || []).length,
+  });
+});
+
 // ── HISTORIAL DE ENVÍOS (nuestro registro local) ─────────────────────────────
 router.get('/api/siscommate/history', (req, res) => {
   res.json(db.prepare(`
