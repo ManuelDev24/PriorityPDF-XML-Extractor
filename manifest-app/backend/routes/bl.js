@@ -91,6 +91,70 @@ router.put('/api/bl/:id/renombrar', (req, res) => {
   res.json({ ok: true, bl_no: nuevoNo });
 });
 
+// ── MOVER VARIOS B/L A OTRO MANIFIESTO (LOTE) ─────────────────────────────────
+// Misma lógica que el mover individual de abajo, pero para la cantidad de
+// B/L que el usuario seleccione a la vez. Un B/L cuyo bl_no ya exista en el
+// destino se omite (se reporta en "omitidos") en vez de abortar el lote
+// entero — así un solo choque de nombres no bloquea mover el resto.
+//
+// Registrada ANTES de "PUT /api/bl/:id": Express prueba las rutas en el
+// orden en que se registran, y "/api/bl/:id" hace match con CUALQUIER
+// segundo segmento (incluyendo literalmente "mover-lote" como si fuera un
+// id) — si esta ruta fuera declarada después, esa más genérica se la comía
+// primero y la petición nunca llegaba aquí (confirmado en pruebas: llegaba
+// un 200 OK vacío en vez de mover nada).
+router.put('/api/bl/mover-lote', (req, res) => {
+  const blIds = Array.isArray(req.body?.bl_ids) ? req.body.bl_ids.map(Number).filter(Number.isInteger) : [];
+  const destinoId = Number(req.body?.manifest_id);
+  if (!blIds.length) return res.status(400).json({ error: 'Falta la lista de B/L a mover' });
+  if (!Number.isInteger(destinoId)) return res.status(400).json({ error: 'Falta el manifiesto destino' });
+
+  const destino = db.prepare('SELECT id FROM manifests WHERE id=?').get(destinoId);
+  if (!destino) return res.status(404).json({ error: 'Manifiesto destino no encontrado' });
+
+  const movidos = [];
+  const omitidos = [];
+  const origenesAfectados = new Set();
+
+  const moverUno = db.transaction((bl) => {
+    const origenId = bl.manifest_id;
+    db.prepare('UPDATE bills_of_lading SET manifest_id=? WHERE id=?').run(destinoId, bl.id);
+    db.prepare('UPDATE container_bl SET manifest_id=? WHERE bl_no=? AND manifest_id=?')
+      .run(destinoId, bl.bl_no, origenId);
+    db.prepare(`
+      UPDATE containers SET manifest_id=?
+      WHERE manifest_id=?
+        AND container_no IN (SELECT container_no FROM container_bl WHERE bl_no=? AND manifest_id=?)
+        AND container_no NOT IN (SELECT container_no FROM container_bl WHERE manifest_id=?)
+    `).run(destinoId, origenId, bl.bl_no, destinoId, origenId);
+    db.prepare('UPDATE bl_cargo_items SET manifest_id=? WHERE bl_id=?').run(destinoId, bl.id);
+  });
+
+  blIds.forEach(id => {
+    /** @type {BLRow} */
+    const bl = db.prepare('SELECT * FROM bills_of_lading WHERE id=?').get(id);
+    if (!bl) { omitidos.push({ id, motivo: 'No encontrado' }); return; }
+    if (bl.manifest_id === destinoId) { omitidos.push({ id, bl_no: bl.bl_no, motivo: 'Ya está en ese manifiesto' }); return; }
+    if (db.prepare('SELECT 1 FROM bills_of_lading WHERE manifest_id=? AND bl_no=?').get(destinoId, bl.bl_no)) {
+      omitidos.push({ id, bl_no: bl.bl_no, motivo: `Ya existe un B/L "${bl.bl_no}" en el manifiesto destino` });
+      return;
+    }
+    origenesAfectados.add(bl.manifest_id);
+    moverUno(bl);
+    movidos.push({ id: bl.id, bl_no: bl.bl_no });
+  });
+
+  const estados_origen = {};
+  origenesAfectados.forEach(id => { estados_origen[id] = recalcularEstadoManifiesto(id); });
+  const status_nuevo = recalcularEstadoManifiesto(destinoId);
+
+  res.json({
+    ok: true, movidos, omitidos,
+    manifest_id_destino: destinoId, status_nuevo,
+    estados_origen,
+  });
+});
+
 router.put('/api/bl/:id', (req, res) => {
   const sets = []; const vals = [];
   CAMPOS_EDITABLES_BL.forEach(f => {

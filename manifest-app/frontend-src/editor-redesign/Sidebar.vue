@@ -2,7 +2,7 @@
 // Misma lógica que frontend-src/editor/Sidebar.vue (store.ts sin tocar), solo
 // cambia la presentación: Tabs de shadcn en vez de divs a mano, Card/Button
 // consistentes con el resto del rediseño.
-import { ref } from 'vue';
+import { ref, watch } from 'vue';
 import { api, type ResultadoBusqueda, type BL } from '../editor/api';
 import {
   manifiestos, manifiestosFiltrados, datosManifiesto, blActual, expandidos,
@@ -176,40 +176,81 @@ async function crearNuevoBL(manifestId: number) {
   }
 }
 
-// ── Mover B/L a otro viaje ──
-const moviendoBl = ref<{ id: number; blNo: string; manifestId: number } | null>(null);
+// ── Mover B/L a otro viaje (uno o en lote) ──
+type MoverInfo =
+  | { modo: 'uno'; id: number; blNo: string; manifestId: number }
+  | { modo: 'lote'; ids: number[]; manifestId: number };
+const moviendoInfo = ref<MoverInfo | null>(null);
 const destinoId = ref('');
 const moviendo = ref(false);
-const destinosPosibles = () => manifiestos.value.filter(m => m.id !== moviendoBl.value?.manifestId);
+const destinosPosibles = () => manifiestos.value.filter(m => m.id !== moviendoInfo.value?.manifestId);
+
+// Selección de B/L con checkbox, para mover varios a la vez. Se limpia sola
+// al cambiar de viaje cargado — una selección hecha en un viaje no debe
+// seguir "viva" y aplicarse por error a otro que se abra después.
+const seleccionados = ref<Set<number>>(new Set());
+watch(() => datosManifiesto.value?.manifest.id, () => seleccionados.value.clear());
+function alternarSeleccion(id: number) {
+  if (seleccionados.value.has(id)) seleccionados.value.delete(id);
+  else seleccionados.value.add(id);
+}
 
 function pedirMoverBL(blId: number, blNo: string, manifestId: number) {
-  moviendoBl.value = { id: blId, blNo, manifestId };
+  moviendoInfo.value = { modo: 'uno', id: blId, blNo, manifestId };
   destinoId.value = '';
 }
 
-async function confirmarMoverBL() {
-  const info = moviendoBl.value;
+function pedirMoverLote(manifestId: number) {
+  if (!seleccionados.value.size) return;
+  moviendoInfo.value = { modo: 'lote', ids: [...seleccionados.value], manifestId };
+  destinoId.value = '';
+}
+
+async function confirmarMover() {
+  const info = moviendoInfo.value;
   const destino = Number(destinoId.value);
   if (!info || !destino || moviendo.value) return;
   moviendo.value = true;
   try {
-    const r = await api.moverBL(info.id, destino);
-    toast(`B/L ${info.blNo} movido correctamente`);
-    // Refrescar el viaje de origen (perdió el B/L) y, si el destino ya
-    // estaba cargado en algún otro momento, también quedaría desactualizado
-    // — pero solo el origen está visible ahora mismo, así que alcanza con él.
-    if (datosManifiesto.value?.manifest.id === info.manifestId) {
-      datosManifiesto.value = await api.obtenerManifiesto(info.manifestId);
-      if (blActual.value?.id === info.id) blActual.value = datosManifiesto.value.bls[0] ?? null;
+    if (info.modo === 'uno') {
+      const r = await api.moverBL(info.id, destino);
+      toast(`B/L ${info.blNo} movido correctamente`);
+      // Refrescar el viaje de origen (perdió el B/L) y, si el destino ya
+      // estaba cargado en algún otro momento, también quedaría desactualizado
+      // — pero solo el origen está visible ahora mismo, así que alcanza con él.
+      if (datosManifiesto.value?.manifest.id === info.manifestId) {
+        datosManifiesto.value = await api.obtenerManifiesto(info.manifestId);
+        if (blActual.value?.id === info.id) blActual.value = datosManifiesto.value.bls[0] ?? null;
+      }
+      const origen = manifiestos.value.find(m => m.id === info.manifestId);
+      if (origen && origen.bl_count) origen.bl_count -= 1;
+      const dest = manifiestos.value.find(m => m.id === destino);
+      if (dest) dest.bl_count = (dest.bl_count || 0) + 1;
+      sincronizarEstadoManifiesto(info.manifestId, r.status_anterior);
+      sincronizarEstadoManifiesto(destino, r.status_nuevo);
+    } else {
+      const r = await api.moverBLLote(info.ids, destino);
+      const n = r.movidos.length;
+      if (n) toast(`${n} B/L movido${n > 1 ? 's' : ''} correctamente`);
+      if (r.omitidos.length) {
+        toast(`${r.omitidos.length} B/L no se movieron: ${r.omitidos.map(o => o.motivo).join('; ')}`, 'err');
+      }
+      if (datosManifiesto.value?.manifest.id === info.manifestId) {
+        datosManifiesto.value = await api.obtenerManifiesto(info.manifestId);
+        if (blActual.value && !datosManifiesto.value.bls.some(b => b.id === blActual.value!.id)) {
+          blActual.value = datosManifiesto.value.bls[0] ?? null;
+        }
+      }
+      const origen = manifiestos.value.find(m => m.id === info.manifestId);
+      if (origen) origen.bl_count = Math.max(0, (origen.bl_count || 0) - n);
+      const dest = manifiestos.value.find(m => m.id === destino);
+      if (dest) dest.bl_count = (dest.bl_count || 0) + n;
+      Object.entries(r.estados_origen).forEach(([id, estado]) => sincronizarEstadoManifiesto(Number(id), estado));
+      sincronizarEstadoManifiesto(destino, r.status_nuevo);
+      seleccionados.value.clear();
     }
-    const origen = manifiestos.value.find(m => m.id === info.manifestId);
-    if (origen && origen.bl_count) origen.bl_count -= 1;
-    const dest = manifiestos.value.find(m => m.id === destino);
-    if (dest) dest.bl_count = (dest.bl_count || 0) + 1;
-    sincronizarEstadoManifiesto(info.manifestId, r.status_anterior);
-    sincronizarEstadoManifiesto(destino, r.status_nuevo);
     cargarStats();
-    moviendoBl.value = null;
+    moviendoInfo.value = null;
   } catch (e) {
     let msg = (e as Error).message;
     try { msg = JSON.parse(msg).error || msg; } catch { /* texto plano */ }
@@ -291,16 +332,30 @@ async function confirmarMoverBL() {
             </template>
             <Button v-else size="sm" class="h-7 bg-emerald-600 px-2 text-xs text-white hover:bg-emerald-700" @click="nuevoBlPara = m.id; nuevoBlNo = ''"><Plus class="size-3.5" />Nuevo B/L</Button>
           </div>
-          <button
+          <div v-if="seleccionados.size" class="flex items-center justify-between gap-2 border-b border-border bg-accent-soft px-2 py-1.5 pl-8 text-xs">
+            <span class="font-medium text-accent">{{ seleccionados.size }} seleccionado{{ seleccionados.size > 1 ? 's' : '' }}</span>
+            <div class="flex items-center gap-2">
+              <button class="text-ink-faint hover:text-ink" @click="seleccionados.clear()">Cancelar</button>
+              <Button size="sm" class="h-6 px-2 text-xs" @click="pedirMoverLote(m.id)"><Move class="size-3" />Mover a...</Button>
+            </div>
+          </div>
+          <div
             v-for="(bl, idx) in datosManifiesto.bls" :key="bl.id"
-            class="group/bl flex w-full items-center gap-2 border-b border-border py-1.5 pl-8 pr-2 text-left text-xs hover:bg-accent-soft"
+            class="group/bl flex w-full items-center gap-2 border-b border-border py-1.5 pl-8 pr-2 text-xs hover:bg-accent-soft"
             :class="blActual?.id === bl.id ? 'bg-accent-soft font-medium text-accent' : blIncompleto(bl) ? 'font-medium text-danger' : bl.status === 'validado' ? 'font-medium text-status-validated' : 'text-ink-muted'"
-            @click="seleccionarBL(bl.id)"
           >
-            <span class="size-1.5 shrink-0 rounded-full" :class="blActual?.id === bl.id ? 'bg-accent' : blIncompleto(bl) ? 'bg-danger' : bl.status === 'validado' ? 'bg-status-validated' : 'bg-ink-faint'"
-              :title="blIncompleto(bl) ? 'Falta código arancelario y/o SS/EIN consignatario' : undefined" />
-            <span class="w-7 shrink-0 text-right font-mono text-[10px] text-ink-faint">{{ idx + 1 }}</span>
-            <span class="min-w-0 flex-1 truncate">{{ bl.bl_no }}</span>
+            <input
+              type="checkbox" class="size-3.5 shrink-0 accent-accent"
+              :checked="seleccionados.has(bl.id)"
+              :title="'Seleccionar B/L ' + bl.bl_no"
+              @click.stop="alternarSeleccion(bl.id)"
+            />
+            <button class="flex min-w-0 flex-1 items-center gap-2 text-left" @click="seleccionarBL(bl.id)">
+              <span class="size-1.5 shrink-0 rounded-full" :class="blActual?.id === bl.id ? 'bg-accent' : blIncompleto(bl) ? 'bg-danger' : bl.status === 'validado' ? 'bg-status-validated' : 'bg-ink-faint'"
+                :title="blIncompleto(bl) ? 'Falta código arancelario y/o SS/EIN consignatario' : undefined" />
+              <span class="w-7 shrink-0 text-right font-mono text-[10px] text-ink-faint">{{ idx + 1 }}</span>
+              <span class="min-w-0 flex-1 truncate">{{ bl.bl_no }}</span>
+            </button>
             <button
               class="shrink-0 rounded p-0.5 text-ink-faint opacity-0 hover:bg-accent-soft hover:text-accent group-hover/bl:opacity-100"
               :title="'Mover B/L ' + bl.bl_no + ' a otro viaje'"
@@ -311,7 +366,7 @@ async function confirmarMoverBL() {
               :title="'Eliminar B/L ' + bl.bl_no"
               @click.stop="pedirBorrarBL(bl.id, bl.bl_no)"
             ><Trash2 class="size-3" /></button>
-          </button>
+          </div>
         </div>
       </div>
     </div>
@@ -331,9 +386,12 @@ async function confirmarMoverBL() {
       </DialogContent>
     </Dialog>
 
-    <Dialog :open="!!moviendoBl" @update:open="(v) => !v && (moviendoBl = null)">
-      <DialogContent v-if="moviendoBl">
-        <DialogHeader><DialogTitle>Mover B/L {{ moviendoBl.blNo }}</DialogTitle></DialogHeader>
+    <Dialog :open="!!moviendoInfo" @update:open="(v) => !v && (moviendoInfo = null)">
+      <DialogContent v-if="moviendoInfo">
+        <DialogHeader>
+          <DialogTitle v-if="moviendoInfo.modo === 'uno'">Mover B/L {{ moviendoInfo.blNo }}</DialogTitle>
+          <DialogTitle v-else>Mover {{ moviendoInfo.ids.length }} B/L seleccionados</DialogTitle>
+        </DialogHeader>
         <div class="flex flex-col gap-1">
           <label class="text-xs text-ink-muted">Viaje destino</label>
           <Select v-model="destinoId">
@@ -344,11 +402,11 @@ async function confirmarMoverBL() {
               </SelectItem>
             </SelectContent>
           </Select>
-          <p v-if="!destinosPosibles().length" class="text-xs text-ink-faint">No hay otro viaje al cual mover este B/L.</p>
+          <p v-if="!destinosPosibles().length" class="text-xs text-ink-faint">No hay otro viaje al cual mover {{ moviendoInfo.modo === 'uno' ? 'este B/L' : 'estos B/L' }}.</p>
         </div>
         <DialogFooter>
-          <Button variant="outline" @click="moviendoBl = null">Cancelar</Button>
-          <Button :disabled="!destinoId || moviendo" @click="confirmarMoverBL">{{ moviendo ? 'Moviendo...' : 'Mover' }}</Button>
+          <Button variant="outline" @click="moviendoInfo = null">Cancelar</Button>
+          <Button :disabled="!destinoId || moviendo" @click="confirmarMover">{{ moviendo ? 'Moviendo...' : 'Mover' }}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

@@ -219,6 +219,14 @@ export const api = {
       ok: true; bl_no: string; manifest_id_anterior: number; manifest_id_nuevo: number;
       status_anterior?: string; status_nuevo?: string;
     }>(`/api/bl/${id}/mover`, cuerpo('PUT', { manifest_id: manifestId })),
+  moverBLLote: (blIds: number[], manifestId: number) =>
+    pedir<{
+      ok: true;
+      movidos: Array<{ id: number; bl_no: string }>;
+      omitidos: Array<{ id: number; bl_no?: string; motivo: string }>;
+      manifest_id_destino: number; status_nuevo?: string;
+      estados_origen: Record<string, string>;
+    }>('/api/bl/mover-lote', cuerpo('PUT', { bl_ids: blIds, manifest_id: manifestId })),
   vistaPreviaTxt: (id: number) => pedir<VistaPreviaTxt>(`/api/bl/${id}/txt-preview`),
 
   // Contenedores
