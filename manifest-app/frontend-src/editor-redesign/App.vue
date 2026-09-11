@@ -239,10 +239,30 @@ async function pushSiscommate() {
 
 const viendoVivo = ref(false);
 const vivo = ref<DatosSiscommateVivo | null>(null);
+
+// Columnas que el bridge SIEMPRE escribe con el mismo valor fijo (ver
+// SiscommateBridge.cs, INSERT INTO BOL/BOLITEM) — no son un dato real por
+// B/L, solo ocupan espacio en una tabla ya de por sí muy ancha. Se ocultan
+// por defecto; el botón "Mostrar todas" las revela para quien sí necesite
+// auditarlas literalmente tal como están en el DBF.
+const COLUMNAS_ESTATICAS: Record<string, string[]> = {
+  bol: ['ttype', 'boltype', 'payee', 'ptype', 'charges', 'pind', 'taxtype', 'taxamt', 'taxadi',
+        'invoice', 'idate', 'invamt', 'sdesc', 'insamt', 'dutypaid', 'rate', 'relno', 'declno',
+        'coriport', 'cdesport', 'comvali', 'comval'],
+  items: ['sind', 'rate', 'taxamt', 'taxadi', 'wind', 'vind', 'sec', 'qty2', 'value2'],
+};
+const mostrarTodasCols = ref<Record<string, boolean>>({ bol: false, items: false });
+function columnasVisibles(tabla: 'bol' | 'items', fila: Record<string, unknown>): string[] {
+  const todas = Object.keys(fila);
+  if (mostrarTodasCols.value[tabla]) return todas;
+  const ocultas = new Set(COLUMNAS_ESTATICAS[tabla]);
+  return todas.filter(k => !ocultas.has(k));
+}
 async function verSiscommateVivo() {
   const m = datosManifiesto.value?.manifest;
   if (!m) return;
   viendoVivo.value = true;
+  mostrarTodasCols.value = { bol: false, items: false };
   try {
     vivo.value = await api.siscommateVivo(m.id);
   } catch (e) {
@@ -386,7 +406,14 @@ onMounted(async () => {
     </Dialog>
 
     <Dialog :open="!!vivo" @update:open="(v) => !v && (vivo = null)">
-      <DialogContent v-if="vivo" class="w-[95vw] max-w-[95vw]">
+      <!-- sm:max-w-[95vw] es obligatorio, no solo max-w-[95vw]: el componente
+           base (DialogContent.vue) trae "sm:max-w-sm" (24rem) por defecto, y
+           tailwind-merge no lo reemplaza a menos que la clase nueva tenga la
+           MISMA variante — sin el prefijo "sm:" aquí, el default seguía
+           ganando en cualquier pantalla ≥640px y el modal se quedaba
+           atascado en 384px pese al max-w-[95vw]. Confirmado con
+           getComputedStyle en el navegador antes de este fix. -->
+      <DialogContent v-if="vivo" class="w-[95vw] max-w-[95vw] sm:max-w-[95vw]">
         <DialogHeader><DialogTitle>Lo que hay en SISCOMMATE — Viaje {{ datosManifiesto?.manifest.voyage_no }}</DialogTitle></DialogHeader>
         <p v-if="!vivo.encontrado" class="text-sm text-ink-faint">No se encontró ningún manifiesto con este número de viaje en las tablas de SISCOMMATE.</p>
         <div v-else class="flex max-h-[80vh] flex-col gap-4 overflow-y-auto text-xs">
@@ -399,16 +426,21 @@ onMounted(async () => {
             </div>
           </div>
           <div>
-            <p class="mb-1 font-medium text-ink-muted">B/L — BOL ({{ vivo.bls.length }})</p>
+            <div class="mb-1 flex items-center gap-2">
+              <p class="font-medium text-ink-muted">B/L — BOL ({{ vivo.bls.length }})</p>
+              <button v-if="vivo.bls.length" type="button" class="text-accent underline" @click="mostrarTodasCols.bol = !mostrarTodasCols.bol">
+                {{ mostrarTodasCols.bol ? 'Ocultar columnas siempre vacías' : `Mostrar todas (+${COLUMNAS_ESTATICAS.bol.length} columnas siempre vacías)` }}
+              </button>
+            </div>
             <p v-if="!vivo.bls.length" class="text-ink-faint">Sin B/L registrados.</p>
             <div v-else class="overflow-x-auto rounded border border-border">
               <table class="w-full border-collapse font-mono">
                 <thead><tr class="border-b border-border bg-paper-raised text-left text-ink-faint">
-                  <th v-for="k in Object.keys(vivo.bls[0])" :key="k" class="px-2 py-1 whitespace-nowrap">{{ k }}</th>
+                  <th v-for="k in columnasVisibles('bol', vivo.bls[0])" :key="k" class="px-2 py-1 whitespace-nowrap">{{ k }}</th>
                 </tr></thead>
                 <tbody>
                   <tr v-for="(bl, i) in vivo.bls" :key="i" class="border-b border-border/50 last:border-0">
-                    <td v-for="k in Object.keys(vivo.bls[0])" :key="k" class="px-2 py-1 whitespace-nowrap">{{ (bl as any)[k] === null || (bl as any)[k] === '' ? '—' : String((bl as any)[k]) }}</td>
+                    <td v-for="k in columnasVisibles('bol', bl as Record<string, unknown>)" :key="k" class="px-2 py-1 whitespace-nowrap">{{ (bl as any)[k] === null || (bl as any)[k] === '' ? '—' : String((bl as any)[k]) }}</td>
                   </tr>
                 </tbody>
               </table>
@@ -431,16 +463,21 @@ onMounted(async () => {
             </div>
           </div>
           <div>
-            <p class="mb-1 font-medium text-ink-muted">Items de carga (BOLITEM) ({{ vivo.items.length }})</p>
+            <div class="mb-1 flex items-center gap-2">
+              <p class="font-medium text-ink-muted">Items de carga (BOLITEM) ({{ vivo.items.length }})</p>
+              <button v-if="vivo.items.length" type="button" class="text-accent underline" @click="mostrarTodasCols.items = !mostrarTodasCols.items">
+                {{ mostrarTodasCols.items ? 'Ocultar columnas siempre vacías' : `Mostrar todas (+${COLUMNAS_ESTATICAS.items.length} columnas siempre vacías)` }}
+              </button>
+            </div>
             <p v-if="!vivo.items.length" class="text-ink-faint">Sin items registrados.</p>
             <div v-else class="overflow-x-auto rounded border border-border">
               <table class="w-full border-collapse font-mono">
                 <thead><tr class="border-b border-border bg-paper-raised text-left text-ink-faint">
-                  <th v-for="k in Object.keys(vivo.items[0])" :key="k" class="px-2 py-1 whitespace-nowrap">{{ k }}</th>
+                  <th v-for="k in columnasVisibles('items', vivo.items[0])" :key="k" class="px-2 py-1 whitespace-nowrap">{{ k }}</th>
                 </tr></thead>
                 <tbody>
                   <tr v-for="(it, i) in vivo.items" :key="i" class="border-b border-border/50 last:border-0">
-                    <td v-for="k in Object.keys(vivo.items[0])" :key="k" class="px-2 py-1 whitespace-nowrap">{{ (it as any)[k] === null || (it as any)[k] === '' ? '—' : String((it as any)[k]) }}</td>
+                    <td v-for="k in columnasVisibles('items', it as Record<string, unknown>)" :key="k" class="px-2 py-1 whitespace-nowrap">{{ (it as any)[k] === null || (it as any)[k] === '' ? '—' : String((it as any)[k]) }}</td>
                   </tr>
                 </tbody>
               </table>
