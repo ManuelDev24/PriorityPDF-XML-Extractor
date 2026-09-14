@@ -5,9 +5,12 @@
 const express = require('express');
 const db = require('../db/connection');
 const { VESSELS, PORT_MAPPINGS, VALID_CONTAINER_SIZES } = require('../db/catalogDefaults');
-const { buscarClientesSiscommate } = require('../services/siscommateClient');
+const {
+  buscarClientesSiscommate, crearClienteSiscommate, actualizarClienteSiscommate, eliminarClienteSiscommate,
+} = require('../services/siscommateClient');
 const { analizarYGuardar } = require('../services/itemClientAnalysis');
 const { analizarHistorialLocal, normalizarDescripcion } = require('../services/localHistoryAnalysis');
+const { sincronizarClientesDesdeSiscommate, buscarClienteParecido } = require('../services/clientSync');
 
 const router = express.Router();
 
@@ -135,9 +138,39 @@ router.get('/api/catalogs/carriers', (req, res) => {
 // ── CLIENTES / CONSIGNATARIOS ────────────────────────────────────────────────
 router.get('/api/catalogs/clients', (req, res) => {
   const q = req.query.q || '';
+  // El límite por defecto (20) es para el autocompletar del editor; la
+  // pantalla de Clientes en Admin pide más filas explícitamente (cap 500
+  // para no mandar el catálogo completo de un golpe).
+  const limit = Math.min(Number(req.query.limit) || 20, 500);
   res.json(db.prepare(
-    `SELECT * FROM clients WHERE name LIKE ? OR taxid LIKE ? OR ss LIKE ? ORDER BY name LIMIT 20`
-  ).all(`%${q}%`, `%${q}%`, `%${q}%`));
+    `SELECT * FROM clients WHERE name LIKE ? OR taxid LIKE ? OR ss LIKE ? ORDER BY name LIMIT ?`
+  ).all(`%${q}%`, `%${q}%`, `%${q}%`, limit));
+});
+
+// Cuántos clientes hay en el catálogo local — para el contador en Admin sin
+// tener que traer las filas.
+router.get('/api/catalogs/clients/count', (req, res) => {
+  res.json(db.prepare(`SELECT COUNT(*) as total FROM clients`).get());
+});
+
+// Trae TODO el catálogo CUSTOMER de SISCOMMATE y actualiza/crea en el
+// catálogo local — ver services/clientSync.js. Manual desde Admin: no se
+// dispara solo, el catálogo real no cambia de un minuto a otro.
+router.post('/api/catalogs/clients/sincronizar-siscommate', async (req, res) => {
+  try {
+    const resultado = await sincronizarClientesDesdeSiscommate();
+    res.json({ ok: true, ...resultado });
+  } catch (err) {
+    res.status(500).json({ error: 'No se pudo sincronizar con SISCOMMATE: ' + err.message });
+  }
+});
+
+// ¿Hay un cliente local con un nombre PARECIDO (no igual) al que se está por
+// guardar? Para avisar de un posible error de digitación en el editor — solo
+// sugiere, nunca cambia nada solo.
+router.get('/api/catalogs/clients/parecido', (req, res) => {
+  const nombre = req.query.name || '';
+  res.json({ sugerencia: buscarClienteParecido(nombre) });
 });
 
 // Clientes reales de SISCOMMATE (tabla CUSTOMER, vía el bridge) — para
@@ -148,7 +181,19 @@ router.get('/api/catalogs/siscommate-clients', async (req, res) => {
   res.json(await buscarClientesSiscommate(q));
 });
 
-router.post('/api/catalogs/clients', (req, res) => {
+// Campos "extra" de CUSTOMER.DBF que el formulario de "+ Crear nuevo
+// consignatario" del editor no usa (solo manda name/ss/taxid/add1/add2/
+// phone1/ivu) pero que sí puede mandar la pantalla de Clientes en Admin —
+// se leen si vienen, nunca se exigen.
+function camposExtra(body) {
+  return {
+    code: body.code || '', type: body.type || '',
+    add3: body.add3 || '', phone2: body.phone2 || '',
+    fax1: body.fax1 || '', fax2: body.fax2 || '',
+  };
+}
+
+router.post('/api/catalogs/clients', async (req, res) => {
   const { name, ss, taxid, add1, add2, phone1, ivu } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ error: 'El nombre es requerido' });
   const ssSanitized = String(ss || '').replace(/[^0-9]/g, '').substring(0, 9);
@@ -161,15 +206,36 @@ router.post('/api/catalogs/clients', (req, res) => {
       client: exists,
     });
   }
-  const info = db.prepare(`INSERT INTO clients (name,ss,taxid,add1,add2,phone1,ivu) VALUES (?,?,?,?,?,?,?)`)
-    .run(name.trim(), ssSanitized, taxid || '', add1 || '', add2 || '', phone1 || '', ivu || '');
+  const extra = camposExtra(req.body);
+  const info = db.prepare(`
+    INSERT INTO clients (name,ss,taxid,add1,add2,phone1,ivu,code,type,add3,phone2,fax1,fax2)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+  `).run(
+    name.trim(), ssSanitized, taxid || '', add1 || '', add2 || '', phone1 || '', ivu || '',
+    extra.code, extra.type, extra.add3, extra.phone2, extra.fax1, extra.fax2
+  );
   const client = db.prepare(`SELECT * FROM clients WHERE id=?`).get(info.lastInsertRowid);
-  res.json({ ok: true, client });
+
+  // Best-effort: SISCOMMATE es la fuente real (ver clientSync.js), pero si el
+  // bridge no responde no tiene sentido perder el guardado local por eso —
+  // se reporta aparte para que quien edita sepa si de verdad llegó allá.
+  let siscommate = { ok: false, error: 'No se intentó (revisa la conexión con el bridge)' };
+  try {
+    await crearClienteSiscommate(client);
+    siscommate = { ok: true };
+  } catch (err) {
+    siscommate = { ok: false, error: err.message };
+  }
+  res.json({ ok: true, client, siscommate });
 });
 
-router.put('/api/catalogs/clients/:id', (req, res) => {
+router.put('/api/catalogs/clients/:id', async (req, res) => {
+  const actual = db.prepare(`SELECT * FROM clients WHERE id=?`).get(req.params.id);
+  if (!actual) return res.status(404).json({ error: 'Cliente no encontrado' });
+
   const { name, ss, taxid, add1, add2, phone1, ivu } = req.body;
   const ssSanitized = ss ? String(ss).replace(/[^0-9]/g, '').substring(0, 9) : undefined;
+  const extra = camposExtra(req.body);
   const sets = []; const vals = [];
   if (name)              { sets.push('name=?');   vals.push(name.trim()); }
   if (ssSanitized)       { sets.push('ss=?');     vals.push(ssSanitized); }
@@ -178,12 +244,61 @@ router.put('/api/catalogs/clients/:id', (req, res) => {
   if (add2 !== undefined)   { sets.push('add2=?');   vals.push(add2); }
   if (phone1 !== undefined) { sets.push('phone1=?'); vals.push(phone1); }
   if (ivu !== undefined)    { sets.push('ivu=?');    vals.push(ivu); }
+  if (req.body.code !== undefined)   { sets.push('code=?');   vals.push(extra.code); }
+  if (req.body.type !== undefined)   { sets.push('type=?');   vals.push(extra.type); }
+  if (req.body.add3 !== undefined)   { sets.push('add3=?');   vals.push(extra.add3); }
+  if (req.body.phone2 !== undefined) { sets.push('phone2=?'); vals.push(extra.phone2); }
+  if (req.body.fax1 !== undefined)   { sets.push('fax1=?');   vals.push(extra.fax1); }
+  if (req.body.fax2 !== undefined)   { sets.push('fax2=?');   vals.push(extra.fax2); }
   if (sets.length) {
     vals.push(req.params.id);
     db.prepare(`UPDATE clients SET ${sets.join(',')} WHERE id=?`).run(...vals);
   }
   const client = db.prepare(`SELECT * FROM clients WHERE id=?`).get(req.params.id);
-  res.json({ ok: true, client });
+
+  // Se busca en SISCOMMATE por el nombre ANTERIOR (actual.name, antes de
+  // aplicar este cambio) — si el nombre se editó en el mismo guardado, ya no
+  // sirve como referencia después. filas_afectadas distingue "no se encontró
+  // ese nombre allá" (0) de "el nombre no era único" (>1) — ver
+  // services/siscommateClient.js#actualizarClienteSiscommate.
+  let siscommate = { ok: false, error: 'No se intentó (revisa la conexión con el bridge)' };
+  try {
+    const r = await actualizarClienteSiscommate(actual.name, client);
+    if (r.filas_afectadas === 0) {
+      siscommate = { ok: false, error: `No se encontró "${actual.name}" en SISCOMMATE — puede que ya no exista con ese nombre.` };
+    } else if (r.filas_afectadas > 1) {
+      siscommate = { ok: false, error: `Había ${r.filas_afectadas} clientes con el nombre "${actual.name}" en SISCOMMATE — se actualizaron todos, revisa que sea correcto.` };
+    } else {
+      siscommate = { ok: true };
+    }
+  } catch (err) {
+    siscommate = { ok: false, error: err.message };
+  }
+  res.json({ ok: true, client, siscommate });
+});
+
+// Elimina local Y en CUSTOMER.DBF real (por nombre exacto) — pensado sobre
+// todo para limpiar duplicados detectados a mano en la pantalla de Clientes.
+// Irreversible: la confirmación queda del lado del frontend (mismo patrón
+// que ya usa "Eliminar" en Tipos de contenedor).
+router.delete('/api/catalogs/clients/:id', async (req, res) => {
+  const cliente = db.prepare(`SELECT * FROM clients WHERE id=?`).get(req.params.id);
+  if (!cliente) return res.status(404).json({ error: 'Cliente no encontrado' });
+
+  db.prepare(`DELETE FROM clients WHERE id=?`).run(req.params.id);
+
+  let siscommate = { ok: false, error: 'No se intentó (revisa la conexión con el bridge)' };
+  try {
+    const r = await eliminarClienteSiscommate(cliente.name);
+    if (r.filas_afectadas === 0) {
+      siscommate = { ok: false, error: `No se encontró "${cliente.name}" en SISCOMMATE — puede que ya no exista con ese nombre.` };
+    } else {
+      siscommate = { ok: true, filas_afectadas: r.filas_afectadas };
+    }
+  } catch (err) {
+    siscommate = { ok: false, error: err.message };
+  }
+  res.json({ ok: true, deleted: cliente.name, siscommate });
 });
 
 // ── BUQUES ───────────────────────────────────────────────────────────────────

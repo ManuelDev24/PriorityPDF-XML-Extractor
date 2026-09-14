@@ -282,6 +282,34 @@ function rellenarSiVacio(campo: 'consignee_name' | 'consignee_tel' | 'consignee_
   if (valor && !bl.value[campo]) actualizarBL(campo, valor);
 }
 
+// ── Aviso de posible error de digitación (nombre parecido a uno conocido) ──
+// Solo sugiere, nunca cambia nada solo — decisión explícita: fusionar dos
+// clientes distintos por error de digitación sería peor que el problema que
+// se quiere resolver. Ver services/clientSync.js (buscarClienteParecido).
+const sugerenciaConsignor = ref<{ name: string; ss: string } | null>(null);
+const sugerenciaConsignee = ref<{ name: string; ss: string } | null>(null);
+let temporizadorParecido: ReturnType<typeof setTimeout> | undefined;
+
+function revisarNombreParecido(campo: 'consignor_name' | 'consignee_name', valor: string) {
+  const destino = campo === 'consignor_name' ? sugerenciaConsignor : sugerenciaConsignee;
+  destino.value = null;
+  if (!valor || valor.trim().length < 4) return;
+  clearTimeout(temporizadorParecido);
+  temporizadorParecido = setTimeout(async () => {
+    try {
+      const { sugerencia } = await api.clienteParecido(valor);
+      // El campo pudo cambiar mientras la petición estaba en vuelo (otro
+      // B/L, otro cambio) — no pisar un resultado más nuevo con uno viejo.
+      if (bl.value[campo] === valor) destino.value = sugerencia;
+    } catch { /* si falla, simplemente no se sugiere nada */ }
+  }, 400);
+}
+
+function usarNombreSugerido(campo: 'consignor_name' | 'consignee_name', nombre: string) {
+  actualizarBL(campo, nombre);
+  (campo === 'consignor_name' ? sugerenciaConsignor : sugerenciaConsignee).value = null;
+}
+
 // A diferencia de rellenarSiVacio: esto es una elección explícita del
 // operador (combobox de SS/EIN), no una sugerencia — si ya había datos de
 // OTRO consignatario, se reemplazan para que no quede un nombre/dirección
@@ -600,7 +628,7 @@ watch(() => bl.value?.id, () => {
           <div class="col-span-12 md:col-span-5 flex flex-col gap-1">
             <Label class="text-xs">Nombre consignatario</Label>
             <Input :model-value="bl.consignee_name || ''" placeholder="Se completa al elegir código o SS/EIN" class="text-xs"
-              @change="(e:Event) => actualizarBL('consignee_name', (e.target as HTMLInputElement).value)" />
+              @change="(e:Event) => { const v = (e.target as HTMLInputElement).value; actualizarBL('consignee_name', v); revisarNombreParecido('consignee_name', v); }" />
             <p v-if="nombreCliente" class="flex items-center gap-1 text-xs text-status-validated">
               <Check class="size-3" />
               <button v-if="clienteId !== null" class="text-accent underline" @click="emit('editarCliente', clienteId || 0, bl.hacienda_client_ss || '', nombreCliente)">Editar cliente local</button>
@@ -728,7 +756,16 @@ watch(() => bl.value?.id, () => {
     <Card>
       <CardHeader><CardTitle><span class="rounded bg-status-validated-soft px-1.5 py-0.5 text-status-validated">Consignador</span> — Shipper (República Dominicana)</CardTitle></CardHeader>
       <CardContent class="flex flex-col gap-2.5">
-        <div class="flex flex-col gap-1"><Label class="text-xs">Nombre / Razón social</Label><Input :model-value="bl.consignor_name || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('consignor_name', (e.target as HTMLInputElement).value)" /></div>
+        <div class="flex flex-col gap-1">
+          <Label class="text-xs">Nombre / Razón social</Label>
+          <Input :model-value="bl.consignor_name || ''" class="h-9 text-xs"
+            @change="(e:Event) => { const v = (e.target as HTMLInputElement).value; actualizarBL('consignor_name', v); revisarNombreParecido('consignor_name', v); }" />
+          <p v-if="sugerenciaConsignor" class="flex items-center gap-1.5 text-xs text-status-pending">
+            <Sparkles class="size-3 shrink-0" />
+            ¿Quisiste decir
+            <button type="button" class="font-medium underline" @click="usarNombreSugerido('consignor_name', sugerenciaConsignor!.name)">{{ sugerenciaConsignor.name }}</button>?
+          </p>
+        </div>
         <!-- Fila 2: tipo primero (se elige antes de escribir el número) · documento (5, contenido más largo) · espacio restante (4) -->
         <div class="grid grid-cols-12 gap-x-3 gap-y-2.5">
           <div class="col-span-12 flex flex-col gap-1 md:col-span-3"><Label class="text-xs">Tipo documento</Label><Input :model-value="bl.consignor_document_type || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('consignor_document_type', (e.target as HTMLInputElement).value)" /></div>
@@ -749,7 +786,16 @@ watch(() => bl.value?.id, () => {
       <CardHeader><CardTitle><span class="rounded bg-accent-soft px-1.5 py-0.5 text-accent">Consignatario</span> — Consignee (Puerto Rico)</CardTitle></CardHeader>
       <CardContent class="flex flex-col gap-2.5">
         <div class="grid grid-cols-12 gap-x-3 gap-y-2.5">
-          <div class="col-span-12 flex flex-col gap-1 md:col-span-7"><Label class="text-xs">Nombre / Razón social</Label><Input :model-value="bl.consignee_name || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('consignee_name', (e.target as HTMLInputElement).value)" /></div>
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-7">
+            <Label class="text-xs">Nombre / Razón social</Label>
+            <Input :model-value="bl.consignee_name || ''" class="h-9 text-xs"
+              @change="(e:Event) => { const v = (e.target as HTMLInputElement).value; actualizarBL('consignee_name', v); revisarNombreParecido('consignee_name', v); }" />
+            <p v-if="sugerenciaConsignee" class="flex items-center gap-1.5 text-xs text-status-pending">
+              <Sparkles class="size-3 shrink-0" />
+              ¿Quisiste decir
+              <button type="button" class="font-medium underline" @click="usarNombreSugerido('consignee_name', sugerenciaConsignee!.name)">{{ sugerenciaConsignee.name }}</button>?
+            </p>
+          </div>
           <div class="col-span-12 flex flex-col gap-1 md:col-span-2"><Label class="text-xs">EIN / SS (PR)</Label><Input :model-value="bl.consignee_document_no || ''" class="h-9 font-mono text-xs" @change="(e:Event) => actualizarBL('consignee_document_no', (e.target as HTMLInputElement).value)" /></div>
           <div class="col-span-12 flex flex-col gap-1 md:col-span-3"><Label class="text-xs">Teléfono</Label><Input :model-value="bl.consignee_tel || ''" class="h-9 font-mono text-xs" @change="(e:Event) => actualizarBL('consignee_tel', (e.target as HTMLInputElement).value)" /></div>
         </div>

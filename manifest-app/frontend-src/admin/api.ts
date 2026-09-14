@@ -49,6 +49,41 @@ function json(body: unknown): RequestInit {
 /** Resultado de correr un análisis de sugerencias — las claves varían según cuál. */
 export interface ResultadoAnalisis { ok: true; [clave: string]: unknown; }
 
+/** Fila del catálogo local de clientes (caché de CUSTOMER.DBF). */
+export interface Cliente {
+  id: number;
+  name: string;
+  ss: string;
+  code?: string;
+  type?: string;
+  taxid?: string;
+  add1?: string;
+  add2?: string;
+  add3?: string;
+  phone1?: string;
+  phone2?: string;
+  fax1?: string;
+  fax2?: string;
+  ivu?: string;
+}
+
+export interface ResultadoSincronizarClientes {
+  ok: true;
+  total_siscommate: number;
+  creados: number;
+  actualizados: number;
+  sin_cambios: number;
+}
+
+/** Resultado de crear/actualizar un cliente — separa el guardado local del
+ * intento de escribir en CUSTOMER.DBF real (best-effort, puede fallar sin
+ * perder el guardado local). */
+export interface ResultadoGuardarCliente {
+  ok: true;
+  client: Cliente;
+  siscommate: { ok: boolean; error?: string };
+}
+
 export const api = {
   getSettings: () => pedir<Settings>('/api/settings'),
 
@@ -85,4 +120,21 @@ export const api = {
     pedir<ResultadoAnalisis>('/api/catalogs/items/analizar-clientes', { method: 'POST' }),
   analizarHistorialLocal: () =>
     pedir<ResultadoAnalisis>('/api/catalogs/items/analizar-historial-local', { method: 'POST' }),
+
+  // Catálogo de clientes (caché local de CUSTOMER.DBF)
+  buscarClientes: (q: string, limit = 50) =>
+    pedir<Cliente[]>(`/api/catalogs/clients?q=${encodeURIComponent(q)}&limit=${limit}`),
+  contarClientes: () => pedir<{ total: number }>('/api/catalogs/clients/count'),
+  sincronizarClientesSiscommate: () =>
+    pedir<ResultadoSincronizarClientes>('/api/catalogs/clients/sincronizar-siscommate', { method: 'POST' }),
+  crearCliente: (c: Partial<Cliente>) =>
+    pedir<ResultadoGuardarCliente>('/api/catalogs/clients', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(c),
+    }),
+  actualizarCliente: (id: number, c: Partial<Cliente>) =>
+    pedir<ResultadoGuardarCliente>(`/api/catalogs/clients/${id}`, json(c)),
+  eliminarCliente: (id: number) =>
+    pedir<{ ok: true; deleted: string; siscommate: { ok: boolean; error?: string } }>(
+      `/api/catalogs/clients/${id}`, { method: 'DELETE' }
+    ),
 };

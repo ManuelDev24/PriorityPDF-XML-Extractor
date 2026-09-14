@@ -5,7 +5,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const {
-  pad, padZ, sanitizeSS, toSiscommatePort,
+  pad, padZ, sanitizeSS, toSiscommatePort, calcularPuertosDbf,
   generateTxtLine0, generateTxtLine1, generateTxtLine2, generateFullTxt,
 } = require('./txtGenerator');
 
@@ -104,6 +104,13 @@ test('línea 1 coloca cada campo en su posición documentada', () => {
   assert.strictEqual(l1.substring(146, 149), 'XSJ',          'puerto descarga en [146:149]');
   assert.strictEqual(l1.substring(186, 190), '045R',         'tarifa+R en [186:190]');
   assert.strictEqual(l1.substring(190, 201), '01406530016',  'IVU en [190:201]');
+});
+
+test('línea 1 distingue descarga de destino cuando hay discharge_port (tránsito)', () => {
+  const manifestTransito = { ...manifest, unloading_port: 'JAX', discharge_port: 'XSJ' };
+  const l1 = generateTxtLine1(bl, manifestTransito, 'PRRU2010106');
+  assert.strictEqual(l1.substring(146, 149), 'XSJ', 'puerto descarga (donde desembarca) en [146:149]');
+  assert.strictEqual(l1.substring(149, 152), 'JAX', 'puerto destino (a dónde va la carga) en [149:152]');
 });
 
 test('línea 2 coloca cada campo en su posición documentada', () => {
@@ -273,6 +280,28 @@ test('toSiscommatePort recorta a 3 caracteres los puertos desconocidos', () => {
 test('toSiscommatePort sin código asume San Juan', () => {
   assert.strictEqual(toSiscommatePort(''), 'XSJ');
   assert.strictEqual(toSiscommatePort(null), 'XSJ');
+});
+
+// ── calcularPuertosDbf ───────────────────────────────────────────────────────
+test('calcularPuertosDbf: sin discharge_port, descarga y destino son el mismo puerto', () => {
+  assert.deepStrictEqual(
+    calcularPuertosDbf({ loading_port: 'USMIA', unloading_port: 'PRSJU' }),
+    { origport: 'MIA', discport: 'XSJ', destport: 'XSJ' }
+  );
+});
+
+test('calcularPuertosDbf: con discharge_port, descarga y destino se distinguen (tránsito)', () => {
+  // Caso real reportado: barco descarga en San Juan pero la carga sigue
+  // camino a Jacksonville — antes discport/destport salían siempre iguales
+  // (el valor de unloading_port), perdiendo el puerto real de descarga.
+  assert.deepStrictEqual(
+    calcularPuertosDbf({ loading_port: 'DRP', unloading_port: 'JAX', discharge_port: 'XSJ' }),
+    { origport: 'DRP', discport: 'XSJ', destport: 'JAX' }
+  );
+});
+
+test('calcularPuertosDbf sin ningún puerto cae al respaldo (Santo Domingo / San Juan)', () => {
+  assert.deepStrictEqual(calcularPuertosDbf({}), { origport: 'DRP', discport: 'XSJ', destport: 'XSJ' });
 });
 
 // ── TXT completo ─────────────────────────────────────────────────────────────

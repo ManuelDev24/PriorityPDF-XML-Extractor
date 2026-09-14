@@ -250,6 +250,12 @@ export const api = {
   buscarClientes: (q: string) => pedir<Cliente[]>(`/api/catalogs/clients?q=${encodeURIComponent(q)}`),
   buscarClientesSiscommate: (q: string) =>
     pedir<ClienteSiscommate[]>(`/api/catalogs/siscommate-clients?q=${encodeURIComponent(q)}`),
+  /** ¿Hay un cliente local con nombre PARECIDO (no igual) al que se está escribiendo?
+   * Solo avisa — nunca cambia nada solo. Ver services/clientSync.js. */
+  clienteParecido: (nombre: string) =>
+    pedir<{ sugerencia: { name: string; ss: string; similitud: number } | null }>(
+      `/api/catalogs/clients/parecido?name=${encodeURIComponent(nombre)}`
+    ),
   crearCliente: (c: Partial<Cliente> & { phone1?: string }) =>
     pedir<{ ok: true; client: Cliente }>('/api/catalogs/clients', cuerpo('POST', c)),
   actualizarCliente: (id: number, c: Partial<Cliente> & { phone1?: string }) =>

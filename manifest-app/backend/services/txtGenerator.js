@@ -274,6 +274,32 @@ function toSiscommatePort(code) {
     (code || 'XSJ').toUpperCase().substring(0, 3));
 }
 
+/**
+ * Origen, descarga y destino ya traducidos a SISCOMMATE — única fuente para
+ * el TXT y el push (services/siscommateClient.js#calcularPuertos delega
+ * acá), para que nunca diverjan.
+ *
+ * "Descarga" y "destino" NO son lo mismo para carga en tránsito: descarga es
+ * el puerto donde el barco realmente desembarca la carga (ej. XSJ — San
+ * Juan), destino es a dónde va realmente esa carga, que puede seguir camino
+ * fuera de Puerto Rico (ej. JAX — Jacksonville, por camión/otro transportista
+ * después de desembarcar en San Juan). manifest.discharge_port es el campo
+ * opcional para ese caso — antes se guardaba pero nunca se usaba: discport y
+ * destport siempre salían iguales (el valor de unloading_port), perdiendo la
+ * distinción para cualquier viaje con tránsito real.
+ *
+ * Sin discharge_port (caso normal, sin tránsito) discport y destport quedan
+ * iguales, igual que siempre.
+ * @param {{loading_port?: string, unloading_port?: string, discharge_port?: string}} manifest
+ * @returns {{origport: string, discport: string, destport: string}}
+ */
+function calcularPuertosDbf(manifest) {
+  const origport = toSiscommatePort(manifest.loading_port || setting('default_loading_port', 'DRP'));
+  const destport = toSiscommatePort(manifest.unloading_port || setting('default_unloading_port', 'SJU'));
+  const discport = manifest.discharge_port ? toSiscommatePort(manifest.discharge_port) : destport;
+  return { origport, discport, destport };
+}
+
 // ── LÍNEA 0 — Encabezado del manifiesto (205 chars) ──────────────────────────
 // Posiciones verificadas (0-indexed):
 //  [0]      tipo '0'
@@ -373,9 +399,8 @@ function generateTxtLine0(manifest, blCount) {
  * @returns {string} Exactamente 205 caracteres
  */
 function generateTxtLine1(bl, manifest, containerNo) {
-  const ss9      = sanitizeSS(bl.hacienda_client_ss || bl.consignee_document_no);
-  const loadPort = toSiscommatePort(manifest.loading_port || setting('default_loading_port', 'DRP'));
-  const discPort = toSiscommatePort(manifest.unloading_port || setting('default_unloading_port', 'SJU'));
+  const ss9 = sanitizeSS(bl.hacienda_client_ss || bl.consignee_document_no);
+  const { origport: loadPort, discport: discPort, destport: destPort } = calcularPuertosDbf(manifest);
   const tariff   = bl.hacienda_tariff;
   // Libre arancel (040): SISCOMMATE requiere valor FOB = 0
   const fobValue = (tariff === '040') ? 0 : toNum(bl.value);
@@ -394,7 +419,7 @@ function generateTxtLine1(bl, manifest, containerNo) {
     pad(quitarAcentos(bl.consignor_name), 60) +  // [83:143]
     pad(loadPort, 3) +            // [143:146]
     pad(discPort, 3) +            // [146:149]
-    pad(discPort, 3) +            // [149:152]
+    pad(destPort, 3) +            // [149:152]
     'C' +                         // [152]
     valCents +                    // [153:162]
     'C' +                         // [162]
@@ -504,7 +529,7 @@ function generateFullTxt(manifest, bls) {
 module.exports = {
   pad, padL, padZ,
   sanitizeSS,
-  toSiscommatePort,
+  toSiscommatePort, calcularPuertosDbf,
   generateTxtLine0, generateTxtLine1, generateTxtLine2,
   generateFullTxt,
   quitarAcentos, sanitizeIdentificador, normalizarEmpaque,

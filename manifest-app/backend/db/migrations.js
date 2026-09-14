@@ -195,6 +195,13 @@ function runMigrations({
     hacienda_tariff  TEXT,
     seq              INTEGER NOT NULL DEFAULT 1
   )`);
+
+  // Únicos dos campos de CUSTOMER.DBF que el catálogo local `clients` no
+  // traía todavía (confirmado contra el esquema real vía el bridge:
+  // name/ss/code/type/taxid/add1-3/phone1-2/fax1-2/ivu son TODOS los campos
+  // que existen — no hay nada más que sincronizar). Ver services/clientSync.js.
+  addColumnIfMissing('clients', 'fax1', 'TEXT');
+  addColumnIfMissing('clients', 'fax2', 'TEXT');
 }
 
 module.exports = { runMigrations, addColumnIfMissing };

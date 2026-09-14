@@ -12,7 +12,7 @@
 
 const http = require('http');
 const db = require('../db/connection');
-const { quitarAcentos, sanitizeIdentificador, normalizarEmpaque, toSiscommatePort, setting } = require('./txtGenerator');
+const { quitarAcentos, sanitizeIdentificador, normalizarEmpaque, calcularPuertosDbf } = require('./txtGenerator');
 
 /**
  * Para el push a SISCOMMATE: más estricto que quitarAcentos() (que se usa
@@ -188,30 +188,15 @@ function calcularPackageUnitCode(packageUnitCode, hasContainer) {
   return empaqueValido || (hasContainer ? 'BOX' : 'LSE');
 }
 
-/**
- * Puerto de origen y de descarga/destino, ya traducidos al código de 3
- * letras que SISCOMMATE espera — misma toSiscommatePort() que ya usa el
- * TXT local (generateTxtLine1). Antes el bridge calculaba esto por su
- * cuenta: origport quedaba SIEMPRE fijo en "DRP" (nunca miraba
- * manifest.loading_port) y discport/destport solo traducían 2 casos a mano
- * (SJU y MGE), mandando el código crudo sin traducir para cualquier otro
- * puerto (Miami, St. Thomas, etc.) — reportado como "Origin/Discharge/
- * Destination Port no se envían bien". Calculado aquí, lo que llega a
- * SISCOMMATE ya no puede divergir de lo que dice el TXT del mismo viaje.
- * @param {import('../types').ManifestRow} manifest
- * @returns {{origport: string, discport: string}}
- */
-function calcularPuertos(manifest) {
-  return {
-    origport: toSiscommatePort(manifest.loading_port || setting('default_loading_port', 'DRP')),
-    discport: toSiscommatePort(manifest.unloading_port || setting('default_unloading_port', 'SJU')),
-  };
-}
-
 function pushManifest({ manifest, bls, containers }) {
   const blNosConContenedor = new Set(containers.map(c => c.bl_no));
-  const { origport, discport } = calcularPuertos(manifest);
-  const manifestLimpio = { ...manifest, vessel_name: limpiarTextoLibre(manifest.vessel_name), origport, discport };
+  // calcularPuertosDbf vive en txtGenerator.js — única fuente para el TXT y
+  // el push, así nunca divergen (ver el jsdoc ahí para la distinción real
+  // entre descarga y destino en carga en tránsito).
+  const { origport, discport, destport } = calcularPuertosDbf(manifest);
+  const manifestLimpio = {
+    ...manifest, vessel_name: limpiarTextoLibre(manifest.vessel_name), origport, discport, destport,
+  };
   const blsLimpios = bls.map(bl => ({
     ...bl,
     bl_no: sanitizeIdentificador(bl.bl_no),
@@ -240,6 +225,57 @@ function consultarManifiesto(voyageNo) {
 }
 
 /**
+ * Volcado directo de una tabla real de SISCOMMATE (endpoint /muestra del
+ * bridge, ya existente — pensado para explorar tablas a mano). Se reutiliza
+ * aquí para traer TODO el catálogo de clientes (CUSTOMER) de una sola vez en
+ * vez de una búsqueda con "q" — no existe otro endpoint para un volcado
+ * masivo, y agregar uno nuevo al bridge hubiera significado recompilar y
+ * redesplegar el .exe para algo que /muestra ya resuelve.
+ * @param {string} tabla Nombre de la tabla real en SISCOMMATE (ej. "CUSTOMER")
+ * @param {number} [limite]
+ * @returns {Promise<object[]>}
+ */
+function obtenerMuestra(tabla, limite) {
+  return bridgeRequest('GET', `/muestra?tabla=${encodeURIComponent(tabla)}&limite=${limite || 10}`, null);
+}
+
+/**
+ * Crea un cliente nuevo directo en CUSTOMER.DBF de SISCOMMATE (no en el
+ * catálogo local — CUSTOMER es la fuente real). Verificado en vivo contra
+ * SISCOMMATE real antes de exponerse acá.
+ * @param {object} datos name, ss, code, type, taxid, add1-3, phone1-2, fax1-2, ivu
+ * @returns {Promise<any>}
+ */
+function crearClienteSiscommate(datos) {
+  return bridgeRequest('POST', '/cliente-crear', datos);
+}
+
+/**
+ * Actualiza un cliente existente en CUSTOMER.DBF, ubicado por su nombre
+ * ANTERIOR — necesario porque el nombre mismo se puede estar editando en el
+ * mismo guardado. filas_afectadas en la respuesta: 0 = no se encontró ese
+ * nombre (pudo cambiar mientras tanto), más de 1 = el nombre no era único —
+ * el caller debe avisar en vez de asumir que se aplicó a la fila correcta.
+ * @param {string} nombreOriginal
+ * @param {object} datos Mismos campos que crearClienteSiscommate
+ * @returns {Promise<{ok: true, filas_afectadas: number}>}
+ */
+function actualizarClienteSiscommate(nombreOriginal, datos) {
+  return bridgeRequest('POST', '/cliente-actualizar', { ...datos, nombre_original: nombreOriginal });
+}
+
+/**
+ * Elimina un cliente de CUSTOMER.DBF por nombre exacto. Igual que
+ * actualizarClienteSiscommate, filas_afectadas dice cuántas filas reales se
+ * tocaron (0 = no se encontró, más de 1 = el nombre no era único).
+ * @param {string} nombre
+ * @returns {Promise<{ok: true, filas_afectadas: number}>}
+ */
+function eliminarClienteSiscommate(nombre) {
+  return bridgeRequest('POST', '/cliente-eliminar', { name: nombre });
+}
+
+/**
  * Busca clientes reales de SISCOMMATE (tabla CUSTOMER) por nombre o SS/EIN,
  * para autocompletar el consignatario en el editor. Nunca lanza: si el
  * bridge no responde, se devuelve una lista vacía en vez de romper la
@@ -265,6 +301,7 @@ async function analizarItemClienteTodos() {
 module.exports = {
   getBridgeConfig, bridgeRequest,
   getBridgeStatus, getLote, pushManifest, consultarManifiesto, buscarClientesSiscommate,
-  analizarItemClienteTodos, limpiarTextoLibre, calcularPackageUnitCode, calcularPuertos,
+  analizarItemClienteTodos, limpiarTextoLibre, calcularPackageUnitCode,
+  obtenerMuestra, crearClienteSiscommate, actualizarClienteSiscommate, eliminarClienteSiscommate,
   BRIDGE_TIMEOUT_MS,
 };

@@ -167,6 +167,39 @@ class SiscommateBridge
                         string result2 = EliminarManifiesto(voyage2);
                         Send(resp, 200, "{\"ok\":true,\"msg\":\"" + EscJson(result2) + "\"}");
                     }
+                    // Crea un cliente nuevo directo en CUSTOMER.DBF — el catálogo local
+                    // `clients` es un caché, CUSTOMER es la fuente real (ver
+                    // services/clientSync.js). El nombre es la única clave que
+                    // resultó confiable en CUSTOMER (el SS/EIN no es único).
+                    else if (method == "POST" && path == "/cliente-crear")
+                    {
+                        string body3 = new StreamReader(req.InputStream, Encoding.UTF8).ReadToEnd();
+                        var data3 = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(body3);
+                        CrearClienteEnDBF(data3);
+                        Send(resp, 200, "{\"ok\":true}");
+                    }
+                    // Actualiza un cliente existente en CUSTOMER.DBF, ubicado por su
+                    // nombre ANTERIOR (nombre_original) — necesario porque el nombre
+                    // mismo se puede estar editando en este guardado, así que no sirve
+                    // como referencia después de aplicar el cambio.
+                    else if (method == "POST" && path == "/cliente-actualizar")
+                    {
+                        string body4 = new StreamReader(req.InputStream, Encoding.UTF8).ReadToEnd();
+                        var data4 = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(body4);
+                        int filas4 = ActualizarClienteEnDBF(data4);
+                        Send(resp, 200, "{\"ok\":true,\"filas_afectadas\":" + filas4 + "}");
+                    }
+                    // Uso puntual y manual: elimina un cliente de CUSTOMER.DBF por
+                    // nombre exacto — no lo llama ninguna ruta del backend Node hoy
+                    // (sin botón en la UI), es para poder limpiar pruebas o corregir un
+                    // alta hecha por error, igual que /eliminar existe para viajes.
+                    else if (method == "POST" && path == "/cliente-eliminar")
+                    {
+                        string body5 = new StreamReader(req.InputStream, Encoding.UTF8).ReadToEnd();
+                        var data5 = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(body5);
+                        int filas5 = EliminarClienteDeDBF(GetStr(data5, "name"));
+                        Send(resp, 200, "{\"ok\":true,\"filas_afectadas\":" + filas5 + "}");
+                    }
                     else if (method == "OPTIONS")
                     {
                         resp.Headers.Add("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -557,6 +590,93 @@ class SiscommateBridge
         }
     }
 
+    // ── CUSTOMER (catálogo de clientes) ─────────────────────────────────────────
+    // Todos los campos de CUSTOMER.DBF son texto (confirmado vía /esquema) —
+    // ninguno requiere conversión numérica/fecha como sí pasa en MANIFEST/BOL.
+    static void CrearClienteEnDBF(Dictionary<string, object> d)
+    {
+        string nombre = GetStr(d, "name");
+        if (string.IsNullOrWhiteSpace(nombre)) throw new Exception("Falta el nombre del cliente.");
+
+        using (var conn = new OleDbConnection(GetConnectionString()))
+        {
+            conn.Open();
+            using (var cmd = new OleDbCommand(
+                "INSERT INTO CUSTOMER (name,ss,code,type,taxid,add1,add2,add3,phone1,phone2,fax1,fax2,ivu)" +
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", conn))
+            {
+                cmd.Parameters.AddWithValue("name",   nombre);
+                cmd.Parameters.AddWithValue("ss",     GetStr(d, "ss"));
+                cmd.Parameters.AddWithValue("code",   GetStr(d, "code"));
+                cmd.Parameters.AddWithValue("type",   GetStr(d, "type"));
+                cmd.Parameters.AddWithValue("taxid",  GetStr(d, "taxid"));
+                cmd.Parameters.AddWithValue("add1",   GetStr(d, "add1"));
+                cmd.Parameters.AddWithValue("add2",   GetStr(d, "add2"));
+                cmd.Parameters.AddWithValue("add3",   GetStr(d, "add3"));
+                cmd.Parameters.AddWithValue("phone1", GetStr(d, "phone1"));
+                cmd.Parameters.AddWithValue("phone2", GetStr(d, "phone2"));
+                cmd.Parameters.AddWithValue("fax1",   GetStr(d, "fax1"));
+                cmd.Parameters.AddWithValue("fax2",   GetStr(d, "fax2"));
+                cmd.Parameters.AddWithValue("ivu",    GetStr(d, "ivu"));
+                cmd.ExecuteNonQuery();
+            }
+        }
+    }
+
+    // Ubica la fila por el nombre ANTERIOR (nombre_original) — el nombre nuevo
+    // puede ser parte del mismo cambio, así que no sirve para buscar la fila
+    // que se está actualizando. Devuelve cuántas filas se tocaron: 0 significa
+    // que no se encontró ese nombre en CUSTOMER (pudo cambiar mientras tanto),
+    // más de 1 significa que ese nombre no era único — quien llama debe avisar
+    // en vez de asumir que se aplicó a la fila correcta.
+    static int ActualizarClienteEnDBF(Dictionary<string, object> d)
+    {
+        string nombreOriginal = GetStr(d, "nombre_original");
+        string nombreNuevo    = GetStr(d, "name");
+        if (string.IsNullOrWhiteSpace(nombreOriginal)) throw new Exception("Falta el nombre original del cliente.");
+        if (string.IsNullOrWhiteSpace(nombreNuevo)) throw new Exception("Falta el nombre del cliente.");
+
+        using (var conn = new OleDbConnection(GetConnectionString()))
+        {
+            conn.Open();
+            using (var cmd = new OleDbCommand(
+                "UPDATE CUSTOMER SET name=?,ss=?,code=?,type=?,taxid=?,add1=?,add2=?,add3=?," +
+                "phone1=?,phone2=?,fax1=?,fax2=?,ivu=? WHERE name = ?", conn))
+            {
+                cmd.Parameters.AddWithValue("name",   nombreNuevo);
+                cmd.Parameters.AddWithValue("ss",     GetStr(d, "ss"));
+                cmd.Parameters.AddWithValue("code",   GetStr(d, "code"));
+                cmd.Parameters.AddWithValue("type",   GetStr(d, "type"));
+                cmd.Parameters.AddWithValue("taxid",  GetStr(d, "taxid"));
+                cmd.Parameters.AddWithValue("add1",   GetStr(d, "add1"));
+                cmd.Parameters.AddWithValue("add2",   GetStr(d, "add2"));
+                cmd.Parameters.AddWithValue("add3",   GetStr(d, "add3"));
+                cmd.Parameters.AddWithValue("phone1", GetStr(d, "phone1"));
+                cmd.Parameters.AddWithValue("phone2", GetStr(d, "phone2"));
+                cmd.Parameters.AddWithValue("fax1",   GetStr(d, "fax1"));
+                cmd.Parameters.AddWithValue("fax2",   GetStr(d, "fax2"));
+                cmd.Parameters.AddWithValue("ivu",    GetStr(d, "ivu"));
+                cmd.Parameters.AddWithValue("nombreOriginal", nombreOriginal);
+                return cmd.ExecuteNonQuery();
+            }
+        }
+    }
+
+    // Uso puntual y manual (ver comentario en el router) — sin botón en la UI.
+    static int EliminarClienteDeDBF(string nombre)
+    {
+        if (string.IsNullOrWhiteSpace(nombre)) throw new Exception("Falta el nombre del cliente.");
+        using (var conn = new OleDbConnection(GetConnectionString()))
+        {
+            conn.Open();
+            using (var cmd = new OleDbCommand("DELETE FROM CUSTOMER WHERE name = ?", conn))
+            {
+                cmd.Parameters.AddWithValue("name", nombre);
+                return cmd.ExecuteNonQuery();
+            }
+        }
+    }
+
     // ── Lote ──────────────────────────────────────────────────────────────────
     static int ObtenerUltimoLote()
     {
@@ -634,17 +754,19 @@ class SiscommateBridge
             string carrierCode = GetStr(mDict, "carrier_code");
             if (string.IsNullOrEmpty(carrierCode)) carrierCode = "MXS";
 
-            // Puertos de origen y descarga/destino, YA traducidos al código de
-            // 3 letras de SISCOMMATE por Node (pushManifest -> calcularPuertos,
-            // misma toSiscommatePort() que usa el TXT local con ~30 puertos
-            // mapeados y respaldo en la tabla port_mappings). Antes esto se
-            // recalculaba aquí a mano: origport quedaba SIEMPRE fijo en "DRP"
-            // (nunca miraba loading_port) y discport/destport solo traducían
-            // 2 casos (SJU, MGE), mandando cualquier otro puerto sin traducir.
+            // Puertos de origen, descarga y destino, YA traducidos al código de
+            // 3 letras de SISCOMMATE por Node (pushManifest -> calcularPuertosDbf
+            // en txtGenerator.js, misma toSiscommatePort() que usa el TXT local).
+            // Descarga y destino NO son lo mismo para carga en tránsito (ej. el
+            // barco descarga en San Juan pero la carga sigue camino a
+            // Jacksonville por camión) — antes discport/destport siempre
+            // llegaban con el mismo valor, perdiendo esa distinción.
             string origPort = GetStr(mDict, "origport");
             if (string.IsNullOrEmpty(origPort)) origPort = "DRP";
-            string unloadingPort = GetStr(mDict, "discport");
-            if (string.IsNullOrEmpty(unloadingPort)) unloadingPort = "XSJ";
+            string discPort = GetStr(mDict, "discport");
+            if (string.IsNullOrEmpty(discPort)) discPort = "XSJ";
+            string destPort = GetStr(mDict, "destport");
+            if (string.IsNullOrEmpty(destPort)) destPort = discPort;
 
             // ── MANIFEST ─────────────────────────────────────────────────────
             // Solo se inserta la primera vez — un reenvío incremental agrega
@@ -680,8 +802,8 @@ class SiscommateBridge
                 cmd.Parameters.AddWithValue("master5",  "");
                 cmd.Parameters.AddWithValue("tind",     "");
                 cmd.Parameters.AddWithValue("origport", origPort);
-                cmd.Parameters.AddWithValue("discport", unloadingPort);
-                cmd.Parameters.AddWithValue("destport", unloadingPort);
+                cmd.Parameters.AddWithValue("discport", discPort);
+                cmd.Parameters.AddWithValue("destport", destPort);
                 cmd.Parameters.AddWithValue("lotnum",   lotenum.ToString());
                 AddDate(cmd, "lotdate",  DateTime.Now);
                 cmd.Parameters.AddWithValue("lottype",  "N");
@@ -715,8 +837,6 @@ class SiscommateBridge
                     chkBol.Parameters.AddWithValue("bolno", blNo);
                     if (Convert.ToInt32(chkBol.ExecuteScalar()) > 0) continue;
                 }
-
-                string blDiscPort = unloadingPort;
 
                 using (var cmd = new OleDbCommand(
                     "INSERT INTO BOL " +
@@ -754,8 +874,8 @@ class SiscommateBridge
                     AddNumeric(cmd, "rate",   0m);
                     cmd.Parameters.AddWithValue("relno",    "");
                     cmd.Parameters.AddWithValue("declno",   "");
-                    cmd.Parameters.AddWithValue("discport", blDiscPort);
-                    cmd.Parameters.AddWithValue("destport", blDiscPort);
+                    cmd.Parameters.AddWithValue("discport", discPort);
+                    cmd.Parameters.AddWithValue("destport", destPort);
                     cmd.Parameters.AddWithValue("coriport", "");
                     cmd.Parameters.AddWithValue("cdesport", "");
                     cmd.Parameters.AddWithValue("comvali",  "");

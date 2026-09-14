@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import { api, type ContainerType, type EnvioSiscommate } from '../admin/api';
+import { api, type ContainerType, type EnvioSiscommate, type Cliente } from '../admin/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -14,7 +14,21 @@ import {
 import {
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell, TableFooter,
 } from '@/components/ui/table';
-import { Trash2 } from '@lucide/vue';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { Trash2, Search, RefreshCw, Plus } from '@lucide/vue';
+import ClientesTable from './ClientesTable.vue';
+
+// Recordar la pestaña activa entre recargas — conveniencia por navegador,
+// no dato que valga la pena guardar en el servidor.
+function pestanaGuardada(): string {
+  try { return localStorage.getItem('admin_pestana') || 'config'; } catch { return 'config'; }
+}
+const pestanaAdmin = ref(pestanaGuardada());
+function cambiarPestanaAdmin(v: string) {
+  pestanaAdmin.value = v;
+  try { localStorage.setItem('admin_pestana', v); } catch { /* privado/bloqueado: no pasa nada */ }
+}
 
 const FALLBACK_TAMANOS = ['20', '40', '40HC', '45', '48', '53', 'RORO'];
 
@@ -168,7 +182,125 @@ async function correrAnalisisLocal() {
   } finally { corriendoLocal.value = false; }
 }
 
-onMounted(() => { cargarSettings(); cargarTipos(); cargarTamanos(); checkBridge(); cargarHistorial(); });
+// ── Catálogo de clientes (caché local de CUSTOMER.DBF de SISCOMMATE) ──
+const totalClientes = ref<number | null>(null);
+const busquedaCliente = ref('');
+const clientesFiltrados = ref<Cliente[]>([]);
+const buscandoClientes = ref(false);
+const sincronizandoClientes = ref(false);
+const resultadoSincronizacion = ref<{ creados: number; actualizados: number; sin_cambios: number; total_siscommate: number } | null>(null);
+let temporizadorBusqueda: ReturnType<typeof setTimeout> | undefined;
+
+async function cargarTotalClientes() {
+  try { totalClientes.value = (await api.contarClientes()).total; }
+  catch { totalClientes.value = null; }
+}
+
+async function buscarClientesAdmin() {
+  buscandoClientes.value = true;
+  try { clientesFiltrados.value = await api.buscarClientes(busquedaCliente.value, 100); }
+  catch { clientesFiltrados.value = []; }
+  finally { buscandoClientes.value = false; }
+}
+
+function alBuscarCliente() {
+  clearTimeout(temporizadorBusqueda);
+  temporizadorBusqueda = setTimeout(buscarClientesAdmin, 250);
+}
+
+async function sincronizarClientes() {
+  sincronizandoClientes.value = true;
+  resultadoSincronizacion.value = null;
+  try {
+    const r = await api.sincronizarClientesSiscommate();
+    resultadoSincronizacion.value = r;
+    toast(`Catálogo actualizado: ${r.creados} nuevos, ${r.actualizados} actualizados`);
+    await cargarTotalClientes();
+    await buscarClientesAdmin();
+  } catch (e) {
+    let msg = 'Error al sincronizar';
+    try { msg = JSON.parse((e as Error).message).error || msg; } catch { /* texto plano */ }
+    toast(msg, 'err');
+  } finally { sincronizandoClientes.value = false; }
+}
+
+// ── Crear / editar un cliente — escribe local Y en CUSTOMER.DBF real ──
+// (best-effort: si el bridge falla, el guardado local no se pierde, pero se
+// avisa claramente que no llegó a SISCOMMATE — ver routes/catalogs.js).
+type FormCliente = { id: number | null } & Omit<Cliente, 'id'>;
+const CLIENTE_VACIO = (): FormCliente => ({
+  id: null, name: '', ss: '', code: '', type: '', taxid: '',
+  add1: '', add2: '', add3: '', phone1: '', phone2: '', fax1: '', fax2: '', ivu: '',
+});
+const clienteForm = ref<FormCliente | null>(null);
+const guardandoCliente = ref(false);
+
+function abrirNuevoCliente() { clienteForm.value = CLIENTE_VACIO(); }
+function abrirEditarCliente(c: Cliente) { clienteForm.value = { ...c }; }
+
+async function guardarCliente() {
+  const f = clienteForm.value;
+  if (!f || !f.name.trim()) { toast('El nombre es requerido', 'err'); return; }
+  guardandoCliente.value = true;
+  try {
+    const r = f.id !== null ? await api.actualizarCliente(f.id, f) : await api.crearCliente(f);
+    if (r.siscommate.ok) {
+      toast(`Guardado — reflejado en SISCOMMATE`);
+    } else {
+      toast(`Guardado local, pero no en SISCOMMATE: ${r.siscommate.error}`, 'err');
+    }
+    clienteForm.value = null;
+    await cargarTotalClientes();
+    await buscarClientesAdmin();
+  } catch (e) {
+    let msg = 'Error al guardar';
+    try { msg = JSON.parse((e as Error).message).error || msg; } catch { /* texto plano */ }
+    toast(msg, 'err');
+  } finally { guardandoCliente.value = false; }
+}
+
+// ── Eliminar cliente(s) — local Y en CUSTOMER.DBF real ──
+// Irreversible: confirmación con window.confirm, mismo patrón que ya usa
+// "Eliminar" en Tipos de contenedor más arriba en este archivo.
+async function eliminarUnCliente(id: number, nombre: string) {
+  try {
+    const r = await api.eliminarCliente(id);
+    toast(r.siscommate.ok ? 'Eliminado — también en SISCOMMATE' : `Eliminado local, pero no en SISCOMMATE: ${r.siscommate.error}`, r.siscommate.ok ? 'ok' : 'err');
+  } catch (e) {
+    let msg = 'Error al eliminar';
+    try { msg = JSON.parse((e as Error).message).error || msg; } catch { /* texto plano */ }
+    toast(`No se pudo eliminar "${nombre}": ${msg}`, 'err');
+  }
+}
+
+const confirmarEliminarCliente = ref<{ mensaje: string; accion: () => void } | null>(null);
+
+function pedirEliminarCliente(c: Cliente) {
+  confirmarEliminarCliente.value = {
+    mensaje: `¿Eliminar "${c.name}" del catálogo local Y de SISCOMMATE? Esta acción no se puede deshacer.`,
+    accion: () => {
+      confirmarEliminarCliente.value = null;
+      eliminarUnCliente(c.id, c.name).then(() => { cargarTotalClientes(); buscarClientesAdmin(); });
+    },
+  };
+}
+
+function pedirEliminarClientes(clientes: Cliente[]) {
+  confirmarEliminarCliente.value = {
+    mensaje: `¿Eliminar ${clientes.length} clientes seleccionados del catálogo local Y de SISCOMMATE? Esta acción no se puede deshacer.`,
+    accion: async () => {
+      confirmarEliminarCliente.value = null;
+      for (const c of clientes) await eliminarUnCliente(c.id, c.name);
+      await cargarTotalClientes();
+      await buscarClientesAdmin();
+    },
+  };
+}
+
+onMounted(() => {
+  cargarSettings(); cargarTipos(); cargarTamanos(); checkBridge(); cargarHistorial();
+  cargarTotalClientes(); buscarClientesAdmin();
+});
 </script>
 
 <template>
@@ -182,12 +314,25 @@ onMounted(() => { cargarSettings(); cargarTipos(); cargarTamanos(); checkBridge(
       </Button>
     </header>
 
-    <main class="mx-auto max-w-4xl px-6 py-8">
+    <!-- Configuración se queda angosta (son formularios cortos, se leen mejor
+         así) — Clientes necesita todo el ancho posible: son hasta 13 columnas
+         reales de CUSTOMER.DBF y una tabla angosta las hace ilegibles. -->
+    <main class="mx-auto px-6 py-8" :class="pestanaAdmin === 'clientes' ? 'max-w-none' : 'max-w-4xl'">
       <h1 class="text-2xl font-semibold text-ink">Administración</h1>
       <p class="mt-1 text-sm text-ink-muted">
-        Configuración del sistema, mapeo de contenedores y conexión con SISCOMMATE
+        Configuración del sistema, mapeo de contenedores, conexión con SISCOMMATE y catálogo de clientes
       </p>
 
+      <Tabs :model-value="pestanaAdmin" class="mt-6" @update:model-value="(v) => cambiarPestanaAdmin(String(v))">
+        <TabsList>
+          <TabsTrigger value="config">Configuración</TabsTrigger>
+          <TabsTrigger value="clientes">
+            Clientes
+            <Badge v-if="totalClientes !== null" class="ml-1.5 bg-accent-soft text-accent">{{ totalClientes }}</Badge>
+          </TabsTrigger>
+        </TabsList>
+
+      <TabsContent value="config">
       <!-- ── Bridge SISCOMMATE ── -->
       <Card class="mt-6">
         <CardHeader>
@@ -410,7 +555,138 @@ onMounted(() => { cargarSettings(); cargarTipos(); cargarTamanos(); checkBridge(
           </div>
         </CardContent>
       </Card>
+      </TabsContent>
+
+      <TabsContent value="clientes">
+        <Card>
+          <CardHeader>
+            <div class="flex items-center gap-2">
+              <CardTitle>Catálogo de clientes</CardTitle>
+              <Badge v-if="totalClientes !== null" class="bg-accent-soft text-accent">{{ totalClientes }} en total</Badge>
+            </div>
+            <CardDescription>
+              Caché local de la tabla CUSTOMER de SISCOMMATE — se usa para autocompletar
+              consignatario/consignador y para avisar cuando un nombre nuevo se parece
+              mucho a uno ya conocido (posible error de digitación). Ella corrige en
+              SISCOMMATE, no acá — este botón trae esos cambios.
+            </CardDescription>
+          </CardHeader>
+          <CardContent class="flex flex-col gap-3.5">
+            <div class="flex items-center gap-3">
+              <Button :disabled="sincronizandoClientes" @click="sincronizarClientes">
+                <RefreshCw class="size-3.5" :class="sincronizandoClientes && 'animate-spin'" />
+                {{ sincronizandoClientes ? 'Sincronizando…' : 'Actualizar desde SISCOMMATE' }}
+              </Button>
+              <Button variant="outline" @click="abrirNuevoCliente"><Plus class="size-3.5" />Nuevo cliente</Button>
+              <p v-if="resultadoSincronizacion" class="text-xs text-status-validated">
+                {{ resultadoSincronizacion.creados }} nuevos ·
+                {{ resultadoSincronizacion.actualizados }} actualizados ·
+                {{ resultadoSincronizacion.sin_cambios }} sin cambios
+                (de {{ resultadoSincronizacion.total_siscommate }} en SISCOMMATE)
+              </p>
+            </div>
+
+            <div class="flex items-center gap-2 border-t border-border pt-3.5">
+              <Search class="size-3.5 shrink-0 text-ink-faint" />
+              <Input
+                v-model="busquedaCliente" placeholder="Buscar por nombre, SS/EIN o IVU..."
+                class="h-8 max-w-sm text-sm" @input="alBuscarCliente"
+              />
+              <span v-if="buscandoClientes" class="text-xs text-ink-faint">Buscando…</span>
+              <span v-else class="text-xs text-ink-faint">{{ clientesFiltrados.length }} resultados</span>
+            </div>
+
+            <ClientesTable
+              :clientes="clientesFiltrados" @editar="abrirEditarCliente"
+              @eliminar-uno="pedirEliminarCliente" @eliminar-varios="pedirEliminarClientes"
+            />
+            <p class="text-xs text-ink-faint">
+              Muestra hasta 100 resultados a la vez — refiná la búsqueda si no encontrás lo que buscás.
+            </p>
+          </CardContent>
+        </Card>
+      </TabsContent>
+      </Tabs>
     </main>
+
+    <Dialog :open="!!clienteForm" @update:open="(v) => !v && (clienteForm = null)">
+      <DialogContent v-if="clienteForm" class="sm:max-w-xl">
+        <DialogHeader>
+          <DialogTitle>{{ clienteForm.id !== null ? 'Editar cliente' : 'Nuevo cliente' }}</DialogTitle>
+        </DialogHeader>
+        <p class="-mt-2 text-xs text-ink-faint">
+          Se guarda acá Y en CUSTOMER.DBF de SISCOMMATE — si el bridge no responde, el
+          cambio local no se pierde, pero queda pendiente de reflejarse allá.
+        </p>
+        <div class="grid grid-cols-12 gap-x-3 gap-y-2.5">
+          <div class="col-span-12 flex flex-col gap-1">
+            <Label class="text-xs">Nombre / Razón social *</Label>
+            <Input v-model="clienteForm.name" class="h-9 text-xs" />
+          </div>
+          <div class="col-span-6 md:col-span-4 flex flex-col gap-1">
+            <Label class="text-xs">SS / EIN</Label>
+            <Input v-model="clienteForm.ss" class="h-9 font-mono text-xs" />
+          </div>
+          <div class="col-span-6 md:col-span-4 flex flex-col gap-1">
+            <Label class="text-xs">Tax ID</Label>
+            <Input v-model="clienteForm.taxid" class="h-9 font-mono text-xs" />
+          </div>
+          <div class="col-span-6 md:col-span-2 flex flex-col gap-1">
+            <Label class="text-xs">Código</Label>
+            <Input v-model="clienteForm.code" class="h-9 font-mono text-xs" />
+          </div>
+          <div class="col-span-6 md:col-span-2 flex flex-col gap-1">
+            <Label class="text-xs">Tipo</Label>
+            <Input v-model="clienteForm.type" class="h-9 text-xs" />
+          </div>
+          <div class="col-span-12 flex flex-col gap-1">
+            <Label class="text-xs">Dirección 1</Label>
+            <Input v-model="clienteForm.add1" class="h-9 text-xs" />
+          </div>
+          <div class="col-span-12 md:col-span-6 flex flex-col gap-1">
+            <Label class="text-xs">Dirección 2</Label>
+            <Input v-model="clienteForm.add2" class="h-9 text-xs" />
+          </div>
+          <div class="col-span-12 md:col-span-6 flex flex-col gap-1">
+            <Label class="text-xs">Dirección 3</Label>
+            <Input v-model="clienteForm.add3" class="h-9 text-xs" />
+          </div>
+          <div class="col-span-6 flex flex-col gap-1">
+            <Label class="text-xs">Teléfono</Label>
+            <Input v-model="clienteForm.phone1" class="h-9 font-mono text-xs" />
+          </div>
+          <div class="col-span-6 flex flex-col gap-1">
+            <Label class="text-xs">Teléfono 2</Label>
+            <Input v-model="clienteForm.phone2" class="h-9 font-mono text-xs" />
+          </div>
+          <div class="col-span-6 flex flex-col gap-1">
+            <Label class="text-xs">Fax</Label>
+            <Input v-model="clienteForm.fax1" class="h-9 font-mono text-xs" />
+          </div>
+          <div class="col-span-6 flex flex-col gap-1">
+            <Label class="text-xs">IVU</Label>
+            <Input v-model="clienteForm.ivu" class="h-9 font-mono text-xs" />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" @click="clienteForm = null">Cancelar</Button>
+          <Button :disabled="guardandoCliente || !clienteForm.name.trim()" @click="guardarCliente">
+            {{ guardandoCliente ? 'Guardando…' : 'Guardar' }}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog :open="!!confirmarEliminarCliente" @update:open="(v) => !v && (confirmarEliminarCliente = null)">
+      <DialogContent v-if="confirmarEliminarCliente">
+        <DialogHeader><DialogTitle>Eliminar cliente</DialogTitle></DialogHeader>
+        <p class="text-sm text-ink-muted">{{ confirmarEliminarCliente.mensaje }}</p>
+        <DialogFooter>
+          <Button variant="outline" @click="confirmarEliminarCliente = null">Cancelar</Button>
+          <Button variant="destructive" @click="confirmarEliminarCliente.accion">Eliminar</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
 
     <div v-if="toastMsg" class="fixed bottom-5 right-5 rounded-md px-4 py-2.5 text-sm shadow-lg" :class="toastTipo === 'ok' ? 'bg-ink text-status-validated-soft' : 'bg-danger text-white'">
       {{ toastTipo === 'ok' ? '✓ ' : '⚠ ' }}{{ toastMsg }}
