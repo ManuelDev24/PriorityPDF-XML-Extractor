@@ -15,6 +15,7 @@ const { parseXmlManifest } = require('../services/xmlParser');
 const { parsePdfManifest } = require('../services/pdfParser');
 const { toSiscommatePort, generateFullTxt } = require('../services/txtGenerator');
 const { validateForSubmission } = require('../services/blValidation');
+const { recalcularEstadoManifiesto } = require('./bl');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -110,9 +111,18 @@ router.post('/api/manifests/upload', upload.single('xml'), async (req, res) => {
     // actualizado con B/L nuevos) no debe crear un manifiesto duplicado ni
     // tocar los B/L que ya se trabajaron: se suman solo los B/L realmente
     // nuevos. Un B/L que ya existe en OTRO viaje (porque el usuario lo movió
-    // ahí con "mover B/L") tampoco se reimporta — se deja donde está.
+    // ahí con "mover B/L") tampoco se reimporta — se deja donde está, salvo
+    // que el operador haya pedido moverlo también (mover_ids más abajo).
     const { manifestId: manifestIdExistente, nuevos: nuevosBlNoArr } = clasificarBLs(parsed.header.voyage_no, parsed.bls);
     const nuevosBlNo = new Set(nuevosBlNoArr);
+
+    // Posición de cada B/L en el documento ORIGINAL (antes de filtrar) — se
+    // usa como sort_seq tanto para los que se insertan de cero como para los
+    // que se mueven desde otro viaje, así ambos quedan en su lugar real
+    // dentro de la lista sin importar cuál de los dos caminos siguieron.
+    const origIndex = new Map();
+    parsed.bls.forEach((bl, i) => { if (!origIndex.has(bl.bl_no)) origIndex.set(bl.bl_no, i); });
+
     parsed.bls = parsed.bls.filter(bl => nuevosBlNo.has(bl.bl_no));
 
     let manifestId;
@@ -185,8 +195,8 @@ router.post('/api/manifests/upload', upload.single('xml'), async (req, res) => {
          consignee_street,consignee_city,consignee_zip,
          notify_name,notify_code,notify_document_type,notify_document_no,
          notify_country_code,notify_tel,notify_email,notify_street,notify_city,notify_zip,
-         hacienda_container_no,hacienda_client_ss,hacienda_client_ivu)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         hacienda_container_no,hacienda_client_ss,hacienda_client_ivu,sort_seq)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
     db.transaction(bls => bls.forEach(bl => insBL.run(
       manifestId, bl.bl_no, bl.bl_type, bl.transit_type, bl.unloading_port_code,
@@ -200,8 +210,48 @@ router.post('/api/manifests/upload', upload.single('xml'), async (req, res) => {
       bl.notify_name, bl.notify_code, bl.notify_document_type, bl.notify_document_no,
       bl.notify_country_code, bl.notify_tel, bl.notify_email, bl.notify_street,
       bl.notify_city, bl.notify_zip,
-      bl.hacienda_container_no || '', bl.hacienda_client_ss || '', bl.hacienda_client_ivu || ''
+      bl.hacienda_container_no || '', bl.hacienda_client_ss || '', bl.hacienda_client_ivu || '',
+      origIndex.get(bl.bl_no) ?? null
     )))(parsed.bls);
+
+    // ── Mover en el mismo paso los B/L que ya estaban en OTRO viaje ──────────
+    // El operador puede pedir esto desde el modal "Confirmar carga" cuando el
+    // PDF trae B/L que el sistema ya tenía en otro viaje. Se hace AQUÍ, en la
+    // misma carga, y no como una llamada aparte después — así el sort_seq
+    // (posición real dentro de ESTE documento) queda igual de bien calculado
+    // que el de los B/L insertados de cero, en vez de conservar el id viejo
+    // de cuando se insertaron por primera vez (eso los mandaba siempre al
+    // principio de la lista sin importar dónde aparecieran en el PDF).
+    const moverIdsRaw = (() => { try { return JSON.parse(req.body?.mover_ids || '[]'); } catch { return []; } })();
+    const moverIds = Array.isArray(moverIdsRaw) ? moverIdsRaw.map(Number).filter(Number.isInteger) : [];
+    const movidos = [];
+    const omitidos = [];
+    if (moverIds.length) {
+      const moverUno = db.transaction((bl, seq) => {
+        const origenId = bl.manifest_id;
+        db.prepare('UPDATE bills_of_lading SET manifest_id=?, sort_seq=? WHERE id=?').run(manifestId, seq, bl.id);
+        db.prepare('UPDATE container_bl SET manifest_id=? WHERE bl_no=? AND manifest_id=?')
+          .run(manifestId, bl.bl_no, origenId);
+        db.prepare(`
+          UPDATE containers SET manifest_id=?
+          WHERE manifest_id=?
+            AND container_no IN (SELECT container_no FROM container_bl WHERE bl_no=? AND manifest_id=?)
+            AND container_no NOT IN (SELECT container_no FROM container_bl WHERE manifest_id=?)
+        `).run(manifestId, origenId, bl.bl_no, manifestId, origenId);
+        db.prepare('UPDATE bl_cargo_items SET manifest_id=? WHERE bl_id=?').run(manifestId, bl.id);
+      });
+      moverIds.forEach(id => {
+        const bl = db.prepare('SELECT * FROM bills_of_lading WHERE id=?').get(id);
+        if (!bl) { omitidos.push({ id, motivo: 'No encontrado' }); return; }
+        if (bl.manifest_id === manifestId) { omitidos.push({ id, bl_no: bl.bl_no, motivo: 'Ya está en este viaje' }); return; }
+        if (db.prepare('SELECT 1 FROM bills_of_lading WHERE manifest_id=? AND bl_no=?').get(manifestId, bl.bl_no)) {
+          omitidos.push({ id, bl_no: bl.bl_no, motivo: `Ya existe un B/L "${bl.bl_no}" en este viaje` });
+          return;
+        }
+        moverUno(bl, origIndex.get(bl.bl_no) ?? null);
+        movidos.push({ id: bl.id, bl_no: bl.bl_no });
+      });
+    }
 
     // Items de carga individuales (soporta multi-ítem y vehículos)
     if (parsed.cargoItems && parsed.cargoItems.length) {
@@ -257,7 +307,11 @@ router.post('/api/manifests/upload', upload.single('xml'), async (req, res) => {
       parsed.containerBLs.forEach(cb => insCBL.run(cb.container_no, cb.bl_no, manifestId));
     }
 
-    res.json({ ok: true, manifest_id: manifestId, bl_count: parsed.bls.length, merged: !!manifestIdExistente });
+    if (movidos.length) recalcularEstadoManifiesto(manifestId);
+    res.json({
+      ok: true, manifest_id: manifestId, bl_count: parsed.bls.length, merged: !!manifestIdExistente,
+      movidos, omitidos,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
@@ -280,13 +334,17 @@ router.get('/api/manifests/:id', (req, res) => {
   if (!manifest) return res.status(404).json({ error: 'No encontrado' });
   res.json({
     manifest,
-    // Mismo orden en que aparecen en el PDF, uno detrás de otro — se ordena
-    // por id (orden real de inserción, que sigue el orden de extracción del
-    // PDF/XML) y no por bl_no ni por status. Pedido explícito: no priorizar
-    // los validados arriba, respetar la posición original del documento.
+    // Mismo orden en que aparecen en el PDF, uno detrás de otro — no por
+    // bl_no ni por status (pedido explícito: no priorizar los validados
+    // arriba, respetar la posición original del documento). sort_seq guarda
+    // esa posición real y se asigna tanto al insertar un B/L nuevo como al
+    // mover uno desde otro viaje (ver /api/manifests/upload) — con id solo,
+    // un B/L movido conservaba su id viejo y saltaba al principio de la
+    // lista en vez de quedar en su lugar real. COALESCE cubre filas de
+    // antes de que existiera esta columna (quedan en su orden de siempre).
     bls:          db.prepare(`
       SELECT * FROM bills_of_lading WHERE manifest_id=?
-      ORDER BY id
+      ORDER BY COALESCE(sort_seq, id)
     `).all(req.params.id),
     containers:   db.prepare('SELECT * FROM containers WHERE manifest_id=?').all(req.params.id),
     container_bl: db.prepare('SELECT * FROM container_bl WHERE manifest_id=?').all(req.params.id),

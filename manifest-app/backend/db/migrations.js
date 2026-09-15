@@ -202,6 +202,16 @@ function runMigrations({
   // que existen — no hay nada más que sincronizar). Ver services/clientSync.js.
   addColumnIfMissing('clients', 'fax1', 'TEXT');
   addColumnIfMissing('clients', 'fax2', 'TEXT');
+
+  // Posición real del B/L dentro del PDF/XML original — antes se ordenaba
+  // por "id" (orden de inserción), que coincide con el orden del documento
+  // SOLO para un B/L insertado por primera vez. Un B/L movido a este viaje
+  // desde otro (feature "mover B/L") conserva su id viejo (de cuando se
+  // insertó la primera vez, normalmente mucho más bajo) y por eso saltaba
+  // al principio de la lista en vez de quedar en su posición real entre los
+  // demás. NULL en filas viejas — ORDER BY hace COALESCE(sort_seq, id) para
+  // no romper el orden ya existente de datos previos a esta columna.
+  addColumnIfMissing('bills_of_lading', 'sort_seq', 'INTEGER');
 }
 
 module.exports = { runMigrations, addColumnIfMissing };

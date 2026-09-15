@@ -297,6 +297,48 @@ router.put('/api/containers/:id', (req, res) => {
   res.json({ ok: true, container_no: nuevoNo });
 });
 
+// Quita un contenedor de la lista "Contenedores asociados" de UN B/L — para
+// cuando el mismo número quedó repetido ahí (ej. el PDF lo trajo duplicado
+// para el mismo B/L). Solo borra UNA fila de container_bl (por rowid, no hay
+// PK) así que un duplicado se quita a la vez sin tocar el resto.
+router.delete('/api/bl/:id/containers', (req, res) => {
+  const bl = db.prepare('SELECT * FROM bills_of_lading WHERE id=?').get(req.params.id);
+  if (!bl) return res.status(404).json({ error: 'B/L no encontrado' });
+
+  const containerNo = String(req.body?.container_no || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (!containerNo) return res.status(400).json({ error: 'Falta el número de contenedor' });
+
+  const eliminar = db.transaction(() => {
+    db.prepare(`
+      DELETE FROM container_bl WHERE rowid = (
+        SELECT rowid FROM container_bl WHERE container_no=? AND bl_no=? AND manifest_id=? LIMIT 1
+      )
+    `).run(containerNo, bl.bl_no, bl.manifest_id);
+
+    // Si ningún B/L de este manifiesto usa ya ese contenedor, también se
+    // borra de la tabla containers — si no, queda huérfano para siempre.
+    const vinculosEnManifiesto = db.prepare(
+      'SELECT COUNT(*) c FROM container_bl WHERE container_no=? AND manifest_id=?'
+    ).get(containerNo, bl.manifest_id).c;
+    if (vinculosEnManifiesto === 0) {
+      db.prepare('DELETE FROM containers WHERE container_no=? AND manifest_id=?').run(containerNo, bl.manifest_id);
+    }
+
+    // Si ya no queda ningún vínculo de ESTE B/L con ese contenedor (se quitó
+    // el único, o el último duplicado) y era el que usaba para Hacienda, se
+    // limpia — si no, el TXT seguiría mandando un contenedor que ya no
+    // aparece en "Contenedores asociados".
+    const quedaEnEsteBL = db.prepare(
+      'SELECT COUNT(*) c FROM container_bl WHERE container_no=? AND bl_no=? AND manifest_id=?'
+    ).get(containerNo, bl.bl_no, bl.manifest_id).c;
+    if (quedaEnEsteBL === 0 && bl.hacienda_container_no === containerNo) {
+      db.prepare(`UPDATE bills_of_lading SET hacienda_container_no='' WHERE id=?`).run(bl.id);
+    }
+  });
+  eliminar();
+  res.json({ ok: true });
+});
+
 // ── CARGO ITEMS POR B/L ──────────────────────────────────────────────────────
 router.get('/api/bl/:id/cargo-items', (req, res) => {
   res.json(db.prepare(`SELECT * FROM bl_cargo_items WHERE bl_id=? ORDER BY seq,id`).all(req.params.id));
@@ -344,3 +386,4 @@ router.delete('/api/bl-cargo-items/:id', (req, res) => {
 });
 
 module.exports = router;
+module.exports.recalcularEstadoManifiesto = recalcularEstadoManifiesto;

@@ -153,6 +153,14 @@ async function subir(archivo: File | undefined) {
 
     const ejecutarCarga = async () => {
       const moverEstos = moverEnOtroViaje.value ? (modal.value?.enOtroViaje ?? []) : [];
+      // El mover va en la MISMA petición de carga (mover_ids), no en una
+      // llamada aparte después — así el backend calcula su posición real
+      // dentro de este documento (sort_seq) igual que a los B/L insertados
+      // de cero. Antes, moverlos con una llamada separada conservaba su id
+      // viejo (de cuando se insertaron por primera vez, casi siempre mucho
+      // más bajo) y por eso siempre saltaban al principio de la lista en
+      // vez de quedar en su posición real del PDF.
+      if (moverEstos.length) fd.set('mover_ids', JSON.stringify(moverEstos.map(m => m.id)));
       cerrarModal();
       setEstado('Cargando manifiesto...');
       try {
@@ -160,17 +168,8 @@ async function subir(archivo: File | undefined) {
         const data = await r.json();
         if (!data.ok) throw new Error(data.error);
         let mensaje = data.mensaje || `Manifiesto cargado: ${data.bl_count} B/L`;
-        // Los B/L que ya estaban en otro viaje no los toca /upload (a
-        // propósito: nunca reimporta uno que el usuario ya movió) — si el
-        // operador pidió moverlos, es un segundo paso separado con el
-        // mismo mover-lote que ya usa el sidebar.
-        if (moverEstos.length) {
-          try {
-            const rMover = await api.moverBLLote(moverEstos.map(m => m.id), data.manifest_id);
-            if (rMover.movidos.length) mensaje += ` · ${rMover.movidos.length} B/L movidos aquí desde su viaje anterior`;
-            if (rMover.omitidos.length) mensaje += ` · ${rMover.omitidos.length} no se pudieron mover: ${rMover.omitidos.map(o => o.motivo).join('; ')}`;
-          } catch (e) { toast('El manifiesto se cargó, pero no se pudieron mover los B/L de otro viaje: ' + (e as Error).message, 'err'); }
-        }
+        if (data.movidos?.length) mensaje += ` · ${data.movidos.length} B/L movidos aquí desde su viaje anterior`;
+        if (data.omitidos?.length) mensaje += ` · ${data.omitidos.length} no se pudieron mover: ${data.omitidos.map((o: { motivo: string }) => o.motivo).join('; ')}`;
         toast(mensaje);
         await cargarManifiestos();
         await seleccionarManifiesto(data.manifest_id);

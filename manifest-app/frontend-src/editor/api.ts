@@ -234,6 +234,8 @@ export const api = {
     pedir<{ ok: true }>(`/api/containers/${id}`, cuerpo('PUT', { size })),
   actualizarContenedor: (id: number, campos: { size?: string; container_no?: string }) =>
     pedir<{ ok: true; container_no: string }>(`/api/containers/${id}`, cuerpo('PUT', campos)),
+  eliminarContenedorDeBL: (blId: number, containerNo: string) =>
+    pedir<{ ok: true }>(`/api/bl/${blId}/containers`, cuerpo('DELETE', { container_no: containerNo })),
 
   // Items de carga
   listarItems: (blId: number) => pedir<ItemCarga[]>(`/api/bl/${blId}/cargo-items`),

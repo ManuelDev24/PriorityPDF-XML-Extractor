@@ -20,7 +20,7 @@ import { Combobox, ComboboxAnchor, ComboboxInput, ComboboxList, ComboboxEmpty, C
 import CargoItems from './CargoItems.vue';
 import StatusBadge from './StatusBadge.vue';
 const cargoItemsRef = ref<InstanceType<typeof CargoItems> | null>(null);
-import { Check, Eye, X, Sparkles, Box } from '@lucide/vue';
+import { Check, Eye, X, Sparkles, Box, Trash2 } from '@lucide/vue';
 
 const emit = defineEmits<{
   vistaPrevia: [blId: number];
@@ -130,6 +130,29 @@ async function alCambiarNumeroContenedor(id: number | null, nuevoNo: string) {
     if (eraHacienda) actualizarBL('hacienda_container_no', limpio);
     setEstado('Contenedor guardado', new Date().toLocaleTimeString('es-PR'));
   } catch (e) { toast('Error guardando contenedor: ' + (e as Error).message, 'err'); }
+}
+
+// Quita un contenedor de "Contenedores asociados" — pensado sobre todo
+// para cuando el mismo número quedó repetido para este B/L (el parser lo
+// duplicó, o se digitó dos veces a mano). Solo borra UNA fila a la vez del
+// lado del backend, así que si sigue repetido hay que volver a hacer clic;
+// acá se refleja quitando solo la primera coincidencia del array local para
+// no desincronizar de lo que el backend realmente hizo.
+async function eliminarContenedorDeBL(containerNo: string) {
+  if (!blActual.value) return;
+  if (!confirm(`¿Quitar el contenedor "${containerNo}" de este B/L?`)) return;
+  try {
+    await api.eliminarContenedorDeBL(blActual.value.id, containerNo);
+    const lista = datosManifiesto.value?.container_bl;
+    if (lista) {
+      const i = lista.findIndex(v => v.container_no === containerNo && v.bl_no === blActual.value?.bl_no);
+      if (i !== -1) lista.splice(i, 1);
+    }
+    if (bl.value.hacienda_container_no === containerNo && contenedoresDelBL.value.every(c => c.container_no !== containerNo)) {
+      actualizarBL('hacienda_container_no', '');
+    }
+    setEstado('Contenedor quitado', new Date().toLocaleTimeString('es-PR'));
+  } catch (e) { toast('Error quitando el contenedor: ' + (e as Error).message, 'err'); }
 }
 
 function opcionesTamano(size: string) {
@@ -657,7 +680,7 @@ watch(() => bl.value?.id, () => {
           <div v-if="contenedoresDelBL.length" class="col-span-12 flex flex-col gap-1.5">
             <Label class="flex items-center gap-1.5 text-xs text-ink-muted"><Box class="size-3.5" />Contenedores asociados</Label>
             <div class="grid grid-cols-1 gap-1 sm:grid-cols-2">
-              <div v-for="c in contenedoresDelBL" :key="c.container_no"
+              <div v-for="(c, i) in contenedoresDelBL" :key="`${c.container_no}-${i}`"
                 class="flex items-center justify-between gap-1.5 rounded-md border border-border bg-paper-raised p-1.5 text-xs"
                 :class="c.container_no === contenedorHacienda && 'border-accent/50 bg-accent-soft'">
                 <div class="flex items-center gap-1">
@@ -675,6 +698,8 @@ watch(() => bl.value?.id, () => {
                   </SelectContent>
                 </Select>
                 <span class="whitespace-nowrap text-[11px] text-ink-faint">Tipo: <span class="text-ink">R (RORO)</span></span>
+                <button type="button" title="Quitar este contenedor del B/L" class="rounded p-0.5 text-destructive hover:bg-destructive/10"
+                  @click="eliminarContenedorDeBL(c.container_no)"><Trash2 class="size-3.5" /></button>
               </div>
             </div>
           </div>
