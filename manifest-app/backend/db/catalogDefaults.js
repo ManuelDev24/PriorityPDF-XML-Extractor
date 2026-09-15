@@ -6,6 +6,10 @@ const VESSELS = [
   { code: 'EMVS20170336', name: 'KYDON',           imo: '8916607', carrier: 'MMARINEX', scac: 'MXS' },
   { code: 'EMVS20190966', name: 'LYKTOS',          imo: '8401145', carrier: 'MMARINEX', scac: 'MXS' },
   { code: 'EMVS20190510', name: 'CARIBBEAN FORCE', imo: '9335161', carrier: 'MMARINEX', scac: 'MXS' },
+  // carrier MPRIORO (Priority RO RO Services), no MMARINEX como las otras —
+  // confirmado contra un manifiesto real ya cargado (viaje AU034s, que usa
+  // vessel_code "AURORA" y carrier_code "MPRIORO").
+  { code: 'AURORA',       name: 'AURORA',          imo: '8911736', carrier: 'MPRIORO',  scac: 'PRR' },
 ];
 
 const VALID_CONTAINER_SIZES = ['20', '40', '40HC', '45', '48', '53', 'RORO'];
