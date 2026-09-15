@@ -30,7 +30,18 @@ function alternarSidebar() {
   localStorage.setItem(SIDEBAR_KEY, sidebarAbierto.value ? '1' : '0');
 }
 
-const modal = ref<{ titulo: string; cuerpo: string; botones: Array<{ label: string; variant: string; accion: () => void }> } | null>(null);
+const modal = ref<{
+  titulo: string; cuerpo: string; botones: Array<{ label: string; variant: string; accion: () => void }>;
+  // Solo lo usa el modal "Confirmar carga" cuando hay B/L en otro viaje —
+  // ver subir(). No se mete en el sistema genérico de modales para todo lo
+  // demás, que no necesita esto.
+  enOtroViaje?: Array<{ id: number; bl_no: string; voyage_no: string }>;
+} | null>(null);
+// true por defecto: es lo que se pidió — que esos B/L se puedan mover al
+// viaje nuevo en el mismo paso de carga, en vez de tener que hacerlo a mano
+// después. El operador puede destildarlo si de verdad quiere dejarlos donde
+// están (por ejemplo, si de verdad pertenecen a ese otro viaje).
+const moverEnOtroViaje = ref(true);
 function cerrarModal() { modal.value = null; }
 function confirmar(titulo: string, cuerpo: string, accion: () => void) {
   modal.value = { titulo, cuerpo, botones: [
@@ -129,7 +140,7 @@ async function subir(archivo: File | undefined) {
     }
     if (preview.en_otro_viaje?.length) {
       const lista = preview.en_otro_viaje.map((m: { bl_no: string; voyage_no: string }) => `${m.bl_no} → ${m.voyage_no}`).join(', ');
-      partes.push(`<span class="text-status-pending">${preview.en_otro_viaje.length} B/L de este archivo ya están en otro viaje y no se van a mover: ${lista}.</span>`);
+      partes.push(`<span class="text-status-pending">${preview.en_otro_viaje.length} B/L de este archivo ya están en otro viaje: ${lista}. Podés elegir moverlos aquí abajo.</span>`);
     }
     // Advertencias del parser (peso que no cuadra, contenedores reconectados
     // a mano por celda fusionada, B/L sin contenedor) — se muestran ANTES de
@@ -141,13 +152,26 @@ async function subir(archivo: File | undefined) {
     }
 
     const ejecutarCarga = async () => {
+      const moverEstos = moverEnOtroViaje.value ? (modal.value?.enOtroViaje ?? []) : [];
       cerrarModal();
       setEstado('Cargando manifiesto...');
       try {
         const r = await fetch('/api/manifests/upload', { method: 'POST', body: fd });
         const data = await r.json();
         if (!data.ok) throw new Error(data.error);
-        toast(data.mensaje || `Manifiesto cargado: ${data.bl_count} B/L`);
+        let mensaje = data.mensaje || `Manifiesto cargado: ${data.bl_count} B/L`;
+        // Los B/L que ya estaban en otro viaje no los toca /upload (a
+        // propósito: nunca reimporta uno que el usuario ya movió) — si el
+        // operador pidió moverlos, es un segundo paso separado con el
+        // mismo mover-lote que ya usa el sidebar.
+        if (moverEstos.length) {
+          try {
+            const rMover = await api.moverBLLote(moverEstos.map(m => m.id), data.manifest_id);
+            if (rMover.movidos.length) mensaje += ` · ${rMover.movidos.length} B/L movidos aquí desde su viaje anterior`;
+            if (rMover.omitidos.length) mensaje += ` · ${rMover.omitidos.length} no se pudieron mover: ${rMover.omitidos.map(o => o.motivo).join('; ')}`;
+          } catch (e) { toast('El manifiesto se cargó, pero no se pudieron mover los B/L de otro viaje: ' + (e as Error).message, 'err'); }
+        }
+        toast(mensaje);
         await cargarManifiestos();
         await seleccionarManifiesto(data.manifest_id);
       } catch (e) { toast('Error: ' + (e as Error).message, 'err'); setEstado('Error cargando manifiesto'); }
@@ -162,10 +186,15 @@ async function subir(archivo: File | undefined) {
       setEstado('Listo');
       return;
     }
-    modal.value = { titulo: 'Confirmar carga', cuerpo: partes.join(' '), botones: [
-      { label: 'Cancelar', variant: 'outline', accion: () => { cerrarModal(); if (archivoInput.value) archivoInput.value.value = ''; } },
-      { label: `Cargar ${preview.nuevos_count} B/L`, variant: 'default', accion: ejecutarCarga },
-    ] };
+    moverEnOtroViaje.value = true;
+    modal.value = {
+      titulo: 'Confirmar carga', cuerpo: partes.join(' '),
+      enOtroViaje: preview.en_otro_viaje,
+      botones: [
+        { label: 'Cancelar', variant: 'outline', accion: () => { cerrarModal(); if (archivoInput.value) archivoInput.value.value = ''; } },
+        { label: `Cargar ${preview.nuevos_count} B/L`, variant: 'default', accion: ejecutarCarga },
+      ],
+    };
     setEstado('Listo');
   } catch (e) { toast('Error: ' + (e as Error).message, 'err'); setEstado('Error cargando manifiesto'); if (archivoInput.value) archivoInput.value.value = ''; }
 }
@@ -449,6 +478,10 @@ onMounted(async () => {
       <DialogContent v-if="modal">
         <DialogHeader><DialogTitle>{{ modal.titulo }}</DialogTitle></DialogHeader>
         <div class="text-sm text-ink-muted" v-html="modal.cuerpo"></div>
+        <label v-if="modal.enOtroViaje?.length" class="flex items-center gap-2 rounded-md border border-border bg-paper-sunken px-3 py-2 text-sm">
+          <input type="checkbox" v-model="moverEnOtroViaje" class="size-3.5" />
+          Mover esos {{ modal.enOtroViaje.length }} B/L a este viaje también
+        </label>
         <DialogFooter>
           <Button v-for="(b, i) in modal.botones" :key="i" :variant="(b.variant as any)" @click="b.accion">{{ b.label }}</Button>
         </DialogFooter>

@@ -31,10 +31,10 @@ function clasificarBLs(voyageNo, bls) {
   const manifiesto = db.prepare('SELECT id FROM manifests WHERE voyage_no=?').get(voyageNo);
   const manifestId = manifiesto ? manifiesto.id : null;
 
-  // bl_no -> { manifest_id, voyage_no } en TODA la base, de un tirón
+  // bl_no -> { id, manifest_id, voyage_no } en TODA la base, de un tirón
   const ubicaciones = new Map();
   db.prepare(`
-    SELECT b.bl_no, b.manifest_id, m.voyage_no
+    SELECT b.id, b.bl_no, b.manifest_id, m.voyage_no
     FROM bills_of_lading b JOIN manifests m ON m.id = b.manifest_id
   `).all().forEach(r => ubicaciones.set(r.bl_no, r));
 
@@ -43,7 +43,9 @@ function clasificarBLs(voyageNo, bls) {
     const u = ubicaciones.get(bl.bl_no);
     if (!u) { nuevos.push(bl.bl_no); return; }
     if (manifestId && u.manifest_id === manifestId) yaEnEsteViaje.push(bl.bl_no);
-    else enOtroViaje.push({ bl_no: bl.bl_no, voyage_no: u.voyage_no });
+    // id incluido para que, si el usuario decide moverlos, el frontend pueda
+    // llamar a /api/bl/mover-lote sin tener que volver a consultarlo.
+    else enOtroViaje.push({ id: u.id, bl_no: bl.bl_no, voyage_no: u.voyage_no });
   });
   return { manifestId, nuevos, yaEnEsteViaje, enOtroViaje };
 }
