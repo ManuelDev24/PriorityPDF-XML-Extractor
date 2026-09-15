@@ -204,6 +204,124 @@ test('1302: contenedor sin B/L al inicio de línea (celda fusionada) se reconect
   assert.strictEqual(r.cargoItems.length, 2, 'un cargo item por contenedor, incluido el huérfano');
 });
 
+test('1302: un par KG/LBS partido justo en el salto de página no desalinea el peso del B/L siguiente', () => {
+  // Bug real (K1338, PYRR-2630003 / PYRR-2630487): cuando el KG de una fila
+  // cae al final de una página y su LBS queda al inicio de la siguiente, el
+  // conteo de peso reiniciaba por página — la cantidad de números "sobrante"
+  // en la página anterior (aquí, un solo número: el KG sin su LBS) hacía que
+  // la página siguiente empezara a contar desde su LBS "huérfano" como si
+  // fuera el KG de una fila nueva, corriendo el peso de TODOS los B/L de esa
+  // página en adelante.
+  const pagina1 = [
+    '1,000.00', // KG de PYRR-3000001 — su LBS queda en la página 2
+    '1.- Name of Ship',
+    'KYDON                    K1330',
+    'BL Numbers',
+    '',
+    'SHIPPER UNO',
+    'CALLE X',
+    '',
+    'CONSIGNEE UNO',
+    'CALLE Y',
+    '',
+    'NOTIFY UNO',
+    'CALLE Z',
+    'PYRR-3000001 PRRU 111111-1',
+    "40' CONT",
+    'N/A',
+    '10 carton:',
+    'ALGO',
+    'KG',
+  ].join('\n');
+  const pagina2 = [
+    '2,204.00', // LBS "huérfano" de PYRR-3000001 (empieza la página 2)
+    '500.00',   // KG de PYRR-3000002
+    '1,102.00', // LBS de PYRR-3000002
+    '1.- Name of Ship',
+    'KYDON                    K1330',
+    'BL Numbers',
+    '',
+    'SHIPPER DOS',
+    'CALLE A',
+    '',
+    'CONSIGNEE DOS',
+    'CALLE B',
+    '',
+    'NOTIFY DOS',
+    'CALLE C',
+    'PYRR-3000002 PRRU 222222-2',
+    "40' CONT",
+    'N/A',
+    '5 carton:',
+    'OTRA COSA',
+    'KG',
+  ].join('\n');
+  const texto = `Page 1/2\n${pagina1}\nPage 2/2\n${pagina2}`;
+  const r = parseCustoms1302(texto);
+  const bl1 = r.bls.find(b => b.bl_no === 'PYRR3000001');
+  const bl2 = r.bls.find(b => b.bl_no === 'PYRR3000002');
+  assert.strictEqual(bl1.gross_weight, 1000, 'el KG de la fila 1 no lo pisa el LBS huérfano de la página 2');
+  assert.strictEqual(bl2.gross_weight, 500, 'la fila 2 recibe su propio KG, no el LBS huérfano de la fila 1');
+});
+
+test('1302: un contenedor huérfano precedido de un bloque de dirección completo NO se reconecta al B/L anterior', () => {
+  // Bug real (K1338): "MXRU 485642-8" aparecía sin ningún "PYRR-XXXXXXX"
+  // junto, pero justo antes terminaba un bloque de shipper/consignee/notify
+  // COMPLETO de una fila distinta — a diferencia de la celda fusionada real
+  // (mismo B/L, mismo shipper, sin bloque de dirección de por medio), esto
+  // es una fila nueva cuyo propio B/L se perdió en la extracción, no una
+  // continuación. Reconectarlo con el B/L anterior le robaba el peso al
+  // B/L que sigue (ver test de arriba) porque ese contenedor no tiene peso
+  // propio en el PDF.
+  const texto = [
+    'Page 1/1',
+    '1,000.00', '2,204.00',
+    '1.- Name of Ship',
+    'KYDON                    K1331',
+    'BL Numbers',
+    '',
+    'SHIPPER UNO',
+    'CALLE X',
+    '00907 - SAN JUAN (PR - PUERTO RICO)',
+    '',
+    'CONSIGNEE UNO',
+    'CALLE Y',
+    '00907 - SAN JUAN (PR - PUERTO RICO)',
+    '',
+    'NOTIFY UNO',
+    'CALLE Z',
+    '00907 - SAN JUAN (PR - PUERTO RICO)',
+    'PYRR-3000010 PRRU 350178-1',
+    "40' FR",
+    'N/A',
+    '17 rolls:',
+    'REBAR IN COIL',
+    'KG',
+    '',
+    'SHIPPER OTRO ENVIO',
+    'OTRA CALLE',
+    '00726 - CAGUAS (PR - PUERTO RICO)',
+    '',
+    'CONSIGNEE OTRO ENVIO',
+    'OTRA CALLE 2',
+    '00726 - CAGUAS (PR - PUERTO RICO)',
+    '',
+    'NOTIFY OTRO ENVIO',
+    'OTRA CALLE 3',
+    '00726 - CAGUAS (PR - PUERTO RICO)',
+    'MXRU 485642-8',
+    "45' CONT",
+    '159 pack:',
+    'PACKAGES CONTAINING MODULAR KITCHEN',
+    'LBS',
+  ].join('\n');
+  const r = parseCustoms1302(texto);
+  assert.strictEqual(r.bls.length, 1, 'solo se reconoce el B/L real — el contenedor sin B/L propio no crea ni se pega a otro');
+  assert.strictEqual(r.containers.length, 1, 'MXRU485642-8 no se cuela como contenedor de PYRR-3000010');
+  assert.strictEqual(r.containers[0].container_no, 'PRRU3501781');
+  assert.strictEqual(r.bls[0].gross_weight, 1000, 'el peso de PYRR-3000010 no se corre ni se mezcla con el envío perdido');
+});
+
 test('1302: una línea huérfana sin B/L previo ni forma de contenedor se ignora sin romper', () => {
   const texto = [
     'Page 1/1',

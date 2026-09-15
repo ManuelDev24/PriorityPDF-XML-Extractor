@@ -314,22 +314,34 @@ function parseCustoms1302(text) {
   // la luz al momento de cargar en vez de perderse en silencio como pasó con
   // CF365 — quien carga el PDF ve la advertencia y puede revisar a mano.
   let contenedoresReconectados = 0;
+  // Contenedor huérfano que NO se reconecta porque justo antes termina un
+  // bloque de dirección completo — la fila real a la que pertenece tiene su
+  // propio "PYRR-XXXXXXX" perdido en la extracción del PDF (ver comentario
+  // más abajo). Se pierde ese contenedor puntual en vez de arriesgar
+  // corromper el peso de todos los B/L que siguen.
+  let contenedorSinBlPerdido = 0;
   let totalWeightPdf = 0;
+
+  // Números de peso (KG,LBS) de TODO el documento, en el mismo orden en que
+  // aparecen — NO se reinician por página. El par de una fila puede quedar
+  // partido justo en el salto de página (el KG al final de una página, su
+  // LBS al inicio de la siguiente): si se empareja por página, esa página
+  // "adelantada" en media pareja desalinea TODOS los pesos siguientes de
+  // ahí en adelante (cada entrada recibe el peso de la fila anterior o
+  // siguiente, en KG o LBS mezclados). Emparejando de una sola vez al final,
+  // sobre el documento completo, el corte de página deja de importar.
+  const allPureNums = [];
 
   rawPages.forEach((pageText, pIdx) => {
     if (!pageText.trim()) return;
     const lines = pageText.split('\n');
 
     // Pesos al inicio de la página
-    const pureNums = [];
     for (let i = 0; i < lines.length; i++) {
       const l = lines[i].trim();
-      if (/^\s*\d{1,3}(?:,\d{3})*\.\d{2}\s*$/.test(l)) pureNums.push(parsePdfNum(l));
+      if (/^\s*\d{1,3}(?:,\d{3})*\.\d{2}\s*$/.test(l)) allPureNums.push(parsePdfNum(l));
       if (/1\.- Name of Ship/i.test(l) || /BL Numbers/i.test(l)) break;
     }
-    const pageWeightsKg = [];
-    for (let i = 0; i + 1 < pureNums.length; i += 2) pageWeightsKg.push(pureNums[i]);
-    totalWeightPdf += pageWeightsKg.reduce((a, b) => a + b, 0);
 
     // Entradas de B/L en la página. El PDF imprime el B/L con guión
     // ("PYRR-2624176"), pero el mismo número en el XML de la DGA no lo trae
@@ -370,6 +382,26 @@ function parseCustoms1302(text) {
         if (!lastBlNo) continue;
         const cleanedOrphan = normContainerNo(raw);
         if (!isIsoContainer(cleanedOrphan)) continue;
+        // Pero si justo antes (sin nada de por medio) termina un bloque de
+        // dirección completo — "... (PUERTO RICO)", "... (REPUBLICA
+        // DOMINICANA)", etc., el mismo patrón con el que SIEMPRE cierra un
+        // bloque de shipper/consignee/notify — esto NO es una fila fusionada
+        // del B/L anterior: es una fila nueva cuyo propio "PYRR-XXXXXXX" se
+        // perdió en la extracción del PDF (bug real encontrado con K1338,
+        // B/L "PYRR-2630003": un contenedor de OTRO envío, con su propio
+        // shipper/consignee/notify completo, quedó pegado al B/L anterior
+        // sin ningún B/L real de por medio). Reconectarlo de todas formas
+        // no solo pone el contenedor en el B/L equivocado — como ese
+        // contenedor NO tiene peso propio en el PDF, "roba" el peso del
+        // siguiente B/L real y desalinea el peso de TODOS los que siguen.
+        // Mejor perder este contenedor puntual (con aviso) que corromper el
+        // peso de todo el resto del manifiesto.
+        let j2 = i - 1;
+        while (j2 >= 0 && lines[j2].trim() === '') j2--;
+        if (j2 >= 0 && /\([A-ZÁÉÍÓÚÑ\s.,\-]+\)\s*$/i.test(lines[j2].trim())) {
+          contenedorSinBlPerdido++;
+          continue;
+        }
         blNo = lastBlNo;
         rawSecondToken = raw;
         contenedoresReconectados++;
@@ -454,11 +486,15 @@ function parseCustoms1302(text) {
       pageEntries.push(e);
     }
 
-    pageEntries.forEach((e, idx) => {
-      e.gross_weight = idx < pageWeightsKg.length ? pageWeightsKg[idx] : 0;
-      allEntries.push(e);
-    });
+    pageEntries.forEach(e => allEntries.push(e));
   });
+
+  // Un peso por fila, emparejado sobre el documento COMPLETO (ver comentario
+  // de allPureNums más arriba) — así el corte de página no desalinea nada.
+  const allWeightsKg = [];
+  for (let i = 0; i + 1 < allPureNums.length; i += 2) allWeightsKg.push(allPureNums[i]);
+  totalWeightPdf = allWeightsKg.reduce((a, b) => a + b, 0);
+  allEntries.forEach((e, idx) => { e.gross_weight = idx < allWeightsKg.length ? allWeightsKg[idx] : 0; });
 
   // Consolidar B/Ls y extraer Contenedores y Cargo Items
   const blMap = new Map();
@@ -563,6 +599,16 @@ function parseCustoms1302(text) {
       `aparecía${contenedoresReconectados > 1 ? 'n' : ''} en el PDF sin el número de B/L junto ` +
       `(celda fusionada en el PDF original) y se reconectó automáticamente con el B/L anterior — ` +
       `confirma que quedó en el B/L correcto.`
+    );
+  }
+  if (contenedorSinBlPerdido > 0) {
+    warnings.push(
+      `${contenedorSinBlPerdido} contenedor${contenedorSinBlPerdido > 1 ? 'es' : ''} ` +
+      `aparecía${contenedorSinBlPerdido > 1 ? 'n' : ''} en el PDF con su propia dirección de ` +
+      `shipper/consignatario pero SIN ningún número de B/L junto — a diferencia del aviso ` +
+      `anterior, no se reconectó con el B/L de arriba (habría quedado en el B/L equivocado y ` +
+      `corrompido el peso de los demás) y por ahora se perdió esa fila. Revisar el PDF original: ` +
+      `probablemente falta un "PYRR-XXXXXXX" que no se imprimió o no se pudo leer.`
     );
   }
   const conContenedor = new Set(containerBLs.map(cb => cb.bl_no));
