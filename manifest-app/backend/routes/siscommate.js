@@ -170,6 +170,45 @@ router.get('/api/manifests/:id/siscommate-live', async (req, res) => {
   }
 });
 
+// ── REABRIR UN VIAJE "YA ENVIADO" QUE EN REALIDAD YA NO ESTÁ EN SISCOMMATE ──
+// Caso real: ella elimina un viaje directo en SISCOMMATE (la app nativa),
+// pero la webapp nunca se entera — sigue creyendo que está "siscommate"
+// (enviado de verdad) porque ese estado nunca se recalcula solo (ver
+// recalcularEstadoManifiesto en bl.js: 'siscommate' es más fuerte que
+// 'validado', a propósito, para que desvalidar un B/L después no "deshaga"
+// un envío real). El push tampoco lo detecta por su cuenta: si TODOS los
+// B/L ya tienen siscommate_sent_at, /push-siscommate no vuelve a llamar al
+// bridge — asume que ya se envió todo y no hay nada que hacer, aunque el
+// viaje ya no exista allá.
+// Esta ruta es el único camino de vuelta: confirma contra SISCOMMATE real
+// (nunca a ciegas) que el viaje de verdad no está, y si es así, limpia
+// siscommate_sent_at de todos sus B/L y regresa el estado a "validado" para
+// que un push posterior vuelva a mandar todo desde cero.
+router.post('/api/manifests/:id/reabrir-siscommate', async (req, res) => {
+  const manifest = db.prepare('SELECT * FROM manifests WHERE id=?').get(req.params.id);
+  if (!manifest) return res.status(404).json({ error: 'No encontrado' });
+  if (manifest.status !== 'siscommate') {
+    return res.status(400).json({ error: 'Este viaje no está marcado como enviado a SISCOMMATE — no hay nada que reabrir.' });
+  }
+
+  let datos;
+  try {
+    datos = await consultarManifiesto(manifest.voyage_no);
+  } catch (err) {
+    return res.status(503).json({
+      error: 'No se pudo conectar con SiscommateBridge: ' + err.message,
+      hint: 'Verifica que SiscommateBridge está corriendo en el servidor (puerto 5001)',
+    });
+  }
+  if (datos.encontrado) {
+    return res.status(409).json({ error: `El viaje "${manifest.voyage_no}" SÍ existe todavía en SISCOMMATE — no se reabre para evitar un envío duplicado.` });
+  }
+
+  db.prepare(`UPDATE manifests SET status='validado' WHERE id=?`).run(req.params.id);
+  const info = db.prepare(`UPDATE bills_of_lading SET siscommate_sent_at=NULL WHERE manifest_id=?`).run(req.params.id);
+  res.json({ ok: true, bls_reabiertos: info.changes });
+});
+
 // ── SINCRONIZAR DESDE SISCOMMATE (ella edita directo en la base real) ───────
 // Dirección inversa al push: trae lo que SISCOMMATE tiene AHORA para este
 // viaje y sobreescribe la copia local — sin diff ni confirmación campo por

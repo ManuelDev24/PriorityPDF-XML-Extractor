@@ -17,6 +17,13 @@ export const tamanosValidos = ref<string[]>(FALLBACK_TAMANOS);
 
 // ── Listado y seleccion ──────────────────────────────────────────────────────
 export const manifiestos     = ref<Manifiesto[]>([]);
+// Viajes marcados "enviado a SISCOMMATE" (status='siscommate') que en
+// realidad YA NO EXISTEN allá — porque alguien los borró desde la app
+// nativa de SISCOMMATE, no desde acá. La webapp nunca se entera sola de
+// eso (ver reabrirSiscommate en App.vue y la ruta /reabrir-siscommate):
+// este Set es lo que hace que la alerta se vea en TODO el sidebar, no
+// solo cuando se abre justo ese viaje.
+export const manifiestosEliminadosSiscommate = reactive(new Set<number>());
 export const datosManifiesto = ref<DatosManifiesto | null>(null);
 export const blActual        = ref<BL | null>(null);
 export const expandidos      = reactive(new Set<number>());
@@ -174,7 +181,24 @@ export async function cargarManifiestos() {
   try {
     manifiestos.value = await api.listarManifiestos();
     cargarStats();
+    verificarManifiestosEnviados(); // en segundo plano — no bloquea la carga del sidebar
   } catch (e) { setEstado('Error conectando con el servidor: ' + (e as Error).message); }
+}
+
+// Revisa, uno por uno, cada viaje marcado como "enviado a SISCOMMATE" (los
+// únicos que pueden haberse borrado allá sin que la webapp se entere — un
+// borrador nunca llegó a SISCOMMATE, no hay nada que revisar). Secuencial y
+// no en paralelo para no saturar el bridge; si UNA falla por conexión, se
+// corta el resto en vez de encadenar N timeouts iguales.
+export async function verificarManifiestosEnviados() {
+  const enviados = manifiestos.value.filter(m => m.status === 'siscommate');
+  for (const m of enviados) {
+    try {
+      const datos = await api.siscommateVivo(m.id);
+      if (datos.encontrado) manifiestosEliminadosSiscommate.delete(m.id);
+      else manifiestosEliminadosSiscommate.add(m.id);
+    } catch { break; }
+  }
 }
 
 export async function seleccionarManifiesto(id: number) {

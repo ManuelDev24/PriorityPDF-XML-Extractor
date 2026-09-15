@@ -8,6 +8,7 @@ import {
   datosManifiesto, blActual, stats, estado, estadoDerecha, toastMsg, toastTipo,
   cargarCatalogos, cargarManifiestos, seleccionarManifiesto, cargarStats,
   guardarPendientes, toast, setEstado, restaurarSeleccion,
+  manifiestosEliminadosSiscommate,
 } from '../editor/store';
 import Sidebar from './Sidebar.vue';
 import EditorPanel from './EditorPanel.vue';
@@ -314,6 +315,47 @@ async function ejecutarSincronizacion(manifestId: number) {
 const viendoVivo = ref(false);
 const vivo = ref<DatosSiscommateVivo | null>(null);
 
+// ── Detectar un viaje eliminado en SISCOMMATE desde su app nativa ──────────
+// Caso real: ella borra un viaje en SISCOMMATE directamente (no desde
+// acá) — la webapp nunca se entera sola, sigue mostrándolo como "ya
+// enviado" para siempre (ver comentario en la ruta /reabrir-siscommate).
+// manifiestosEliminadosSiscommate (store.ts) ya revisa TODO el sidebar en
+// segundo plano al cargar la lista de viajes — este computed solo lee ese
+// resultado para el viaje que está abierto ahora mismo. El watch de abajo
+// vuelve a revisar puntualmente al abrir un viaje, por si el chequeo masivo
+// todavía no había corrido o el bridge estaba caído en ese momento.
+const siscommateEliminado = computed(() => {
+  const id = datosManifiesto.value?.manifest.id;
+  return id != null && manifiestosEliminadosSiscommate.has(id);
+});
+const reabriendo = ref(false);
+watch(() => datosManifiesto.value?.manifest.id, async (id) => {
+  const m = datosManifiesto.value?.manifest;
+  if (!id || !m || m.status !== 'siscommate') return;
+  try {
+    const datos = await api.siscommateVivo(id);
+    if (datos.encontrado) manifiestosEliminadosSiscommate.delete(id);
+    else manifiestosEliminadosSiscommate.add(id);
+  } catch { /* bridge caído u offline — no se avisa nada a ciegas */ }
+});
+async function reabrirSiscommate() {
+  const m = datosManifiesto.value?.manifest;
+  if (!m) return;
+  reabriendo.value = true;
+  try {
+    const r = await api.reabrirSiscommate(m.id);
+    toast(`Viaje reabierto — ${r.bls_reabiertos} B/L quedaron listos para reenviarse a SISCOMMATE`);
+    manifiestosEliminadosSiscommate.delete(m.id);
+    await cargarManifiestos();
+    await seleccionarManifiesto(m.id);
+  } catch (e) {
+    let msg = (e as Error).message;
+    try { msg = JSON.parse(msg).error || msg; } catch { /* texto plano */ }
+    avisar('No se pudo reabrir el viaje', msg);
+  }
+  reabriendo.value = false;
+}
+
 // Columnas que el bridge SIEMPRE escribe con el mismo valor fijo (ver
 // SiscommateBridge.cs, INSERT INTO BOL/BOLITEM) — no son un dato real por
 // B/L, solo ocupan espacio en una tabla ya de por sí muy ancha. Se ocultan
@@ -409,6 +451,17 @@ onMounted(async () => {
           <Button variant="outline" size="sm" :disabled="sincronizando" title="Trae lo que haya en SISCOMMATE ahora mismo y sobreescribe estos B/L localmente, marcándolos validado" @click="sincronizarDesdeSiscommate">
             <Loader2 v-if="sincronizando" class="size-3.5 animate-spin" /><RefreshCw v-else class="size-3.5" />
             {{ sincronizando ? 'Sincronizando...' : 'Sincronizar desde SISCOMMATE' }}
+          </Button>
+        </div>
+
+        <div v-if="siscommateEliminado" class="flex shrink-0 items-center gap-3 border-b border-danger/40 bg-danger-soft px-4 py-2 text-sm text-danger">
+          <span class="flex-1">
+            Este viaje está marcado como "enviado a SISCOMMATE" acá, pero ya no existe allá —
+            probablemente lo eliminaron con la app nativa de SISCOMMATE.
+          </span>
+          <Button size="sm" variant="destructive" :disabled="reabriendo" @click="reabrirSiscommate">
+            <Loader2 v-if="reabriendo" class="size-3.5 animate-spin" />
+            {{ reabriendo ? 'Reabriendo...' : 'Reabrir para reenviar' }}
           </Button>
         </div>
 

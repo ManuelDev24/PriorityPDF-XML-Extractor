@@ -7,7 +7,7 @@ import { api, type ResultadoBusqueda, type BL } from '../editor/api';
 import {
   manifiestos, manifiestosFiltrados, datosManifiesto, blActual, expandidos,
   pestana, seleccionarManifiesto, seleccionarBL, cargarManifiestos, cargarStats,
-  toast, setEstado, sincronizarEstadoManifiesto,
+  toast, setEstado, sincronizarEstadoManifiesto, manifiestosEliminadosSiscommate,
 } from '../editor/store';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -15,7 +15,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import StatusBadge from './StatusBadge.vue';
-import { Trash2, ChevronRight, ChevronDown, Search, Plus, X, Move } from '@lucide/vue';
+import { Trash2, ChevronRight, ChevronDown, Search, Plus, X, Move, TriangleAlert } from '@lucide/vue';
 
 defineProps<{ abierto: boolean }>();
 const emit = defineEmits<{ confirmar: [titulo: string, cuerpo: string, accion: () => void] }>();
@@ -310,6 +310,10 @@ async function confirmarMover() {
             <button class="min-w-0 flex-1 truncate text-left text-sm font-medium" @click="alternar(m.id)">
               Viaje {{ m.voyage_no }}
             </button>
+            <TriangleAlert
+              v-if="manifiestosEliminadosSiscommate.has(m.id)" class="size-3.5 shrink-0 text-danger"
+              title="Este viaje está marcado como enviado a SISCOMMATE pero ya no existe allá — probablemente lo eliminaron con la app nativa. Ábrelo para reenviarlo."
+            />
             <StatusBadge :status="m.status" />
             <button
               class="shrink-0 rounded p-1 text-ink-faint opacity-0 hover:bg-danger-soft hover:text-danger group-hover:opacity-100"

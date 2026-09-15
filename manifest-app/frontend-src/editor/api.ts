@@ -282,4 +282,6 @@ export const api = {
     pedir<{ ok: true; actualizados: number; sin_encontrar_local: number; total_en_siscommate: number; mensaje?: string }>(
       `/api/manifests/${id}/sync-from-siscommate`, { method: 'POST' }
     ),
+  reabrirSiscommate: (id: number) =>
+    pedir<{ ok: true; bls_reabiertos: number }>(`/api/manifests/${id}/reabrir-siscommate`, { method: 'POST' }),
 };
