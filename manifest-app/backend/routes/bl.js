@@ -173,6 +173,51 @@ router.put('/api/bl/:id', (req, res) => {
   res.json({ ok: true, manifest_status });
 });
 
+// ── ELIMINAR VARIOS B/L A LA VEZ (LOTE) ───────────────────────────────────────
+// Pensado para reparaciones: cuando un viaje se cargó con datos malos (ej.
+// contenedores duplicados por un bug del parser ya corregido — ver K1339),
+// borrar B/L de a uno para volver a cargar el PDF limpio no era práctico con
+// decenas de B/L. Misma lógica que el DELETE individual de abajo, repetida
+// por cada id — un B/L que ya no existe se omite en vez de abortar el lote
+// entero.
+//
+// Registrada ANTES de "DELETE /api/bl/:id" por la misma razón que
+// PUT /api/bl/mover-lote: Express hace match de "/api/bl/:id" con CUALQUIER
+// segundo segmento, incluido literalmente "eliminar-lote" como si fuera un id.
+router.delete('/api/bl/eliminar-lote', (req, res) => {
+  const blIds = Array.isArray(req.body?.bl_ids) ? req.body.bl_ids.map(Number).filter(Number.isInteger) : [];
+  if (!blIds.length) return res.status(400).json({ error: 'Falta la lista de B/L a eliminar' });
+
+  const eliminados = [];
+  const omitidos = [];
+  const manifiestosAfectados = new Set();
+
+  const eliminarUno = db.transaction((bl) => {
+    db.prepare('DELETE FROM bl_cargo_items WHERE bl_id=?').run(bl.id);
+    db.prepare('DELETE FROM container_bl WHERE bl_no=? AND manifest_id=?').run(bl.bl_no, bl.manifest_id);
+    db.prepare(`
+      DELETE FROM containers
+      WHERE manifest_id=?
+        AND container_no NOT IN (SELECT container_no FROM container_bl WHERE manifest_id=?)
+    `).run(bl.manifest_id, bl.manifest_id);
+    db.prepare('DELETE FROM bills_of_lading WHERE id=?').run(bl.id);
+  });
+
+  blIds.forEach(id => {
+    /** @type {BLRow} */
+    const bl = db.prepare('SELECT * FROM bills_of_lading WHERE id=?').get(id);
+    if (!bl) { omitidos.push({ id, motivo: 'No encontrado' }); return; }
+    manifiestosAfectados.add(bl.manifest_id);
+    eliminarUno(bl);
+    eliminados.push({ id: bl.id, bl_no: bl.bl_no });
+  });
+
+  const estados = {};
+  manifiestosAfectados.forEach(id => { estados[id] = recalcularEstadoManifiesto(id); });
+
+  res.json({ ok: true, eliminados, omitidos, estados });
+});
+
 // ── ELIMINAR UN B/L (y sus items y vínculos de contenedor) ───────────────────
 router.delete('/api/bl/:id', (req, res) => {
   /** @type {BLRow} */

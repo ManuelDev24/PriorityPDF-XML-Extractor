@@ -212,6 +212,13 @@ export const api = {
     pedir<{ ok: true; manifest_status?: string }>(`/api/bl/${id}`, cuerpo('PUT', campos)),
   eliminarBL: (id: number) =>
     pedir<{ ok: true; manifest_status?: string }>(`/api/bl/${id}`, { method: 'DELETE' }),
+  eliminarBLLote: (blIds: number[]) =>
+    pedir<{
+      ok: true;
+      eliminados: Array<{ id: number; bl_no: string }>;
+      omitidos: Array<{ id: number; motivo: string }>;
+      estados: Record<string, string>;
+    }>('/api/bl/eliminar-lote', cuerpo('DELETE', { bl_ids: blIds })),
   renombrarBL: (id: number, blNo: string) =>
     pedir<{ ok: true; bl_no: string }>(`/api/bl/${id}/renombrar`, cuerpo('PUT', { bl_no: blNo })),
   moverBL: (id: number, manifestId: number) =>

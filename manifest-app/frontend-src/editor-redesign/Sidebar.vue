@@ -154,6 +154,38 @@ function pedirBorrarBL(blId: number, blNo: string) {
     });
 }
 
+// Pensado sobre todo para reparaciones (ej. volver a cargar un PDF que se
+// cargó con un bug de parser ya corregido — ver K1339): borrar varios B/L
+// de golpe para volver a subir el mismo archivo limpio, en vez de uno por
+// uno. Mismo patrón de confirmación que pedirBorrarBL.
+function pedirBorrarLote(manifestId: number) {
+  if (!seleccionados.value.size) return;
+  const ids = [...seleccionados.value];
+  emit('confirmar', 'Eliminar B/L seleccionados',
+    `¿Seguro que deseas eliminar los <strong>${ids.length}</strong> B/L seleccionados? Esta acción no se puede deshacer.`,
+    async () => {
+      try {
+        const r = await api.eliminarBLLote(ids);
+        seleccionados.value.clear();
+        toast(
+          r.omitidos.length
+            ? `${r.eliminados.length} B/L eliminados · ${r.omitidos.length} no se pudieron eliminar`
+            : `${r.eliminados.length} B/L eliminados correctamente`
+        );
+        if (datosManifiesto.value?.manifest.id === manifestId) {
+          datosManifiesto.value = await api.obtenerManifiesto(manifestId);
+          const m = manifiestos.value.find(x => x.id === manifestId);
+          if (m) m.bl_count = datosManifiesto.value.bls.length;
+          if (r.estados[manifestId]) sincronizarEstadoManifiesto(manifestId, r.estados[manifestId]);
+          cargarStats();
+          if (blActual.value && !datosManifiesto.value.bls.some(b => b.id === blActual.value!.id)) {
+            blActual.value = datosManifiesto.value.bls[0] ?? null;
+          }
+        }
+      } catch (e) { toast('Error eliminando B/L: ' + (e as Error).message, 'err'); }
+    });
+}
+
 async function crearNuevoBL(manifestId: number) {
   const blNo = nuevoBlNo.value.trim();
   if (!blNo || creandoBl.value) return;
@@ -340,6 +372,7 @@ async function confirmarMover() {
             <span class="font-medium text-accent">{{ seleccionados.size }} seleccionado{{ seleccionados.size > 1 ? 's' : '' }}</span>
             <div class="flex items-center gap-2">
               <button class="text-ink-faint hover:text-ink" @click="seleccionados.clear()">Cancelar</button>
+              <Button size="sm" variant="destructive" class="h-6 px-2 text-xs" @click="pedirBorrarLote(m.id)"><Trash2 class="size-3" />Eliminar</Button>
               <Button size="sm" class="h-6 px-2 text-xs" @click="pedirMoverLote(m.id)"><Move class="size-3" />Mover a...</Button>
             </div>
           </div>
