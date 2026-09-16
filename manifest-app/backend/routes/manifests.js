@@ -12,7 +12,7 @@ const db = require('../db/connection');
 /** @typedef {import('../types').ParsedManifest} ParsedManifest */
 
 const { parseXmlManifest } = require('../services/xmlParser');
-const { parsePdfManifest } = require('../services/pdfParser');
+const { parsePdfManifest, advertirContenedoresEnVariosBl } = require('../services/pdfParser');
 const { toSiscommatePort, generateFullTxt } = require('../services/txtGenerator');
 const { validateForSubmission } = require('../services/blValidation');
 const { recalcularEstadoManifiesto } = require('./bl');
@@ -88,7 +88,9 @@ router.post('/api/manifests/upload/preview', upload.single('xml'), async (req, r
       // Advertencias de consistencia del parser (peso que no cuadra,
       // contenedores reconectados a mano, B/L sin contenedor) — solo el
       // parser de PDF 1302 las genera hoy; el resto de formatos manda [].
-      warnings: parsed.warnings || [],
+      // + la de contenedor repetido en varios B/L, aplicada acá para
+      // cualquier formato (ver advertirContenedoresEnVariosBl arriba).
+      warnings: [...(parsed.warnings || []), ...advertirContenedoresEnVariosBl(parsed.containerBLs)],
     });
   } catch (err) {
     console.error(err);

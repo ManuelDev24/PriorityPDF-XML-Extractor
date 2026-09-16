@@ -8,6 +8,7 @@ const { parseXmlManifest } = require('./xmlParser');
 const {
   normalizePdfDate, parsePdfNum, isIsoContainer, normContainerNo,
   isPhoneNumber, parsePdfParty, isCustoms1302, parseCustoms1302, parseGenericDga,
+  advertirContenedoresEnVariosBl,
 } = require('./pdfParser');
 
 // ═══════════════════════════════════════════════════════════════════
@@ -587,4 +588,41 @@ test('XML: un manifiesto sin B/L no rompe el parser', async () => {
 
 test('XML inválido rechaza la promesa', async () => {
   await assert.rejects(() => parseXmlManifest('<<<no es xml'));
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// advertirContenedoresEnVariosBl — mismo contenedor en dos B/L distintos
+// ═══════════════════════════════════════════════════════════════════
+test('advertirContenedoresEnVariosBl: sin repetidos no avisa nada', () => {
+  const r = advertirContenedoresEnVariosBl([
+    { bl_no: 'PYRR0000001', container_no: 'PRRU1111111' },
+    { bl_no: 'PYRR0000002', container_no: 'PRRU2222222' },
+  ]);
+  assert.deepStrictEqual(r, []);
+});
+
+test('advertirContenedoresEnVariosBl: mismo contenedor en el MISMO B/L no cuenta como repetido', () => {
+  // Un B/L con varios containers legítimos (ej. flatbed con 2 piezas) no
+  // debe confundirse con el bug real — el contenedor solo se repite si
+  // aparece en B/L DISTINTOS.
+  const r = advertirContenedoresEnVariosBl([
+    { bl_no: 'PYRR0000001', container_no: 'PRRU1111111' },
+    { bl_no: 'PYRR0000001', container_no: 'PRRU2222222' },
+  ]);
+  assert.deepStrictEqual(r, []);
+});
+
+test('advertirContenedoresEnVariosBl: nombra el contenedor y los B/L exactos donde aparece repetido', () => {
+  // Bug real (K1339): un error de digitación o de lectura del PDF puede
+  // asignar el mismo contenedor a dos B/L reales distintos.
+  const r = advertirContenedoresEnVariosBl([
+    { bl_no: 'PYRR0000001', container_no: 'PRRU9999999' },
+    { bl_no: 'PYRR0000002', container_no: 'PRRU9999999' },
+    { bl_no: 'PYRR0000003', container_no: 'PRRU8888888' },
+  ]);
+  assert.strictEqual(r.length, 1);
+  assert.match(r[0], /PRRU9999999/);
+  assert.match(r[0], /PYRR0000001/);
+  assert.match(r[0], /PYRR0000002/);
+  assert.doesNotMatch(r[0], /PRRU8888888/, 'el contenedor sin repetir no debe aparecer en el aviso');
 });

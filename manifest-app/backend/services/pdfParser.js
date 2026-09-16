@@ -756,9 +756,40 @@ async function parsePdfManifest(buffer) {
   return parseGenericDga(text);
 }
 
+/**
+ * Un mismo número de contenedor apareciendo en DOS B/L distintos del mismo
+ * archivo casi siempre es un error de digitación en el manifiesto original o
+ * de lectura del PDF (un contenedor real nunca pertenece a dos B/L a la
+ * vez) — bug real encontrado analizando K1339. Aplica sobre el resultado ya
+ * parseado (containerBLs), así que sirve para CUALQUIER formato — PDF 1302,
+ * DGA genérico o XML — sin repetir la lógica en cada parser.
+ *
+ * Se nombra el/los contenedor(es) exactos y en qué B/L aparecen — mientras
+ * no haya forma de saber automáticamente cuál copia es la correcta, esto
+ * permite revisar a mano y quitar la sobrante desde "Contenedores
+ * asociados" (ícono de papelera) en el B/L equivocado, en vez de
+ * descubrirlo después en SISCOMMATE.
+ * @param {{bl_no: string, container_no: string}[]} containerBLs
+ * @returns {string[]} Advertencias a agregar a parsed.warnings (vacío si no hay problema)
+ */
+function advertirContenedoresEnVariosBl(containerBLs) {
+  const blsPorContenedor = new Map();
+  (containerBLs || []).forEach(cb => {
+    if (!blsPorContenedor.has(cb.container_no)) blsPorContenedor.set(cb.container_no, new Set());
+    blsPorContenedor.get(cb.container_no).add(cb.bl_no);
+  });
+  const repetidos = [...blsPorContenedor.entries()].filter(([, bls]) => bls.size > 1);
+  if (!repetidos.length) return [];
+  const detalle = repetidos.map(([cont, bls]) => `${cont} (en ${[...bls].join(' y ')})`).join(', ');
+  return [
+    `${repetidos.length} contenedor${repetidos.length > 1 ? 'es' : ''} aparece${repetidos.length > 1 ? 'n' : ''} repetido${repetidos.length > 1 ? 's' : ''} en más de un B/L — casi seguro un error de digitación en el manifiesto original o de lectura del PDF: ${detalle}. Revisa cuál es el correcto y quita el sobrante desde "Contenedores asociados" en el B/L equivocado (ícono de papelera) antes de continuar.`,
+  ];
+}
+
 module.exports = {
   normalizePdfDate, parsePdfNum, grabPdf, emptyPdfBL,
   isIsoContainer, normContainerNo, isPhoneNumber,
   parsePdfParty, collectPartyBlocks,
   isCustoms1302, parseCustoms1302, parseGenericDga, parsePdfManifest,
+  advertirContenedoresEnVariosBl,
 };
