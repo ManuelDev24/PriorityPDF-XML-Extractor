@@ -210,12 +210,13 @@ function quitarAcentos(texto) {
   // Red de seguridad: cualquier carácter fuera de ASCII que no esté en el
   // mapa (símbolo raro, artefacto de OCR/PDF que no anticipamos) se quita.
   const sinNoAscii = conMapa.replace(/[^\x00-\x7F]/g, '');
-  // ? > ; ' - _ nunca aparecen en un TXT real ya aceptado por SISCOMMATE
-  // (confirmado carácter por carácter contra 3309832.TXT / K1339, aislado
-  // a las columnas de consignatario/consignador/descripción) — se quitan
-  // igual que ya se hace con acentos. Coma, punto, paréntesis y "+" SÍ se
-  // toleran ahí (el archivo real los trae) y se conservan tal cual.
-  return sinNoAscii.replace(/[?>;'\-_]/g, '');
+  // ? > ; ' - _ : / % [ ] * nunca aparecen en un TXT real ya aceptado por
+  // SISCOMMATE (confirmado carácter por carácter contra 3309832.TXT /
+  // K1339, aislado a las columnas de consignatario/consignador/
+  // descripción) — se quitan igual que ya se hace con acentos. Coma,
+  // punto, paréntesis, "&" y "+" SÍ se toleran ahí (el archivo real los
+  // trae) y se conservan tal cual.
+  return sinNoAscii.replace(/[?>;'\-_:\/%[\]*]/g, '');
 }
 
 // Puerto XML/DGA → código SISCOMMATE (fuente: ports.dbf de SISCOMMATE)

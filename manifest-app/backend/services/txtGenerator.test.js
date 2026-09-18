@@ -370,16 +370,19 @@ test('comillas curvas de un PDF (8" copiado como comilla) no rompen el ancho fij
   assert.strictEqual(Buffer.byteLength(l2, 'utf8'), 205);
 });
 
-test('? > ; \' - _ se quitan del nombre/descripción — nunca aparecen en un TXT real ya aceptado', () => {
+test('? > ; \' - _ : / % [ ] * se quitan del nombre/descripción — nunca aparecen en un TXT real ya aceptado', () => {
   // Confirmado carácter por carácter contra un TXT real ya aceptado por
   // SISCOMMATE (3309832.TXT / K1339), aislado a las columnas de
-  // consignatario/consignador/descripción: estos 6 símbolos NUNCA
-  // aparecen ahí. Coma, punto, paréntesis y "+" sí se toleran (el archivo
-  // real los trae) y se conservan tal cual.
-  const bl2 = { ...bl, consignee_name: "O'BRIEN; TEST? >CO_LTD-INC", consignor_name: 'GRUPO ROJAS & CO.' };
+  // consignatario/consignador/descripción: estos 12 símbolos NUNCA
+  // aparecen ahí. Coma, punto, paréntesis, "&" y "+" sí se toleran (el
+  // archivo real los trae) y se conservan tal cual.
+  const bl2 = { ...bl, consignee_name: "O'BRIEN; TEST? >CO_LTD-INC:A/B%C[D]E*F", consignor_name: 'GRUPO ROJAS & CO. (2DA) +1' };
   const l1 = generateTxtLine1(bl2, manifest, 'PRRU2010106');
-  assert.strictEqual(l1.substring(37, 67), pad('OBRIEN TEST COLTDINC', 30), 'quita ? > ; \' - _ conservando los espacios que ya había');
-  assert.strictEqual(l1.substring(83, 143), pad('GRUPO ROJAS & CO.', 60), 'conserva punto y &');
+  assert.strictEqual(
+    l1.substring(37, 67), pad('OBRIEN TEST COLTDINCABCDEF', 30),
+    'quita ? > ; \' - _ : / % [ ] * conservando los espacios que ya había'
+  );
+  assert.strictEqual(l1.substring(83, 143), pad('GRUPO ROJAS & CO. (2DA) +1', 60), 'conserva punto, &, paréntesis y +');
 });
 
 test('un símbolo no previsto se quita en vez de desalinear la línea', () => {
