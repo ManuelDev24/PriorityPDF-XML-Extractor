@@ -254,7 +254,7 @@ function collectPartyBlocks(lines, blIdx) {
       continue;
     }
     if (/^[—-]?\s*(SH|CO|NO|NF|KG|LBS)$/.test(t) || /^P[aá]gina/i.test(t) || /^Page/i.test(t) ||
-        /CUSTOMS USE ONLY/i.test(t) || /^\d[\d,]*\.\d{2}$/.test(t)) break;
+        /CUSTOMS USE ONLY|USO EXCLUSIVO DE ADUANA/i.test(t) || /^\d[\d,]*\.\d{2}$/.test(t)) break;
     cur.push(t);
   }
   if (cur.length && blocks.length < 3) blocks.push(cur.reverse());
@@ -280,7 +280,12 @@ function parseCustoms1302(text) {
     manifest_no:'', carrier_code:'MPRIORO'
   };
 
-  const mShip = text.match(/Name of Ship[^\n]*\n(.+)/i);
+  // Bilingüe: la misma plantilla real (Priority RORO) puede traer este
+  // encabezado en inglés o en español según quién la generó — antes solo
+  // se reconocía "Name of Ship", así que una versión en español de la
+  // MISMA plantilla se hubiera ido al parser genérico de la DGA (una
+  // estrategia de extracción totalmente distinta) en vez de a este.
+  const mShip = text.match(/(?:Name of Ship|Nombre del? Buque|Nombre de la Nave)[^\n]*\n(.+)/i);
   if (mShip) {
     const mv = mShip[1].trim().match(/^(.*?)\s{2,}(\S+)$/);
     if (mv) {
@@ -307,6 +312,15 @@ function parseCustoms1302(text) {
   // Último B/L reconocido — persiste entre páginas porque un mismo B/L con
   // varios contenedores puede partirse en un salto de página (ver más abajo).
   let lastBlNo = '';
+  // Último shipper/consignee/notify completos — bug real encontrado con
+  // K1340: cuando una de las 3 partes de una fila es IDÉNTICA a la de la
+  // fila de arriba, el PDF no la vuelve a imprimir (mismo fenómeno que ya
+  // se maneja para contenedores y B/L, aplicado ahora a los datos de las
+  // partes) — la celda queda vacía, entendiéndose "igual que arriba". Sin
+  // esto, casi la mitad de los B/L de un PDF real (46 de 101 en K1340)
+  // quedaban sin consignatario ni consignador.
+  let lastShipper = null, lastConsignee = null, lastNotify = null;
+  let partesHeredadas = 0;
   // Contadores para las advertencias de consistencia al final del parseo —
   // cada carrier/barco imprime su PDF con variaciones de formato distintas
   // (la de hoy: celdas de B/L fusionadas), y no hay forma de "aprender" un
@@ -340,7 +354,8 @@ function parseCustoms1302(text) {
     for (let i = 0; i < lines.length; i++) {
       const l = lines[i].trim();
       if (/^\s*\d{1,3}(?:,\d{3})*\.\d{2}\s*$/.test(l)) allPureNums.push(parsePdfNum(l));
-      if (/1\.- Name of Ship/i.test(l) || /BL Numbers/i.test(l)) break;
+      if (/1\.-\s*(?:Name of Ship|Nombre del? Buque|Nombre de la Nave)/i.test(l) ||
+          /BL Numbers|N[uú]meros? de B\/?L/i.test(l)) break;
     }
 
     // Entradas de B/L en la página. El PDF imprime el B/L con guión
@@ -475,13 +490,30 @@ function parseCustoms1302(text) {
       const desc = [];
       for (j = descStart; j < lines.length; j++) {
         const t = lines[j].trim();
-        if (/^[—-]?\s*(KG|LBS|SH|CO|NO|NF)$/.test(t) || /^P[aá]gina/i.test(t) || /^Page/i.test(t) || /^1\.- Name/i.test(t)) break;
+        if (/^[—-]?\s*(KG|LBS|SH|CO|NO|NF)$/.test(t) || /^P[aá]gina/i.test(t) || /^Page/i.test(t) ||
+            /^1\.-\s*(?:Name|Nombre)/i.test(t)) break;
         desc.push(t);
         if (desc.join(' ').length > 400) break;
       }
       e.goods = desc.join(' ').replace(/\s+/g, ' ').trim().substring(0, 300);
 
       const parties = collectPartyBlocks(lines, i);
+      // collectPartyBlocks siempre asume que, si faltan bloques, son los
+      // MÁS CERCANOS al principio (shipper primero) los que faltan — pero
+      // eso no siempre es así: caso real confirmado en K1340 donde la ÚNICA
+      // parte encontrada era justo el shipper (repetido a propósito porque
+      // el mismo exportador mandó el B/L siguiente), y consignatario/notify
+      // — iguales a los de la fila de arriba — eran los que de verdad no se
+      // repitieron. Se detecta comparando la única parte encontrada contra
+      // el shipper de la fila anterior: si calza, es la prueba de que ESE
+      // es su rol real, no el que collectPartyBlocks asumió por posición.
+      const encontradas = parties.filter(Boolean);
+      if (encontradas.length === 1 && lastShipper && encontradas[0][0] === lastShipper[0]) {
+        parties[0] = encontradas[0]; parties[1] = null; parties[2] = null;
+      }
+      if (parties[0]) lastShipper = parties[0]; else if (lastShipper) { parties[0] = lastShipper; partesHeredadas++; }
+      if (parties[1]) lastConsignee = parties[1]; else if (lastConsignee) { parties[1] = lastConsignee; partesHeredadas++; }
+      if (parties[2]) lastNotify = parties[2]; else if (lastNotify) { parties[2] = lastNotify; partesHeredadas++; }
       e.shipper = parties[0]; e.consignee = parties[1]; e.notify = parties[2];
       pageEntries.push(e);
     }
@@ -611,6 +643,14 @@ function parseCustoms1302(text) {
       `probablemente falta un "PYRR-XXXXXXX" que no se imprimió o no se pudo leer.`
     );
   }
+  if (partesHeredadas > 0) {
+    warnings.push(
+      `${partesHeredadas} shipper/consignatario/notify no venían impresos en el PDF (idénticos ` +
+      `a los de la fila de arriba, así que no se repitieron) y se completaron automáticamente con ` +
+      `el último valor conocido de esa parte — confirma que el B/L correspondiente quedó con el ` +
+      `shipper/consignatario/notify correcto.`
+    );
+  }
   const conContenedor = new Set(containerBLs.map(cb => cb.bl_no));
   const blsSinContenedor = bls.filter(bl => !conContenedor.has(bl.bl_no)).length;
   if (blsSinContenedor > 0) {
@@ -631,11 +671,13 @@ function parseCustoms1302(text) {
  * @returns {boolean}
  */
 function isCustoms1302(text) {
-  return /Name of Ship/i.test(text) && (
+  return /(?:Name of Ship|Nombre del? Buque|Nombre de la Nave)/i.test(text) && (
     /N[uú]mero de recibo/i.test(text) ||
     /Voyage Number/i.test(text) ||
+    /N[uú]mero de [Vv]iaje/i.test(text) ||
     /Customs Form 1300/i.test(text) ||
-    /BL Numbers/i.test(text)
+    /BL Numbers/i.test(text) ||
+    /N[uú]meros? de B\/?L/i.test(text)
   );
 }
 

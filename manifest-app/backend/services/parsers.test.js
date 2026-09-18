@@ -58,6 +58,54 @@ test('1302: extrae buque, viaje y puertos del encabezado', () => {
   assert.strictEqual(r.header.carrier_code, 'MPRIORO');
 });
 
+// La misma plantilla real (Priority RORO) puede llegar con estos
+// encabezados en español en vez de inglés — antes isCustoms1302 exigía
+// literalmente "Name of Ship", así que esta versión se hubiera ido al
+// parser genérico de la DGA (estrategia de extracción totalmente
+// distinta) en vez de reconocerse como lo que realmente es.
+const TEXTO_1302_ESPANOL = [
+  'Page 1/1',
+  '12,500.50',
+  '27,557.00',
+  '1.- Nombre del Buque',
+  'KYDON                    K1326',
+  'Puerto de carga',
+  'SANTO DOMINGO (DRP)',
+  'Puerto de Descarga',
+  'SAN JUAN (XSJ)',
+  'Números de B/L',
+  '',
+  'EXPORTADORA DOMINICANA SRL RNC: 130862154',
+  'CALLE PRIMERA #45',
+  '10101 - SANTO DOMINGO (DO - REP DOMINICANA)',
+  '',
+  'LANCO MANUFACTURING CORP TAX ID: 660487552',
+  'URB APONTE 5',
+  '00907 - SAN JUAN (PR - PUERTO RICO)',
+  '',
+  'NOTIFY PARTY INC',
+  'PO BOX 100',
+  '00907 - SAN JUAN (PR - PUERTO RICO)',
+  'PYRR-2617593 PRRU 201010-6',
+  "40' CONT",
+  '288 carton:',
+  'PACKAGES CONTAINING PAINT',
+  'KG',
+].join('\n');
+
+test('1302: se detecta igual con los encabezados en español (mismo formato, distinto idioma)', () => {
+  assert.strictEqual(isCustoms1302(TEXTO_1302_ESPANOL), true);
+});
+
+test('1302 en español: extrae buque, viaje, puertos y las 3 partes igual que en inglés', () => {
+  const r = parseCustoms1302(TEXTO_1302_ESPANOL);
+  assert.strictEqual(r.header.vessel_name, 'KYDON');
+  assert.strictEqual(r.header.voyage_no, 'K1326');
+  assert.strictEqual(r.bls.length, 1);
+  assert.strictEqual(r.bls[0].consignor_name, 'EXPORTADORA DOMINICANA SRL');
+  assert.strictEqual(r.bls[0].consignee_name, 'LANCO MANUFACTURING CORP');
+});
+
 test('1302: extrae el B/L con cantidad, descripción y peso de la página', () => {
   const r = parseCustoms1302(TEXTO_1302);
   assert.strictEqual(r.bls.length, 1);
@@ -88,6 +136,66 @@ test('1302: asigna shipper, consignee y notify en el orden correcto', () => {
   assert.strictEqual(bl.consignee_document_no, '660487552');
   assert.strictEqual(bl.consignee_document_type, 'EIN');
   assert.strictEqual(bl.notify_name, 'NOTIFY PARTY INC', 'notify');
+});
+
+test('1302: shipper/consignee/notify idénticos a la fila de arriba (no repetidos en el PDF) se heredan', () => {
+  // Bug real (K1340): cuando una de las 3 partes es IDÉNTICA a la de la
+  // fila anterior, el PDF no la repite — 46 de 101 B/L de un manifiesto
+  // real quedaban sin consignatario ni consignador por esto. Dos variantes
+  // reales distintas en el mismo archivo:
+  //  · BL2: shipper se repite (SÍ viene impreso, mismo exportador que BL1)
+  //    pero consignee/notify — iguales a los de BL1 — no se repiten.
+  //  · BL3: consignee/notify SÍ vienen impresos (empresa nueva) pero el
+  //    shipper — igual al de BL2 — no se repite.
+  const texto = [
+    'Page 1/1',
+    '1,000.00', '2,204.00',
+    '1.- Name of Ship',
+    'KYDON                    K1340',
+    'BL Numbers',
+    '',
+    'PRODUCTOS DEL TROPICO',
+    'KM 28 CARR SANCHEZ',
+    '',
+    'EMPRESAS LA FAMOSA',
+    'CARR 866',
+    '',
+    'EMPRESAS LA FAMOSA',
+    'CARR 866',
+    'PYRR-3100001 PRRU 111111-1',
+    "40' CONT",
+    '100 carton:',
+    'ALGO UNO',
+    'KG',
+    '',
+    'PRODUCTOS DEL TROPICO',
+    'KM 28 CARR SANCHEZ',
+    'PYRR-3100002 PRRU 222222-2',
+    "40' CONT",
+    '200 carton:',
+    'ALGO DOS',
+    'KG',
+    '',
+    'BANDALUX CORPORATION',
+    'AVE LOS PROCERES',
+    '',
+    'PLAZA FOOD SYSTEMS',
+    'HC5 BOX 559000',
+    'PYRR-3100003 PRRU 333333-3',
+    "40' CONT",
+    '300 carton:',
+    'ALGO TRES',
+    'KG',
+  ].join('\n');
+  const r = parseCustoms1302(texto);
+  const bl2 = r.bls.find(b => b.bl_no === 'PYRR3100002');
+  const bl3 = r.bls.find(b => b.bl_no === 'PYRR3100003');
+  assert.strictEqual(bl2.consignor_name, 'PRODUCTOS DEL TROPICO', 'BL2: shipper viene impreso de nuevo, no se hereda');
+  assert.strictEqual(bl2.consignee_name, 'EMPRESAS LA FAMOSA', 'BL2: consignatario heredado de BL1 (no repetido en el PDF)');
+  assert.strictEqual(bl2.notify_name, 'EMPRESAS LA FAMOSA', 'BL2: notify heredado de BL1 (no repetido en el PDF)');
+  assert.strictEqual(bl3.consignor_name, 'PRODUCTOS DEL TROPICO', 'BL3: shipper heredado de BL2 (no repetido en el PDF)');
+  assert.strictEqual(bl3.consignee_name, 'BANDALUX CORPORATION', 'BL3: consignatario nuevo, viene impreso');
+  assert.strictEqual(bl3.notify_name, 'PLAZA FOOD SYSTEMS', 'BL3: notify nuevo, viene impreso');
 });
 
 test('1302: el EIN del consignatario alimenta hacienda_client_ss', () => {
