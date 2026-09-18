@@ -22,8 +22,7 @@ function setting(key, fallback) {
 }
 
 /**
- * Manifiesto tal como llega desde la tabla `manifests`, más `carrier_ivu` que
- * la ruta de exportación adjunta desde el catálogo de carriers.
+ * Manifiesto tal como llega desde la tabla `manifests`.
  * @typedef {object} Manifest
  * @property {string} [carrier_code]    Código del carrier (por defecto MPRIORO)
  * @property {string} [manifest_no]     No. de manifiesto de Hacienda
@@ -35,7 +34,6 @@ function setting(key, fallback) {
  * @property {string|number} [docking_number] Número de atraque, obligatorio
  * @property {string} [loading_port]
  * @property {string} [unloading_port]
- * @property {string} [carrier_ivu]     Respaldo del IVU si el consignatario no tiene
  */
 
 /**
@@ -407,7 +405,12 @@ function generateTxtLine1(bl, manifest, containerNo) {
   const valCents = padZ(Math.round(fobValue * 100), 9);
   // tariff+R: '040R', '045R', o 4 espacios si es libre arancel / tránsito
   const tariffR  = tariff ? `${pad(tariff, 3)}R` : '    ';
-  const ivu11    = sanitizeIdentificador(bl.hacienda_client_ivu || manifest.carrier_ivu);
+  // Antes caía al IVU del carrier cuando el consignatario no tenía uno
+  // propio — comparado contra un TXT real ya aceptado por SISCOMMATE
+  // (3309832.TXT / K1339), esa fila JAMÁS mete el IVU del carrier ahí: o
+  // trae el IVU real del cliente, o queda en blanco. El respaldo mandaba un
+  // número que no le correspondía a ese consignatario.
+  const ivu11    = sanitizeIdentificador(bl.hacienda_client_ivu || '');
   return (
     '1' +
     pad(sanitizeIdentificador(bl.bl_no), 16) + // [1:17]

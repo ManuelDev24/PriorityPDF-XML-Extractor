@@ -582,6 +582,14 @@ watch(() => bl.value?.id, () => {
               <SelectContent>
                 <SelectItem value="040">040 — Libre arancel</SelectItem>
                 <SelectItem value="045">045 — Carga general</SelectItem>
+                <!-- 020 y 048 confirmados contra un TXT real ya aceptado por
+                     SISCOMMATE (3309832.TXT / K1339: 020 en STEEL REBAR,
+                     048 en STEEL GALVANIZED TUBING) — antes no se podían
+                     seleccionar acá aunque son códigos válidos reales. Sin
+                     el nombre oficial exacto del arbitrio para confirmar el
+                     texto, se muestra solo el código. -->
+                <SelectItem value="020">020</SelectItem>
+                <SelectItem value="048">048</SelectItem>
               </SelectContent>
             </Select>
             <p class="text-xs text-ink-faint">{{ libreArancel ? 'FOB será 0 en el TXT' : 'Incluye valor FOB' }}</p>

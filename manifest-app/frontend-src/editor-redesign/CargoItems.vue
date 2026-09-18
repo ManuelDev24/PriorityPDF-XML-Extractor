@@ -189,7 +189,7 @@ defineExpose({ renombrarContenedor });
             <TableCell class="w-2/12">
               <Select :model-value="item.hacienda_tariff || ''" @update:model-value="(v) => guardarCampo(item.id,'hacienda_tariff',String(v))">
                 <SelectTrigger class="h-9 text-xs"><SelectValue placeholder="—" /></SelectTrigger>
-                <SelectContent><SelectItem value="040">040</SelectItem><SelectItem value="045">045</SelectItem></SelectContent>
+                <SelectContent><SelectItem value="040">040</SelectItem><SelectItem value="045">045</SelectItem><SelectItem value="020">020</SelectItem><SelectItem value="048">048</SelectItem></SelectContent>
               </Select>
             </TableCell>
             <TableCell class="w-1/12"><Button variant="ghost" size="icon" class="size-7 text-destructive" @click="eliminar(item.id)"><Trash2 class="size-3.5" /></Button></TableCell>
@@ -215,7 +215,7 @@ defineExpose({ renombrarContenedor });
             <Label class="text-xs">Tarifa</Label>
             <Select v-model="fTarifa">
               <SelectTrigger class="h-9 text-xs"><SelectValue placeholder="—" /></SelectTrigger>
-              <SelectContent><SelectItem value="040">040</SelectItem><SelectItem value="045">045</SelectItem></SelectContent>
+              <SelectContent><SelectItem value="040">040</SelectItem><SelectItem value="045">045</SelectItem><SelectItem value="020">020</SelectItem><SelectItem value="048">048</SelectItem></SelectContent>
             </Select>
           </div>
         </div>

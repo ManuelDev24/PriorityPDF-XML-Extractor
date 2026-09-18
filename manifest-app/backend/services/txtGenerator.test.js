@@ -188,10 +188,15 @@ test('un código no reconocido no se manda — cae al respaldo BOX/LSE', () => {
   assert.strictEqual(l2b.substring(22, 28), 'LSE   ', 'sin contenedor debería caer a LSE');
 });
 
-test('el IVU del carrier se usa cuando el consignatario no tiene', () => {
+test('sin IVU propio el campo queda en blanco, NUNCA cae al IVU del carrier', () => {
+  // Comparado contra un TXT real ya aceptado por SISCOMMATE (3309832.TXT /
+  // K1339): esa fila jamás mete el IVU del carrier ahí cuando el
+  // consignatario no tiene uno propio — o trae el IVU real del cliente, o
+  // queda en blanco. El respaldo al IVU del carrier mandaba un número que
+  // no le correspondía a ese consignatario.
   const sinIvu = { ...bl, hacienda_client_ivu: '' };
   const l1 = generateTxtLine1(sinIvu, manifest, 'PRRU2010106');
-  assert.strictEqual(l1.substring(190, 201), '01406530016', 'debe caer al IVU del carrier');
+  assert.strictEqual(l1.substring(190, 201), '           ', 'debe quedar en blanco, no usar el IVU del carrier');
 });
 
 test('con varios contenedores el peso se reparte entre ellos', () => {
