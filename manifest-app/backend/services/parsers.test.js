@@ -373,6 +373,128 @@ test('1302: un par KG/LBS partido justo en el salto de página no desalinea el p
   assert.strictEqual(bl2.gross_weight, 500, 'la fila 2 recibe su propio KG, no el LBS huérfano de la fila 1');
 });
 
+test('1302: un contenedor sin NINGÚN peso impreso (ni siquiera diferido) no le roba el peso al B/L siguiente', () => {
+  // Bug real (K1340, B/L PYRR-2631248, 8vo contenedor "PRRU 403698-5" de 8):
+  // el PDF marca el peso en blanco con "— KG"/"— LBS" (con guión), pero a
+  // diferencia del caso normal — donde ese "— KG" SÍ trae su 0.00 real
+  // diferido a la página siguiente (ver test de abajo) — aquí no se imprime
+  // NINGÚN número para esta fila en todo el documento: el próximo número
+  // real del documento es el peso del B/L que sigue. Antes del fix, el
+  // emparejamiento (por índice, sobre todo el documento) le asignaba ese
+  // número igual, robándole el peso al B/L siguiente y corriendo de ahí en
+  // adelante el peso de TODO el resto del manifiesto.
+  const texto = [
+    'Page 1/1',
+    '5,369.00', '11,836.62',   // peso real de A
+    '10,080.00', '22,222.60',  // peso real del contenedor 1 de B
+    '19,200.00', '42,328.75',  // peso real de C — NO debe ir al contenedor 2 de B
+    '1.- Name of Ship',
+    'KYDON                    K1340',
+    'BL Numbers',
+    '',
+    'SHIPPER A', 'CALLE A',
+    '',
+    'CONSIGNEE A', 'CALLE A',
+    '',
+    'NOTIFY A', 'CALLE A',
+    'PYRR-1111111 PRRU 111111-1',
+    "40' CONT",
+    '10 carton:',
+    'MERCANCIA A',
+    'KG',
+    '',
+    'SHIPPER B', 'CALLE B',
+    '',
+    'CONSIGNEE B', 'CALLE B',
+    '',
+    'NOTIFY B', 'CALLE B',
+    'PYRR-2222222 PRRU 222222-2',
+    "40' CONT",
+    '20 carton:',
+    'MERCANCIA B',
+    'KG',
+    'PRRU 333333-3',
+    "40' CONT",
+    '—  KG',
+    ' LBS',
+    '',
+    'SHIPPER C', 'CALLE C',
+    '',
+    'CONSIGNEE C', 'CALLE C',
+    '',
+    'NOTIFY C', 'CALLE C',
+    'PYRR-4444444 PRRU 444444-4',
+    "40' CONT",
+    '30 carton:',
+    'MERCANCIA C',
+    'KG',
+  ].join('\n');
+  const r = parseCustoms1302(texto);
+  const blA = r.bls.find(b => b.bl_no === 'PYRR1111111');
+  const blB = r.bls.find(b => b.bl_no === 'PYRR2222222');
+  const blC = r.bls.find(b => b.bl_no === 'PYRR4444444');
+  assert.strictEqual(blA.gross_weight, 5369, 'A no se ve afectado');
+  assert.strictEqual(blB.gross_weight, 10080, 'B: solo el contenedor 1 aporta peso, el 2do (sin peso impreso) suma 0');
+  assert.strictEqual(blC.gross_weight, 19200, 'C conserva SU propio peso, no el del contenedor huérfano de B');
+});
+
+test('1302: un contenedor con "— KG" cuyo 0.00 SÍ viene diferido se consume del fondo común normalmente', () => {
+  // Bug real (K1340, B/L PYRR-2632075): varios contenedores con "— KG" SÍ
+  // traen su 0.00 real impreso (diferido a la página siguiente, igual que
+  // cualquier fila normal) — a diferencia del caso de arriba. Si se tratara
+  // TODO "— KG" como "no aporta nada al documento" sin comprobar, ese 0.00
+  // real quedaría sin consumir y desalinearía el peso de todos los B/L
+  // siguientes (justo el bug opuesto al que arregla el test de arriba).
+  const texto = [
+    'Page 1/1',
+    '1,000.00', '2,204.00',  // peso de A
+    '0.00', '0.00',          // 0.00 real y diferido del contenedor de B
+    '5,000.00', '11,023.00', // peso de C — debe seguir intacto
+    '1.- Name of Ship',
+    'KYDON                    K1340',
+    'BL Numbers',
+    '',
+    'SHIPPER A', 'CALLE A',
+    '',
+    'CONSIGNEE A', 'CALLE A',
+    '',
+    'NOTIFY A', 'CALLE A',
+    'PYRR-1111111 PRRU 111111-1',
+    "40' CONT",
+    '10 carton:',
+    'MERCANCIA A',
+    'KG',
+    '',
+    'SHIPPER B', 'CALLE B',
+    '',
+    'CONSIGNEE B', 'CALLE B',
+    '',
+    'NOTIFY B', 'CALLE B',
+    'PYRR-2222222 PRRU 222222-2',
+    "40' CONT",
+    '—  KG',
+    ' LBS',
+    '',
+    'SHIPPER C', 'CALLE C',
+    '',
+    'CONSIGNEE C', 'CALLE C',
+    '',
+    'NOTIFY C', 'CALLE C',
+    'PYRR-4444444 PRRU 444444-4',
+    "40' CONT",
+    '30 carton:',
+    'MERCANCIA C',
+    'KG',
+  ].join('\n');
+  const r = parseCustoms1302(texto);
+  const blA = r.bls.find(b => b.bl_no === 'PYRR1111111');
+  const blB = r.bls.find(b => b.bl_no === 'PYRR2222222');
+  const blC = r.bls.find(b => b.bl_no === 'PYRR4444444');
+  assert.strictEqual(blA.gross_weight, 1000, 'A no se ve afectado');
+  assert.strictEqual(blB.gross_weight, 0, 'B: su 0.00 real se asigna');
+  assert.strictEqual(blC.gross_weight, 5000, 'C conserva su propio peso — el 0.00 de B no se dejó de consumir');
+});
+
 test('1302: un contenedor huérfano precedido de un bloque de dirección completo NO se reconecta al B/L anterior', () => {
   // Bug real (K1338): "MXRU 485642-8" aparecía sin ningún "PYRR-XXXXXXX"
   // junto, pero justo antes terminaba un bloque de shipper/consignee/notify

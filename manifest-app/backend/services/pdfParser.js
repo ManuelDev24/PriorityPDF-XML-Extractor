@@ -335,6 +335,19 @@ function parseCustoms1302(text) {
   // corromper el peso de todos los B/L que siguen.
   let contenedorSinBlPerdido = 0;
   let totalWeightPdf = 0;
+  // Filas con peso EXPLÍCITAMENTE en blanco — el PDF imprime "— KG"/"— LBS"
+  // (con guión) pegado directo a "40' CONT" sin sello/cantidad/descripción de
+  // por medio, en vez del "— KG" normal que sí trae su número en la página
+  // siguiente. Caso real en K1340 (B/L PYRR-2631248, contenedor PRRU 403698-5,
+  // de 8): esa fila no aporta NINGÚN número al documento — a diferencia de
+  // una fila normal, cuyo peso simplemente está diferido a la página
+  // siguiente. Si se le asigna igual un par del fondo común (como hacía el
+  // código antes), le "roba" el peso a la fila real que sigue, y desde ahí
+  // en adelante CADA fila del resto del manifiesto queda una posición
+  // corrida — el bug real detrás de "lee mal el peso en los PDF". La suma
+  // total no delata el problema porque ningún número se pierde, solo se
+  // reparte en la fila equivocada.
+  let pesosVaciosExplicitos = 0;
 
   // Números de peso (KG,LBS) de TODO el documento, en el mismo orden en que
   // aparecen — NO se reinician por página. El par de una fila puede quedar
@@ -456,7 +469,8 @@ function parseCustoms1302(text) {
         page: pIdx + 1,
         shipper: null,
         consignee: null,
-        notify: null
+        notify: null,
+        pesoVacioExplicito: false
       };
 
       let j = i + 1;
@@ -497,6 +511,14 @@ function parseCustoms1302(text) {
       }
       e.goods = desc.join(' ').replace(/\s+/g, ' ').trim().substring(0, 300);
 
+      // "— KG"/"— LBS" con guión (a diferencia de " KG"/" LBS" sin guión, que
+      // es el caso normal cuyo número está diferido a la página siguiente):
+      // esta fila no tiene ningún número de peso en todo el documento.
+      if (/^[—-]\s*(KG|LBS)$/.test((lines[j] || '').trim())) {
+        e.pesoVacioExplicito = true;
+        pesosVaciosExplicitos++;
+      }
+
       const parties = collectPartyBlocks(lines, i);
       // collectPartyBlocks siempre asume que, si faltan bloques, son los
       // MÁS CERCANOS al principio (shipper primero) los que faltan — pero
@@ -526,7 +548,30 @@ function parseCustoms1302(text) {
   const allWeightsKg = [];
   for (let i = 0; i + 1 < allPureNums.length; i += 2) allWeightsKg.push(allPureNums[i]);
   totalWeightPdf = allWeightsKg.reduce((a, b) => a + b, 0);
-  allEntries.forEach((e, idx) => { e.gross_weight = idx < allWeightsKg.length ? allWeightsKg[idx] : 0; });
+  // Las filas con "pesoVacioExplicito" SIEMPRE pesan 0 (confirmado: el PDF
+  // nunca trae un peso real ahí) — pero NO siempre está ausente del fondo
+  // común: a veces el "0.00/0.00" sí se imprime, diferido a la página
+  // siguiente igual que cualquier fila normal (confirmado en K1340,
+  // PYRR-2632075: 3 contenedores con "— KG" cuyo 0.00 real SÍ aparece
+  // arriba de la página siguiente); otras veces no se imprime nada en
+  // absoluto (confirmado en K1340, PYRR-2631248 contenedor PRRU 403698-5:
+  // el siguiente número real en el documento es el peso del B/L
+  // siguiente, no un 0.00 para este contenedor). Ambos casos se ven
+  // idénticos en el texto ("— KG"/"— LBS"), así que se decide mirando el
+  // siguiente número disponible: si es (casi) cero, es el 0.00 diferido de
+  // esta fila y sí se consume; si no, esta fila no aportó nada al fondo
+  // común y no se toca (evita robarle el peso real a la fila siguiente).
+  let weightPtr = 0;
+  allEntries.forEach(e => {
+    if (e.pesoVacioExplicito) {
+      const siguiente = allWeightsKg[weightPtr];
+      if (siguiente !== undefined && siguiente < 1) weightPtr++;
+      e.gross_weight = 0;
+      return;
+    }
+    e.gross_weight = weightPtr < allWeightsKg.length ? allWeightsKg[weightPtr] : 0;
+    weightPtr++;
+  });
 
   // Consolidar B/Ls y extraer Contenedores y Cargo Items
   const blMap = new Map();
@@ -649,6 +694,14 @@ function parseCustoms1302(text) {
       `a los de la fila de arriba, así que no se repitieron) y se completaron automáticamente con ` +
       `el último valor conocido de esa parte — confirma que el B/L correspondiente quedó con el ` +
       `shipper/consignatario/notify correcto.`
+    );
+  }
+  if (pesosVaciosExplicitos > 0) {
+    warnings.push(
+      `${pesosVaciosExplicitos} contenedor${pesosVaciosExplicitos > 1 ? 'es' : ''} ` +
+      `no trae${pesosVaciosExplicitos > 1 ? 'n' : ''} ningún peso impreso en el PDF ("— KG"/"— LBS" ` +
+      `sin número, no diferido a otra página) y qued${pesosVaciosExplicitos > 1 ? 'aron' : 'ó'} en 0 kg ` +
+      `— revisa si es un dato real que falta en el manifiesto original.`
     );
   }
   const conContenedor = new Set(containerBLs.map(cb => cb.bl_no));
