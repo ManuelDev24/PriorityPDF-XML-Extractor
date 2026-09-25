@@ -409,7 +409,19 @@ function parseCustoms1302(text) {
         // (ej. CF365: PYRR-2631003, PYRR-2631004).
         if (!lastBlNo) continue;
         const cleanedOrphan = normContainerNo(raw);
-        if (!isIsoContainer(cleanedOrphan)) continue;
+        // Un vehículo adicional del mismo B/L (varios autos en un mismo
+        // envío) se fusiona igual que un contenedor extra — bug real
+        // confirmado en AU050S ("RM1-1002654" huérfano se perdía en
+        // silencio, ni siquiera contaba como advertencia, porque este
+        // chequeo solo aceptaba contenedores ISO reales). El patrón es
+        // preciso a propósito (2 letras + 8 dígitos, el código de chasis
+        // corto que usa este sistema) y NO un rango de longitud genérico
+        // como el de la clasificación VIN de más abajo — acá cualquier
+        // línea suelta del documento (teléfono, fecha, número AES ITN)
+        // puede caer en ese rango de longitud y se tomaba como fila
+        // fusionada real, inventando B/L falsos.
+        const pareceVehiculo = /^[A-Z]{2}\d{8}$/i.test(cleanedOrphan);
+        if (!isIsoContainer(cleanedOrphan) && !pareceVehiculo) continue;
         // Pero si justo antes (sin nada de por medio) termina un bloque de
         // dirección completo — "... (PUERTO RICO)", "... (REPUBLICA
         // DOMINICANA)", etc., el mismo patrón con el que SIEMPRE cierra un
@@ -443,7 +455,14 @@ function parseCustoms1302(text) {
         const cleaned = normContainerNo(rawSecondToken);
         if (isIsoContainer(cleaned)) {
           containerNo = cleaned;
-        } else if (/^[A-HJ-NPR-Z0-9]{11,17}$/i.test(cleaned)) {
+        } else if (/^[A-HJ-NPR-Z0-9]{10,17}$/i.test(cleaned)) {
+          // {10,17} y no {11,17}: bug real confirmado en AU050S — este
+          // sistema identifica vehículos con un código de chasis corto
+          // ("RM1-1200191", 10 caracteres sin el guión), no un VIN completo
+          // de 17. Con el mínimo en 11 estos códigos no calzaban acá ni con
+          // isIsoContainer (que exige 11 exactos con formato distinto) y
+          // caían al catch-all genérico de abajo, quedando mal guardados
+          // como número de contenedor en vez de vin/VEHICLE.
           vin = cleaned;
           equipmentType = 'VEHICLE';
         } else if (!/^[—-]?(KG|LBS|N\/?A)$/i.test(cleaned) && cleaned.replace(/[^A-Z0-9]/gi, '').length >= 6) {
@@ -561,6 +580,16 @@ function parseCustoms1302(text) {
   // siguiente número disponible: si es (casi) cero, es el 0.00 diferido de
   // esta fila y sí se consume; si no, esta fila no aportó nada al fondo
   // común y no se toca (evita robarle el peso real a la fila siguiente).
+  // Filas cuyo peso quedó en 0 porque el documento se acabó justo antes de
+  // imprimirlo — no porque el B/L de verdad no traiga peso. Caso real
+  // (AU050S, archivo partido en varios PDF por el sistema de origen): la
+  // última fila de un PDF de 37/37 páginas tiene su peso diferido "a la
+  // página siguiente" como cualquier fila normal, pero esa página no existe
+  // en ESTE archivo — quedó en el PDF que sigue (u otro que nunca se generó).
+  // A diferencia de pesoVacioExplicito, acá el dato SÍ existía en el
+  // manifiesto real, solo que no en el recorte que llegó — por eso amerita
+  // su propio aviso en vez de mezclarse con el de "— KG" genuinamente vacío.
+  let pesosSinPagina = 0;
   let weightPtr = 0;
   allEntries.forEach(e => {
     if (e.pesoVacioExplicito) {
@@ -569,6 +598,7 @@ function parseCustoms1302(text) {
       e.gross_weight = 0;
       return;
     }
+    if (weightPtr >= allWeightsKg.length) pesosSinPagina++;
     e.gross_weight = weightPtr < allWeightsKg.length ? allWeightsKg[weightPtr] : 0;
     weightPtr++;
   });
@@ -702,6 +732,20 @@ function parseCustoms1302(text) {
       `no trae${pesosVaciosExplicitos > 1 ? 'n' : ''} ningún peso impreso en el PDF ("— KG"/"— LBS" ` +
       `sin número, no diferido a otra página) y qued${pesosVaciosExplicitos > 1 ? 'aron' : 'ó'} en 0 kg ` +
       `— revisa si es un dato real que falta en el manifiesto original.`
+    );
+  }
+  if (pesosSinPagina > 0) {
+    // Un mismo B/L con varios contenedores puede aportar más de una fila acá
+    // (ej. AU050S: PYRR2632848 con 10 contenedores, los últimos 7 sin peso
+    // propio) — se listan los B/L una sola vez, no una por contenedor.
+    const blsAfectados = [...new Set(
+      allEntries.filter(e => !e.pesoVacioExplicito).slice(-pesosSinPagina).map(e => e.bl_no)
+    )];
+    warnings.push(
+      `${pesosSinPagina} fila${pesosSinPagina > 1 ? 's' : ''} de contenedor quedaron en 0 kg porque el ` +
+      `documento termina justo antes de imprimir su peso (diferido a una página que no existe en este ` +
+      `PDF) — a diferencia del aviso anterior, acá el peso SÍ existía en el manifiesto original. ` +
+      `Revisa manualmente el peso de: ${blsAfectados.join(', ')}.`
     );
   }
   const conContenedor = new Set(containerBLs.map(cb => cb.bl_no));

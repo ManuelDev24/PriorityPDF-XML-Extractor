@@ -222,6 +222,65 @@ test('1302: un vehículo se reconoce por VIN y no genera contenedor', () => {
   assert.strictEqual(r.bls[0].hacienda_container_no, '1HGCM82633A004352');
 });
 
+test('1302: un vehículo con código de chasis corto (10 caracteres, no VIN de 17) también se reconoce y no genera contenedor', () => {
+  // Bug real (AU050S): este sistema identifica vehículos con un código de
+  // chasis corto ("RM1-1200191" → "RM11200191" sin el guión, 10 caracteres),
+  // no un VIN completo de 17. Antes el rango exigía 11-17, así que este
+  // código no calzaba ni con isIsoContainer (formato distinto) ni con el
+  // patrón de VIN, y caía al catch-all genérico quedando mal guardado como
+  // número de contenedor en vez de vin/VEHICLE.
+  const texto = TEXTO_1302
+    .replace('PYRR-2617593 PRRU 201010-6', 'PYRR-2617594 RM1-1200191')
+    .replace("40' CONT", 'VEHICLE');
+  const r = parseCustoms1302(texto);
+  assert.strictEqual(r.bls.length, 1);
+  assert.strictEqual(r.containers.length, 0, 'un vehículo con código corto tampoco crea contenedor');
+  assert.strictEqual(r.cargoItems[0].vin, 'RM11200191');
+  assert.strictEqual(r.cargoItems[0].container_no, null);
+});
+
+test('1302: un segundo vehículo del mismo B/L, en fila huérfana (celda fusionada), se reconecta y no se pierde', () => {
+  // Bug real (AU050S, B/L PYRR-2632441 con varios autos): igual que un
+  // contenedor extra fusionado, un segundo/tercer vehículo del mismo B/L
+  // llega en una línea sola, sin "PYRR-XXXXXXX" repetido. La detección de
+  // huérfanos solo aceptaba contenedores ISO reales (isIsoContainer) — un
+  // código de chasis de vehículo no calzaba ahí y la fila se perdía en
+  // silencio, sin siquiera contar como advertencia.
+  const texto = [
+    'Page 1/1',
+    '1,000.00', '2,204.00',
+    '1.- Name of Ship',
+    'KYDON                    K1340',
+    'BL Numbers',
+    '',
+    'SHIPPER UNO',
+    'CALLE X',
+    '',
+    'CONSIGNEE UNO',
+    'CALLE Y',
+    '',
+    'NOTIFY UNO',
+    'CALLE Z',
+    'PYRR-2632441 GRX130-6015688',
+    'VEHICLE',
+    'N/A',
+    '1 :',
+    'TOYOTA MARK X',
+    'KG',
+    'RM1-1002654',
+    'VEHICLE',
+    'N/A',
+    '1 :',
+    'HONDA CRV',
+    'LBS',
+  ].join('\n');
+  const r = parseCustoms1302(texto);
+  assert.strictEqual(r.bls.length, 1, 'un solo B/L, el segundo auto no crea uno nuevo por error');
+  const vins = r.cargoItems.map(ci => ci.vin).sort();
+  assert.deepStrictEqual(vins, ['GRX1306015688', 'RM11002654'], 'ambos vehículos quedan registrados, ninguno se pierde');
+  assert.strictEqual(r.containers.length, 0);
+});
+
 test('1302: el mismo B/L en dos contenedores consolida pesos y cantidades', () => {
   const texto = [
     'Page 1/1',
@@ -493,6 +552,56 @@ test('1302: un contenedor con "— KG" cuyo 0.00 SÍ viene diferido se consume d
   assert.strictEqual(blA.gross_weight, 1000, 'A no se ve afectado');
   assert.strictEqual(blB.gross_weight, 0, 'B: su 0.00 real se asigna');
   assert.strictEqual(blC.gross_weight, 5000, 'C conserva su propio peso — el 0.00 de B no se dejó de consumir');
+});
+
+test('1302: peso diferido a una página que no existe (documento cortado) avisa en vez de quedar en 0 silencioso', () => {
+  // Bug real (viaje AU050S, PDF partido en varios archivos por el sistema de
+  // origen): el manifiesto real de un archivo termina en su última página
+  // justo con el peso de la última fila diferido "a la página siguiente" —
+  // que en ESE archivo no existe (quedó en otro PDF, o nunca se generó). A
+  // diferencia de pesoVacioExplicito ("— KG" que de verdad no trae número en
+  // ningún lado), acá el dato SÍ existía en el manifiesto original completo,
+  // solo que no en este recorte — amerita su propio aviso para que el
+  // operador sepa que hay que rellenar el peso a mano, en vez de confiar en
+  // un 0 silencioso indistinguible de un peso real.
+  const texto = [
+    'Page 1/1',
+    '1,000.00', '2,204.00', // peso de A — el único que sí está completo
+    '1.- Name of Ship',
+    'KYDON                    K1340',
+    'BL Numbers',
+    '',
+    'SHIPPER A', 'CALLE A',
+    '',
+    'CONSIGNEE A', 'CALLE A',
+    '',
+    'NOTIFY A', 'CALLE A',
+    'PYRR-1111111 PRRU 111111-1',
+    "40' CONT",
+    '10 carton:',
+    'MERCANCIA A',
+    'KG',
+    '',
+    'SHIPPER B', 'CALLE B',
+    '',
+    'CONSIGNEE B', 'CALLE B',
+    '',
+    'NOTIFY B', 'CALLE B',
+    'PYRR-2222222 PRRU 222222-2',
+    "40' CONT",
+    '20 carton:',
+    'MERCANCIA B',
+    'KG', // sin número: el documento se corta acá, no hay página siguiente
+  ].join('\n');
+  const r = parseCustoms1302(texto);
+  const blA = r.bls.find(b => b.bl_no === 'PYRR1111111');
+  const blB = r.bls.find(b => b.bl_no === 'PYRR2222222');
+  assert.strictEqual(blA.gross_weight, 1000, 'A no se ve afectado');
+  assert.strictEqual(blB.gross_weight, 0, 'B queda en 0 a falta de otro dato — pero debe avisar, no fallar en silencio');
+  assert.ok(
+    r.warnings.some(w => w.includes('documento termina justo antes de imprimir su peso') && w.includes('PYRR2222222')),
+    'debe avisar que el peso de B se perdió porque el documento se corta ahí, no por estar genuinamente vacío'
+  );
 });
 
 test('1302: un contenedor huérfano precedido de un bloque de dirección completo NO se reconecta al B/L anterior', () => {
