@@ -37,7 +37,15 @@ const modal = ref<{
   // ver subir(). No se mete en el sistema genérico de modales para todo lo
   // demás, que no necesita esto.
   enOtroViaje?: Array<{ id: number; bl_no: string; voyage_no: string }>;
+  // Solo lo usa el modal "Cargar como viaje nuevo" — ver pedirVoyageNuevo().
+  pedirTexto?: boolean;
 } | null>(null);
+// Nombre que el operador escribe para el viaje nuevo cuando el archivo trae
+// un VoyageNo que ya existe pero, a diferencia del caso normal (mismo viaje,
+// B/L nuevos), en realidad es un manifiesto operativamente distinto — caso
+// real: dos XML de la DGA para "CF371" y "CF371TB", mismo viaje físico pero
+// booking distinto, que antes se unificaban sin poder evitarlo.
+const nuevoVoyageNo = ref('');
 // true por defecto: es lo que se pidió — que esos B/L se puedan mover al
 // viaje nuevo en el mismo paso de carga, en vez de tener que hacerlo a mano
 // después. El operador puede destildarlo si de verdad quiere dejarlos donde
@@ -152,7 +160,21 @@ async function subir(archivo: File | undefined) {
       partes.push(`<div class="mt-2 rounded border border-status-pending/40 bg-status-pending/10 p-2 text-status-pending"><strong>Revisar antes de continuar:</strong><ul class="ml-4 list-disc">${avisos}</ul></div>`);
     }
 
-    const ejecutarCarga = async () => {
+    const cargarConFormData = async (mensajeExito: (data: any) => string) => {
+      cerrarModal();
+      setEstado('Cargando manifiesto...');
+      try {
+        const r = await fetch('/api/manifests/upload', { method: 'POST', body: fd });
+        const data = await r.json();
+        if (!data.ok) throw new Error(data.error);
+        toast(mensajeExito(data));
+        await cargarManifiestos();
+        await seleccionarManifiesto(data.manifest_id);
+      } catch (e) { toast('Error: ' + (e as Error).message, 'err'); setEstado('Error cargando manifiesto'); }
+      if (archivoInput.value) archivoInput.value.value = '';
+    };
+
+    const ejecutarCarga = () => {
       const moverEstos = moverEnOtroViaje.value ? (modal.value?.enOtroViaje ?? []) : [];
       // El mover va en la MISMA petición de carga (mover_ids), no en una
       // llamada aparte después — así el backend calcula su posición real
@@ -162,20 +184,37 @@ async function subir(archivo: File | undefined) {
       // más bajo) y por eso siempre saltaban al principio de la lista en
       // vez de quedar en su posición real del PDF.
       if (moverEstos.length) fd.set('mover_ids', JSON.stringify(moverEstos.map(m => m.id)));
-      cerrarModal();
-      setEstado('Cargando manifiesto...');
-      try {
-        const r = await fetch('/api/manifests/upload', { method: 'POST', body: fd });
-        const data = await r.json();
-        if (!data.ok) throw new Error(data.error);
+      return cargarConFormData(data => {
         let mensaje = data.mensaje || `Manifiesto cargado: ${data.bl_count} B/L`;
         if (data.movidos?.length) mensaje += ` · ${data.movidos.length} B/L movidos aquí desde su viaje anterior`;
         if (data.omitidos?.length) mensaje += ` · ${data.omitidos.length} no se pudieron mover: ${data.omitidos.map((o: { motivo: string }) => o.motivo).join('; ')}`;
-        toast(mensaje);
-        await cargarManifiestos();
-        await seleccionarManifiesto(data.manifest_id);
-      } catch (e) { toast('Error: ' + (e as Error).message, 'err'); setEstado('Error cargando manifiesto'); }
-      if (archivoInput.value) archivoInput.value.value = '';
+        return mensaje;
+      });
+    };
+
+    // Dos archivos distintos (típicamente dos XML de la DGA) pueden traer el
+    // MISMO VoyageNo en su propio encabezado sin ser, operativamente, el
+    // mismo manifiesto — ej. "CF371" y "CF371TB" para el mismo buque/viaje
+    // físico pero booking distinto. Antes no había forma de evitar que se
+    // unificaran bajo un solo viaje; acá el operador puede pedir que este
+    // archivo se cargue como un viaje separado, con el nombre que él elija.
+    const pedirVoyageNuevo = () => {
+      nuevoVoyageNo.value = '';
+      modal.value = {
+        titulo: 'Cargar como viaje nuevo',
+        cuerpo: `Este archivo trae el viaje <strong>${preview.voyage_no}</strong>, que ya existe. ` +
+          `Escribe un nombre distinto para cargarlo como un viaje aparte (sus B/L no se van a mezclar con el viaje <strong>${preview.voyage_no}</strong> existente).`,
+        pedirTexto: true,
+        botones: [
+          { label: 'Cancelar', variant: 'outline', accion: () => { cerrarModal(); if (archivoInput.value) archivoInput.value.value = ''; } },
+          { label: 'Crear viaje', variant: 'default', accion: () => {
+            const nombre = nuevoVoyageNo.value.trim();
+            if (!nombre) { toast('Escribe un nombre para el viaje nuevo', 'err'); return; }
+            fd.set('voyage_no_override', nombre);
+            cargarConFormData(data => data.mensaje || `Viaje "${nombre}" creado con ${data.bl_count} B/L`);
+          } },
+        ],
+      };
     };
 
     if (!preview.nuevos_count) {
@@ -192,6 +231,7 @@ async function subir(archivo: File | undefined) {
       enOtroViaje: preview.en_otro_viaje,
       botones: [
         { label: 'Cancelar', variant: 'outline', accion: () => { cerrarModal(); if (archivoInput.value) archivoInput.value.value = ''; } },
+        ...(preview.existe_viaje ? [{ label: 'Cargar como viaje nuevo', variant: 'outline', accion: pedirVoyageNuevo }] : []),
         { label: `Cargar ${preview.nuevos_count} B/L`, variant: 'default', accion: ejecutarCarga },
       ],
     };
@@ -530,6 +570,7 @@ onMounted(async () => {
       <DialogContent v-if="modal">
         <DialogHeader><DialogTitle>{{ modal.titulo }}</DialogTitle></DialogHeader>
         <div class="text-sm text-ink-muted" v-html="modal.cuerpo"></div>
+        <Input v-if="modal.pedirTexto" v-model="nuevoVoyageNo" placeholder="ej. CF371TB" class="h-9 font-mono text-xs" autofocus />
         <label v-if="modal.enOtroViaje?.length" class="flex items-center gap-2 rounded-md border border-border bg-paper-sunken px-3 py-2 text-sm">
           <input type="checkbox" v-model="moverEnOtroViaje" class="size-3.5" />
           Mover esos {{ modal.enOtroViaje.length }} B/L a este viaje también

@@ -109,6 +109,21 @@ router.post('/api/manifests/upload', upload.single('xml'), async (req, res) => {
       ? await parsePdfManifest(req.file.buffer)
       : await parseXmlManifest(req.file.buffer.toString('utf8'));
 
+    // Dos archivos distintos pueden traer el MISMO VoyageNo en su propio
+    // encabezado (caso real: dos XML de la DGA para "CF371" y "CF371TB" —
+    // mismo buque/viaje físico, pero booking/manifiesto distinto) sin que
+    // eso signifique que deban unificarse en un solo viaje acá. Antes no
+    // había forma de evitarlo: cualquier archivo con un VoyageNo ya
+    // existente se sumaba SIEMPRE al manifiesto de ese viaje. Con
+    // voyage_no_override el operador puede pedir explícitamente que este
+    // archivo se cargue como un viaje NUEVO y separado, con el nombre que
+    // el elija — no hay forma de adivinarlo del XML/PDF solo.
+    const voyageNoOverride = String(req.body?.voyage_no_override || '').trim();
+    if (voyageNoOverride && db.prepare('SELECT 1 FROM manifests WHERE voyage_no=?').get(voyageNoOverride)) {
+      return res.status(409).json({ error: `Ya existe un viaje "${voyageNoOverride}" — elige otro nombre.` });
+    }
+    if (voyageNoOverride) parsed.header.voyage_no = voyageNoOverride;
+
     // Reimportar el mismo viaje (p.ej. el transportista manda un PDF
     // actualizado con B/L nuevos) no debe crear un manifiesto duplicado ni
     // tocar los B/L que ya se trabajaron: se suman solo los B/L realmente
@@ -365,6 +380,12 @@ const CAMPOS_EDITABLES_MANIFEST = [
 ];
 
 router.put('/api/manifests/:id', (req, res) => {
+  if (req.body.voyage_no !== undefined) {
+    const nuevoVoyageNo = String(req.body.voyage_no).trim();
+    if (!nuevoVoyageNo) return res.status(400).json({ error: 'El número de viaje no puede quedar vacío.' });
+    const otro = db.prepare('SELECT id FROM manifests WHERE voyage_no=? AND id!=?').get(nuevoVoyageNo, req.params.id);
+    if (otro) return res.status(409).json({ error: `Ya existe otro viaje "${nuevoVoyageNo}" — elige otro nombre.` });
+  }
   const sets = []; const vals = [];
   CAMPOS_EDITABLES_MANIFEST.forEach(f => {
     if (req.body[f] !== undefined) { sets.push(`${f}=?`); vals.push(req.body[f]); }

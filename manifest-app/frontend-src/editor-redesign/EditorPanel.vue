@@ -9,6 +9,7 @@ import { api, type ItemHacienda, type Cliente, type ClienteSiscommate } from '..
 import {
   datosManifiesto, blActual, carriers, puertos, buques, contenedoresDelBL, tamanosValidos,
   actualizarBL, actualizarManifiesto, cerrarBL, setEstado, toast, sincronizarEstadoManifiesto,
+  cargarManifiestos,
 } from '../editor/store';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -94,6 +95,31 @@ function alCambiarBuque(code: string) {
   actualizarManifiesto('carrier_code', v.carrier);
 }
 function alCambiarDocking(valor: string) { actualizarManifiesto('docking_number', valor.replace(/[^0-9]/g, '')); }
+
+// Renombrar el viaje NO pasa por la cola de autoguardado genérica
+// (actualizarManifiesto): esa cola aplica el valor en memoria de inmediato y
+// recién avisa por toast si el guardado falla, dejando el campo mostrando un
+// nombre que en realidad no se guardó. Acá el nombre es la clave con la que
+// se identifica el viaje en TODA la app (push a SISCOMMATE, export TXT,
+// carga de un XML/PDF nuevo) — si dos viajes terminan con el mismo nombre
+// por una renombrada fallida que no se revirtió, esas búsquedas por
+// voyage_no se vuelven ambiguas. Por eso se espera la respuesta del server
+// (que ya rechaza un nombre repetido) antes de aplicar el cambio en memoria.
+async function alCambiarVoyageNo(e: Event) {
+  const input = e.target as HTMLInputElement;
+  const nuevo = input.value.trim();
+  const anterior = m.value.voyage_no;
+  if (!nuevo || nuevo === anterior) { input.value = anterior; return; }
+  try {
+    await api.actualizarManifiesto(m.value.id, { voyage_no: nuevo });
+    m.value.voyage_no = nuevo;
+    cargarManifiestos();
+    toast('Viaje renombrado a ' + nuevo);
+  } catch (e2) {
+    input.value = anterior; // el input no usa v-model: sin esto quedaría mostrando el nombre rechazado
+    toast('No se pudo renombrar el viaje: ' + (e2 as Error).message, 'err');
+  }
+}
 
 // Combobox: al enfocar con un valor ya elegido, selecciona todo el texto
 // para que escribir lo reemplace en vez de insertarse en medio. Diferido con
@@ -406,6 +432,18 @@ watch(() => bl.value?.id, () => {
         </CardTitle>
       </CardHeader>
       <CardContent class="flex flex-col gap-2.5">
+        <!-- Número de viaje editable, en su propia fila: dos XML/PDF
+             distintos pueden traer el mismo VoyageNo en su propio encabezado
+             (viajes operativamente separados, ej. "CF371" y "CF371TB") sin
+             que deban compartir el mismo viaje acá — renombrar uno de los
+             dos es la forma de separarlos. -->
+        <div class="grid grid-cols-12 gap-x-3 gap-y-2.5">
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-4">
+            <Label class="text-xs">Número de viaje</Label>
+            <Input :model-value="m.voyage_no || ''" class="h-9 font-mono text-xs" @change="alCambiarVoyageNo" />
+          </div>
+        </div>
+
         <!-- Grid único de 12 columnas. Fila 1 = quién transporta · Fila 2 =
              de dónde a dónde · Fila 3 = cuándo y bajo qué código. -->
         <div class="grid grid-cols-12 gap-x-3 gap-y-2.5">
