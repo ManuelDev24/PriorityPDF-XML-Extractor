@@ -29,7 +29,13 @@ const filtrados = ref<typeof manifiestos.value | null>(null);
 // ya esté "validado", porque marcar validado no revisa estos campos.
 function blIncompleto(bl: BL): boolean {
   const sinCodigo = !bl.hacienda_item_code || bl.hacienda_item_code.trim() === '' || /^0+$/.test(bl.hacienda_item_code.trim());
-  const sinSS = !bl.hacienda_client_ss && !bl.consignee_document_no;
+  // Viajes AU/CF van a islas (STX/STT, etc.) — sus consignatarios reales casi
+  // nunca tienen SS/EIN de EE.UU., así que blValidation.js no lo exige ahí
+  // tampoco (ver ese archivo). Sin este mismo criterio acá, el punto rojo
+  // del sidebar marcaría como "incompleto" un B/L que el export/push ya deja
+  // pasar sin problema.
+  const esViajeSinSS = /^(AU|CF)/i.test((datosManifiesto.value?.manifest.voyage_no || '').trim());
+  const sinSS = !esViajeSinSS && !bl.hacienda_client_ss && !bl.consignee_document_no;
   return sinCodigo || sinSS;
 }
 const nuevoBlPara = ref<number | null>(null);
