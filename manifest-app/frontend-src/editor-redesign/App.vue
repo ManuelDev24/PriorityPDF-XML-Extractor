@@ -39,6 +39,12 @@ const modal = ref<{
   enOtroViaje?: Array<{ id: number; bl_no: string; voyage_no: string }>;
   // Solo lo usa el modal "Cargar como viaje nuevo" — ver pedirVoyageNuevo().
   pedirTexto?: boolean;
+  // El modal de confirmar carga de VARIOS archivos lista uno por línea — con
+  // 5+ archivos (caso real: un manifiesto de islas partido en varios PDF) el
+  // modal angosto de siempre quedaba altísimo. Este ensancha ESE modal en
+  // particular sin afectar los demás (mensajes de una o dos líneas, que se
+  // ven mejor angostos).
+  ancho?: boolean;
 } | null>(null);
 // Nombre que el operador escribe para el viaje nuevo cuando el archivo trae
 // un VoyageNo que ya existe pero, a diferencia del caso normal (mismo viaje,
@@ -267,19 +273,24 @@ async function subirVarios(archivos: File[]) {
   }));
 
   const validos = previos.filter(p => p.preview);
+  // Grilla de 2 columnas en vez de una lista vertical: con 5+ archivos (caso
+  // real: un manifiesto de islas partido en varios PDF) una lista de una
+  // sola columna se volvía altísima. Acompañado del modal más ancho
+  // (ver "ancho" en el tipo de `modal`), esto reparte los archivos en ancho
+  // en vez de en alto.
   const filas = previos.map(p => p.error
-    ? `<li><strong>${p.archivo.name}</strong>: <span class="text-danger">${p.error}</span></li>`
-    : `<li><strong>${p.archivo.name}</strong>: ${p.preview.existe_viaje
+    ? `<div class="rounded border border-border bg-paper-sunken px-2 py-1.5"><strong class="block truncate">${p.archivo.name}</strong><span class="text-danger">${p.error}</span></div>`
+    : `<div class="rounded border border-border bg-paper-sunken px-2 py-1.5"><strong class="block truncate">${p.archivo.name}</strong>${p.preview.existe_viaje
         ? `${p.preview.nuevos_count} B/L nuevos al viaje <strong>${p.preview.voyage_no}</strong>`
-        : `crea el viaje <strong>${p.preview.voyage_no}</strong> con ${p.preview.nuevos_count} B/L`}</li>`
+        : `crea el viaje <strong>${p.preview.voyage_no}</strong> con ${p.preview.nuevos_count} B/L`}</div>`
   ).join('');
   const avisos = previos.flatMap(p => p.preview?.warnings || []);
-  const cuerpo = `<ul class="ml-4 list-disc">${filas}</ul>` + (avisos.length
+  const cuerpo = `<div class="grid grid-cols-1 gap-1.5 sm:grid-cols-2">${filas}</div>` + (avisos.length
     ? `<div class="mt-2 rounded border border-status-pending/40 bg-status-pending/10 p-2 text-status-pending"><strong>Revisar antes de continuar:</strong><ul class="ml-4 list-disc">${avisos.map(w => `<li>${w}</li>`).join('')}</ul></div>`
     : '');
 
   if (!validos.length) {
-    modal.value = { titulo: 'No se pudo leer ningún archivo', cuerpo,
+    modal.value = { titulo: 'No se pudo leer ningún archivo', cuerpo, ancho: true,
       botones: [{ label: 'Entendido', variant: 'default', accion: () => { cerrarModal(); if (archivoInput.value) archivoInput.value.value = ''; } }] };
     setEstado('Error');
     return;
@@ -288,7 +299,7 @@ async function subirVarios(archivos: File[]) {
   modal.value = {
     titulo: `Confirmar carga de ${validos.length} archivo${validos.length > 1 ? 's' : ''}` +
       (validos.length < previos.length ? ` (${previos.length - validos.length} con error, se omiten)` : ''),
-    cuerpo,
+    cuerpo, ancho: true,
     botones: [
       { label: 'Cancelar', variant: 'outline', accion: () => { cerrarModal(); if (archivoInput.value) archivoInput.value.value = ''; } },
       { label: `Cargar ${validos.length} archivo${validos.length > 1 ? 's' : ''}`, variant: 'default', accion: async () => {
@@ -647,7 +658,7 @@ onMounted(async () => {
     </div>
 
     <Dialog :open="!!modal" @update:open="(v) => !v && cerrarModal()">
-      <DialogContent v-if="modal">
+      <DialogContent v-if="modal" :class="modal.ancho && 'sm:max-w-2xl'">
         <DialogHeader><DialogTitle>{{ modal.titulo }}</DialogTitle></DialogHeader>
         <div class="text-sm text-ink-muted" v-html="modal.cuerpo"></div>
         <Input v-if="modal.pedirTexto" v-model="nuevoVoyageNo" placeholder="ej. CF371TB" class="h-9 font-mono text-xs" autofocus />
