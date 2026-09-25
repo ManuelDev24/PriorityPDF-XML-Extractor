@@ -147,6 +147,31 @@ router.get('/api/catalogs/clients', (req, res) => {
   ).all(`%${q}%`, `%${q}%`, `%${q}%`, limit));
 });
 
+// ── CONSIGNADORES (Shipper, República Dominicana) ────────────────────────────
+// A diferencia de `clients` (consignatarios de PR, catálogo curado a mano con
+// SS/EIN de 9 dígitos), no existe un catálogo de consignadores — el RNC/
+// Cédula dominicano no tiene ese formato. La búsqueda usa el historial real
+// de B/L ya cargados: mismo criterio de "reutilizar lo ya escrito" que el
+// buscador de código arancelario, aplicado al nombre del consignador.
+// MAX(id) + GROUP BY es intencional (comportamiento propio de SQLite): trae
+// los demás campos de la MISMA fila que tiene el id más alto por nombre, o
+// sea los datos del envío más reciente de ese consignador, no una mezcla.
+router.get('/api/catalogs/consignors', (req, res) => {
+  const q = req.query.q || '';
+  const limit = Math.min(Number(req.query.limit) || 20, 500);
+  res.json(db.prepare(`
+    SELECT consignor_name AS name, consignor_document_type AS document_type,
+           consignor_document_no AS document_no, consignor_tel AS tel,
+           consignor_email AS email, consignor_street AS street,
+           consignor_city AS city, MAX(id) AS id
+    FROM bills_of_lading
+    WHERE consignor_name != '' AND (consignor_name LIKE ? OR consignor_document_no LIKE ?)
+    GROUP BY consignor_name
+    ORDER BY name
+    LIMIT ?
+  `).all(`%${q}%`, `%${q}%`, limit));
+});
+
 // Cuántos clientes hay en el catálogo local — para el contador en Admin sin
 // tener que traer las filas.
 router.get('/api/catalogs/clients/count', (req, res) => {

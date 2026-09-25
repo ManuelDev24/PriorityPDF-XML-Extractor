@@ -149,6 +149,20 @@ export interface ClienteSiscommate {
   ivu?: string;
 }
 
+/** Consignador (shipper, RD) hallado en el historial de B/L ya cargados —
+ * no viene de un catálogo curado como Cliente, sino de la fila más reciente
+ * de bills_of_lading con ese nombre (ver /api/catalogs/consignors). */
+export interface Consignador {
+  id: number;
+  name: string;
+  document_type?: string;
+  document_no?: string;
+  tel?: string;
+  email?: string;
+  street?: string;
+  city?: string;
+}
+
 export interface Puerto { code: string; description: string; country: string }
 export interface Carrier { code: string; name: string; scac: string; ivu?: string }
 export interface Buque   { code: string; name: string; imo: string; carrier: string; scac: string }
@@ -259,6 +273,7 @@ export const api = {
   buscarClientes: (q: string) => pedir<Cliente[]>(`/api/catalogs/clients?q=${encodeURIComponent(q)}`),
   buscarClientesSiscommate: (q: string) =>
     pedir<ClienteSiscommate[]>(`/api/catalogs/siscommate-clients?q=${encodeURIComponent(q)}`),
+  buscarConsignadores: (q: string) => pedir<Consignador[]>(`/api/catalogs/consignors?q=${encodeURIComponent(q)}`),
   /** ¿Hay un cliente local con nombre PARECIDO (no igual) al que se está escribiendo?
    * Solo avisa — nunca cambia nada solo. Ver services/clientSync.js. */
   clienteParecido: (nombre: string) =>

@@ -5,7 +5,7 @@
 // vez de fracciones iguales (era el reclamo original: IMO con 7 caracteres
 // ocupaba el mismo ancho que el nombre del buque).
 import { ref, computed, watch } from 'vue';
-import { api, type ItemHacienda, type Cliente, type ClienteSiscommate } from '../editor/api';
+import { api, type ItemHacienda, type Cliente, type ClienteSiscommate, type Consignador } from '../editor/api';
 import {
   datosManifiesto, blActual, carriers, puertos, buques, contenedoresDelBL, tamanosValidos,
   actualizarBL, actualizarManifiesto, cerrarBL, setEstado, toast, sincronizarEstadoManifiesto,
@@ -301,6 +301,12 @@ function alCambiarDescripcion(valor: string) {
 
 // ── Combobox: consignatario ──
 const clienteAbierto = ref(false);
+// Segundo trigger para el MISMO buscador (clientesHallados/clientesSiscommate
+// abajo), embebido directo en "Nombre / Razón social" de la tarjeta
+// Consignatario — necesita su propio estado "open" porque cada <Combobox>
+// maneja su propio popover; compartir un solo booleano entre dos triggers en
+// lugares distintos de la pantalla los abriría/cerraría en conjunto.
+const clienteAbierto2 = ref(false);
 const clientesHallados = ref<Cliente[]>([]);
 const clientesSiscommate = ref<ClienteSiscommate[]>([]);
 const nombreCliente = ref('');
@@ -411,10 +417,41 @@ function alElegirClienteValor(valor: string) {
   if (c) elegirCliente(c);
 }
 
+// ── Combobox: consignador (Shipper, RD) — mismo patrón que el buscador de
+// código arancelario y el de consignatario, pero contra el historial de B/L
+// (ver /api/catalogs/consignors: no hay catálogo curado de consignadores). ──
+const consignadorAbierto = ref(false);
+const consignadoresHallados = ref<Consignador[]>([]);
+let tConsignador: ReturnType<typeof setTimeout> | undefined;
+
+function buscarConsignador(q: string) {
+  clearTimeout(tConsignador);
+  if (!q || q.length < 2) { consignadoresHallados.value = []; return; }
+  tConsignador = setTimeout(async () => {
+    try { consignadoresHallados.value = await api.buscarConsignadores(q); } catch { consignadoresHallados.value = []; }
+  }, 200);
+}
+
+function elegirConsignador(c: Consignador) {
+  consignadorAbierto.value = false;
+  actualizarBL('consignor_name', c.name);
+  actualizarBL('consignor_document_type', c.document_type || '');
+  actualizarBL('consignor_document_no', c.document_no || '');
+  actualizarBL('consignor_tel', c.tel || '');
+  actualizarBL('consignor_email', c.email || '');
+  actualizarBL('consignor_street', c.street || '');
+  actualizarBL('consignor_city', c.city || '');
+  sugerenciaConsignor.value = null;
+}
+function alElegirConsignadorValor(valor: string) {
+  const c = consignadoresHallados.value.find(x => String(x.id) === valor);
+  if (c) elegirConsignador(c);
+}
+
 watch(() => bl.value?.id, () => {
-  itemAbierto.value = false; clienteAbierto.value = false;
+  itemAbierto.value = false; clienteAbierto.value = false; clienteAbierto2.value = false; consignadorAbierto.value = false;
   sugerencias.value = []; nombreCliente.value = ''; clienteId.value = null; descItem.value = '';
-  clientesHallados.value = []; clientesSiscommate.value = [];
+  clientesHallados.value = []; clientesSiscommate.value = []; consignadoresHallados.value = [];
   if (bl.value?.hacienda_item_code) cargarDescItem(bl.value.hacienda_item_code);
   else if (bl.value?.goods_name) sugerir(bl.value.goods_name);
 }, { immediate: true });
@@ -829,8 +866,34 @@ watch(() => bl.value?.id, () => {
       <CardContent class="flex flex-col gap-2.5">
         <div class="flex flex-col gap-1">
           <Label class="text-xs">Nombre / Razón social</Label>
-          <Input :model-value="bl.consignor_name || ''" class="h-9 text-xs"
-            @change="(e:Event) => { const v = (e.target as HTMLInputElement).value; actualizarBL('consignor_name', v); revisarNombreParecido('consignor_name', v); }" />
+          <!-- Mismo Combobox de búsqueda en vivo que código arancelario y
+               consignatario, pero contra el historial de B/L (no hay
+               catálogo de consignadores) — ver buscarConsignador. Sigue
+               siendo texto libre: si no aparece nada, se escribe uno nuevo. -->
+          <Combobox
+            :model-value="bl.consignor_name || ''"
+            @update:model-value="(v) => alElegirConsignadorValor(String(v))"
+            v-model:open="consignadorAbierto"
+            ignore-filter
+            open-on-click
+            open-on-focus
+            :display-value="(v: unknown) => String(v ?? '')"
+          >
+            <ComboboxAnchor as-child>
+              <ComboboxInput placeholder="Buscar por nombre o RNC/Cédula, o escribir uno nuevo..." class="h-9 text-xs"
+                @update:model-value="(v: string) => { buscarConsignador(v); actualizarBL('consignor_name', v); revisarNombreParecido('consignor_name', v); }"
+                @focus="seleccionarTextoInput" />
+            </ComboboxAnchor>
+            <ComboboxList>
+              <ComboboxEmpty>Sin coincidencias — se usará el nombre escrito</ComboboxEmpty>
+              <ComboboxGroup>
+                <ComboboxItem v-for="c in consignadoresHallados" :key="c.id" :value="String(c.id)">
+                  <span class="flex-1 truncate">{{ c.name }}</span>
+                  <span class="font-mono text-xs text-ink-faint">{{ c.document_no || '—' }}</span>
+                </ComboboxItem>
+              </ComboboxGroup>
+            </ComboboxList>
+          </Combobox>
           <p v-if="sugerenciaConsignor" class="flex items-center gap-1.5 text-xs text-status-pending">
             <Sparkles class="size-3 shrink-0" />
             ¿Quisiste decir
@@ -859,8 +922,46 @@ watch(() => bl.value?.id, () => {
         <div class="grid grid-cols-12 gap-x-3 gap-y-2.5">
           <div class="col-span-12 flex flex-col gap-1 md:col-span-7">
             <Label class="text-xs">Nombre / Razón social</Label>
-            <Input :model-value="bl.consignee_name || ''" class="h-9 text-xs"
-              @change="(e:Event) => { const v = (e.target as HTMLInputElement).value; actualizarBL('consignee_name', v); revisarNombreParecido('consignee_name', v); }" />
+            <!-- Mismo buscador que "SS / EIN consignatario" más arriba (los
+                 dos comparten clientesHallados/clientesSiscommate) — este
+                 trigger vive acá para poder elegir el cliente sin tener que
+                 subir hasta el campo de SS/EIN. Usa su propio "open"
+                 (clienteAbierto2): cada Combobox controla su propio popover. -->
+            <Combobox
+              :model-value="bl.consignee_name || ''"
+              @update:model-value="(v) => alElegirClienteValor(String(v))"
+              v-model:open="clienteAbierto2"
+              ignore-filter
+              open-on-click
+              open-on-focus
+              :display-value="(v: unknown) => String(v ?? '')"
+            >
+              <ComboboxAnchor as-child>
+                <ComboboxInput placeholder="Buscar por nombre o EIN, o escribir uno nuevo..." class="h-9 text-xs"
+                  @update:model-value="(v: string) => { buscarCliente(v); actualizarBL('consignee_name', v); revisarNombreParecido('consignee_name', v); }"
+                  @focus="seleccionarTextoInput" />
+              </ComboboxAnchor>
+              <ComboboxList>
+                <ComboboxEmpty>Sin resultados</ComboboxEmpty>
+                <ComboboxGroup v-if="clientesHallados.length" heading="Locales">
+                  <ComboboxItem v-for="c in clientesHallados" :key="c.id" :value="String(c.id)">
+                    <span class="flex-1 truncate">{{ c.name }}</span>
+                    <span class="font-mono text-xs text-ink-faint">{{ c.ss || '—' }}</span>
+                  </ComboboxItem>
+                </ComboboxGroup>
+                <ComboboxGroup v-if="clientesSiscommate.length" heading="SISCOMMATE">
+                  <ComboboxItem v-for="(c, i) in clientesSiscommate" :key="'sis:'+i" :value="'sis:'+i">
+                    <span class="flex-1 truncate">{{ c.name }}</span>
+                    <span class="font-mono text-xs text-ink-faint">{{ c.ss || '—' }}</span>
+                  </ComboboxItem>
+                </ComboboxGroup>
+                <ComboboxGroup>
+                  <ComboboxItem value="crear-nuevo" class="text-accent">
+                    + Crear nuevo consignatario…
+                  </ComboboxItem>
+                </ComboboxGroup>
+              </ComboboxList>
+            </Combobox>
             <p v-if="sugerenciaConsignee" class="flex items-center gap-1.5 text-xs text-status-pending">
               <Sparkles class="size-3 shrink-0" />
               ¿Quisiste decir
