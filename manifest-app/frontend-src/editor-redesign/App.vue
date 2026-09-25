@@ -238,11 +238,90 @@ async function subir(archivo: File | undefined) {
     setEstado('Listo');
   } catch (e) { toast('Error: ' + (e as Error).message, 'err'); setEstado('Error cargando manifiesto'); if (archivoInput.value) archivoInput.value.value = ''; }
 }
+
+// Caso real: un manifiesto de un viaje a islas (AU/CF) puede venir partido
+// en varios PDF (el sistema de origen no genera uno solo) — todos con el
+// MISMO VoyageNo, así que el flujo normal de "reimportar el mismo viaje, se
+// suman los B/L nuevos" (ver subir()) ya los mezcla bien uno por uno. Esto
+// solo evita tener que confirmar el modal 5 veces: junta la vista previa de
+// TODOS los archivos en un solo resumen y, al confirmar, los sube uno por
+// uno en orden (no en paralelo — el segundo archivo necesita ver en la base
+// el viaje que creó el primero para sumarse ahí en vez de crear uno nuevo).
+// A propósito NO ofrece "mover B/L de otro viaje" ni "cargar como viaje
+// nuevo" acá: son decisiones para un archivo a la vez, y agruparlas para N
+// archivos heterogéneos complicaría el resumen sin un caso real que lo pida
+// todavía — si aparece, usar la carga de un solo archivo para ese caso.
+async function subirVarios(archivos: File[]) {
+  if (!archivos.length) return;
+  if (archivos.length === 1) { await subir(archivos[0]); return; }
+
+  setEstado(`Revisando ${archivos.length} archivos...`);
+  const previos = await Promise.all(archivos.map(async archivo => {
+    try {
+      const fd = new FormData(); fd.append('xml', archivo);
+      const rp = await fetch('/api/manifests/upload/preview', { method: 'POST', body: fd });
+      const preview = await rp.json();
+      if (!rp.ok) throw new Error(preview.error);
+      return { archivo, preview, error: undefined as string | undefined };
+    } catch (e) { return { archivo, preview: undefined as any, error: (e as Error).message }; }
+  }));
+
+  const validos = previos.filter(p => p.preview);
+  const filas = previos.map(p => p.error
+    ? `<li><strong>${p.archivo.name}</strong>: <span class="text-danger">${p.error}</span></li>`
+    : `<li><strong>${p.archivo.name}</strong>: ${p.preview.existe_viaje
+        ? `${p.preview.nuevos_count} B/L nuevos al viaje <strong>${p.preview.voyage_no}</strong>`
+        : `crea el viaje <strong>${p.preview.voyage_no}</strong> con ${p.preview.nuevos_count} B/L`}</li>`
+  ).join('');
+  const avisos = previos.flatMap(p => p.preview?.warnings || []);
+  const cuerpo = `<ul class="ml-4 list-disc">${filas}</ul>` + (avisos.length
+    ? `<div class="mt-2 rounded border border-status-pending/40 bg-status-pending/10 p-2 text-status-pending"><strong>Revisar antes de continuar:</strong><ul class="ml-4 list-disc">${avisos.map(w => `<li>${w}</li>`).join('')}</ul></div>`
+    : '');
+
+  if (!validos.length) {
+    modal.value = { titulo: 'No se pudo leer ningún archivo', cuerpo,
+      botones: [{ label: 'Entendido', variant: 'default', accion: () => { cerrarModal(); if (archivoInput.value) archivoInput.value.value = ''; } }] };
+    setEstado('Error');
+    return;
+  }
+
+  modal.value = {
+    titulo: `Confirmar carga de ${validos.length} archivo${validos.length > 1 ? 's' : ''}` +
+      (validos.length < previos.length ? ` (${previos.length - validos.length} con error, se omiten)` : ''),
+    cuerpo,
+    botones: [
+      { label: 'Cancelar', variant: 'outline', accion: () => { cerrarModal(); if (archivoInput.value) archivoInput.value.value = ''; } },
+      { label: `Cargar ${validos.length} archivo${validos.length > 1 ? 's' : ''}`, variant: 'default', accion: async () => {
+        cerrarModal();
+        let ultimoManifestId: number | null = null;
+        const resultados: string[] = [];
+        for (const { archivo } of validos) {
+          setEstado(`Cargando ${archivo.name}...`);
+          try {
+            const fd = new FormData(); fd.append('xml', archivo);
+            const r = await fetch('/api/manifests/upload', { method: 'POST', body: fd });
+            const data = await r.json();
+            if (!data.ok) throw new Error(data.error);
+            resultados.push(`${archivo.name}: ${data.mensaje || `${data.bl_count} B/L`}`);
+            ultimoManifestId = data.manifest_id ?? ultimoManifestId;
+          } catch (e) { resultados.push(`${archivo.name}: ERROR — ${(e as Error).message}`); }
+        }
+        toast(resultados.join(' · '));
+        await cargarManifiestos();
+        if (ultimoManifestId) await seleccionarManifiesto(ultimoManifestId);
+        setEstado('Listo');
+        if (archivoInput.value) archivoInput.value.value = '';
+      } },
+    ],
+  };
+  setEstado('Listo');
+}
+
 function soltar(e: DragEvent) {
   arrastrando.value = false;
-  const f = e.dataTransfer?.files[0];
-  if (!f || !/\.(xml|pdf)$/i.test(f.name)) { toast('Selecciona un archivo .xml o .pdf', 'err'); return; }
-  subir(f);
+  const archivos = Array.from(e.dataTransfer?.files || []).filter(f => /\.(xml|pdf)$/i.test(f.name));
+  if (!archivos.length) { toast('Selecciona un archivo .xml o .pdf', 'err'); return; }
+  subirVarios(archivos);
 }
 
 async function exportarTxt() {
@@ -466,7 +545,8 @@ onMounted(async () => {
       </div>
       <Button variant="outline" size="sm" as-child><a href="/admin.html" target="_blank"><Settings class="size-3.5" />Admin</a></Button>
       <Button size="sm" @click="abrirSubida"><Upload class="size-3.5" />Cargar XML/PDF</Button>
-      <input type="file" ref="archivoInput" accept=".xml,.pdf" class="hidden" @change="subir(($event.target as HTMLInputElement).files?.[0])" />
+      <input type="file" ref="archivoInput" accept=".xml,.pdf" multiple class="hidden"
+        @change="subirVarios(Array.from(($event.target as HTMLInputElement).files || []))" />
     </header>
 
     <div class="flex flex-1 overflow-hidden">
