@@ -84,3 +84,29 @@ test('si el bridge no responde, las hojas SQLite igual se generan (la hoja SISCO
   assert.strictEqual(workbook.getWorksheet('SQLite_Clientes').getRow(2).getCell('name').value, 'ACME');
   assert.strictEqual(workbook.getWorksheet('SISCOMMATE_Customers').rowCount, 1); // solo encabezado
 });
+
+test('SQLite_Clientes trae formato condicional para resaltar nombres duplicados en la columna "name"', async () => {
+  const db = crearDbDePrueba();
+  db.prepare(`INSERT INTO clients (id, name) VALUES (2, 'ACME')`).run(); // mismo nombre que el id=1
+  const workbook = await construirLibroAuditoria(db, crearSiscommateFalso());
+  const hoja = workbook.getWorksheet('SQLite_Clientes');
+  const reglas = hoja.model.conditionalFormattings;
+  const duplicados = reglas.find(r => r.rules.some(x => x.type === 'duplicateValues'));
+  assert.ok(duplicados, 'debe existir una regla duplicateValues');
+  assert.strictEqual(duplicados.ref, 'B2:B3'); // columna "name" es la B (A es "id"), 2 filas de datos
+});
+
+test('SQLite_Clientes trae formato condicional para resaltar caracteres fuera de A-Z/0-9/espacio en "name"', async () => {
+  const workbook = await construirLibroAuditoria(crearDbDePrueba(), crearSiscommateFalso());
+  const hoja = workbook.getWorksheet('SQLite_Clientes');
+  const reglas = hoja.model.conditionalFormattings;
+  const especiales = reglas.find(r => r.rules.some(x => x.type === 'expression'));
+  assert.ok(especiales, 'debe existir una regla expression para caracteres especiales');
+  assert.match(especiales.rules[0].formulae[0], /ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/);
+});
+
+test('una hoja sin columnaDuplicados/columnasEspeciales configuradas no trae formato condicional', async () => {
+  const workbook = await construirLibroAuditoria(crearDbDePrueba(), crearSiscommateFalso());
+  const hoja = workbook.getWorksheet('SQLite_Contenedores');
+  assert.strictEqual((hoja.model.conditionalFormattings || []).length, 0);
+});

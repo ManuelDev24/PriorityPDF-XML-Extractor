@@ -46,6 +46,13 @@ function coincideClave(fila, claves) {
  * @property {(deps: {db: object, siscommate: object}) => Promise<object[]>|object[]} obtenerFilas
  * @property {null | (deps: {db: object, siscommate: object}, claves: Record<string, any>) => Promise<object|null>|object|null} leerActual
  * @property {null | (deps: {db: object, siscommate: object}, claves: Record<string, any>, cambios: object, filaFinal: object) => Promise<void>|void} escribirCambio
+ * @property {string} [columnaDuplicados] Columna donde un valor repetido es un problema real
+ *   (dos clientes/consignadores con el mismo nombre) — se resalta con formato
+ *   condicional nativo de Excel (vivo: si corriges uno, el color desaparece solo).
+ * @property {string[]} [columnasEspeciales] Columnas de texto libre que SISCOMMATE
+ *   limpia a solo A-Z/0-9/espacio antes de guardar (ver limpiarTextoLibre en
+ *   siscommateClient.js) — se resaltan si traen acentos, puntuación u otro
+ *   caracter que se va a perder al enviarse.
  */
 
 /** @returns {HojaSpec[]} */
@@ -58,6 +65,8 @@ function construirHojas() {
       obtenerFilas: ({ db }) => db.prepare('SELECT * FROM clients ORDER BY name').all(),
       leerActual: ({ db }, claves) => db.prepare('SELECT * FROM clients WHERE id = ?').get(claves.id) || null,
       escribirCambio: ({ db }, claves, cambios) => actualizarFilaSqlite(db, 'clients', claves, cambios),
+      columnaDuplicados: 'name',
+      columnasEspeciales: ['name'],
     },
     {
       nombre: 'SQLite_Consignadores',
@@ -67,6 +76,8 @@ function construirHojas() {
       leerActual: ({ db }, claves) =>
         db.prepare('SELECT * FROM bills_of_lading WHERE consignor_name = ? LIMIT 1').get(claves.consignor_name) || null,
       escribirCambio: ({ db }, claves, cambios) => actualizarConsignadorPorNombre(db, claves.consignor_name, cambios),
+      columnaDuplicados: 'consignor_name',
+      columnasEspeciales: ['consignor_name'],
     },
     {
       nombre: 'SQLite_Consignatarios',
@@ -76,6 +87,8 @@ function construirHojas() {
       leerActual: ({ db }, claves) =>
         db.prepare('SELECT * FROM bills_of_lading WHERE consignee_name = ? LIMIT 1').get(claves.consignee_name) || null,
       escribirCambio: ({ db }, claves, cambios) => actualizarConsignatarioPorNombre(db, claves.consignee_name, cambios),
+      columnaDuplicados: 'consignee_name',
+      columnasEspeciales: ['consignee_name'],
     },
     {
       nombre: 'SQLite_Manifiestos',
@@ -92,6 +105,7 @@ function construirHojas() {
       obtenerFilas: ({ db }) => db.prepare('SELECT * FROM bills_of_lading ORDER BY id').all(),
       leerActual: ({ db }, claves) => db.prepare('SELECT * FROM bills_of_lading WHERE id = ?').get(claves.id) || null,
       escribirCambio: ({ db }, claves, cambios) => actualizarFilaSqlite(db, 'bills_of_lading', claves, cambios),
+      columnasEspeciales: ['goods_name'],
     },
     {
       nombre: 'SQLite_Contenedores',
@@ -124,6 +138,8 @@ function construirHojas() {
       },
       escribirCambio: ({ siscommate }, claves, cambios, filaFinal) =>
         siscommate.actualizarClienteSiscommate(claves.name, filaFinal),
+      columnaDuplicados: 'name',
+      columnasEspeciales: ['name'],
     },
     {
       nombre: 'SISCOMMATE_Manifiestos',
@@ -144,6 +160,7 @@ function construirHojas() {
       },
       escribirCambio: ({ siscommate }, claves, cambios, filaFinal) =>
         siscommate.actualizarBolSiscommate(claves.manifest, claves.bolno, filaFinal),
+      columnasEspeciales: ['consigne', 'exporter'],
     },
     {
       nombre: 'SISCOMMATE_Contenedores',
