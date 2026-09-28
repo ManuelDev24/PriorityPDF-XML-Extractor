@@ -64,10 +64,12 @@ function getBridgeConfig() {
  * @param {string} method
  * @param {string} path
  * @param {object|null} [body]
+ * @param {number} [timeoutMs] Por defecto BRIDGE_TIMEOUT_MS — algunas llamadas
+ *   (volcado completo de una tabla histórica) necesitan más margen.
  * @returns {Promise<any>} La respuesta parseada, o {raw} si no es JSON válido
- * @throws {Error} Si no conecta o si supera BRIDGE_TIMEOUT_MS
+ * @throws {Error} Si no conecta o si supera el timeout
  */
-function bridgeRequest(method, path, body) {
+function bridgeRequest(method, path, body, timeoutMs) {
   return new Promise((resolve, reject) => {
     const { host, port } = getBridgeConfig();
     const postData = body ? JSON.stringify(body) : null;
@@ -102,9 +104,10 @@ function bridgeRequest(method, path, body) {
     });
 
     // Fix Fase A: sin esto una petición podía quedar colgada para siempre
-    req.setTimeout(BRIDGE_TIMEOUT_MS, () => {
+    const limite = timeoutMs || BRIDGE_TIMEOUT_MS;
+    req.setTimeout(limite, () => {
       req.destroy(new Error(
-        `El bridge no respondió en ${BRIDGE_TIMEOUT_MS / 1000}s (${host}:${port})`
+        `El bridge no respondió en ${limite / 1000}s (${host}:${port})`
       ));
     });
 
@@ -239,6 +242,13 @@ function obtenerMuestra(tabla, limite) {
   return bridgeRequest('GET', `/muestra?tabla=${encodeURIComponent(tabla)}&limite=${limite || 10}`, null);
 }
 
+// Un volcado histórico completo (BOL/BOLITEM pueden tener años de datos de
+// TODOS los usuarios de SISCOMMATE, no solo Priority) puede tardar mucho más
+// que una operación interactiva normal — 30s (BRIDGE_TIMEOUT_MS) cortaba la
+// conexión a mitad de camino y el bridge terminaba escribiendo sobre un
+// socket ya cerrado.
+const TIMEOUT_EXPORTAR_TABLA_MS = Number(process.env.BRIDGE_TIMEOUT_EXPORTAR_MS) || 5 * 60 * 1000;
+
 /**
  * Volcado completo de una tabla real de SISCOMMATE, sin limite (endpoint
  * /exportar-tabla del bridge) — a diferencia de obtenerMuestra(), que trae
@@ -248,7 +258,7 @@ function obtenerMuestra(tabla, limite) {
  * @returns {Promise<object[]>}
  */
 function obtenerTablaCompleta(tabla) {
-  return bridgeRequest('GET', `/exportar-tabla?tabla=${encodeURIComponent(tabla)}`, null);
+  return bridgeRequest('GET', `/exportar-tabla?tabla=${encodeURIComponent(tabla)}`, null, TIMEOUT_EXPORTAR_TABLA_MS);
 }
 
 /**

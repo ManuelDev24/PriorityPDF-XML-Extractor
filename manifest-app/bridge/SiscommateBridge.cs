@@ -146,7 +146,13 @@ class SiscommateBridge
                     {
                         string tablaExp = req.QueryString["tabla"] ?? "";
                         var filasExp = ObtenerTablaCompleta(tablaExp);
-                        Send(resp, 200, new JavaScriptSerializer().Serialize(filasExp));
+                        // JavaScriptSerializer trunca en ~2MB de JSON por defecto
+                        // (MaxJsonLength) — un volcado COMPLETO de una tabla con
+                        // historico real (BOL/BOLITEM) lo supera facil y tira
+                        // "La longitud de la cadena supera el valor establecido".
+                        var serializadorGrande = new JavaScriptSerializer();
+                        serializadorGrande.MaxJsonLength = Int32.MaxValue;
+                        Send(resp, 200, serializadorGrande.Serialize(filasExp));
                     }
                     // Uso puntual/manual: para un código arancelario, busca (cruzando
                     // BOLITEM.code con BOL.consigne por manifest+bolno) cuál
