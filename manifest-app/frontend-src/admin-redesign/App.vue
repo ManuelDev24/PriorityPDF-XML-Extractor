@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import { api, type ContainerType, type EnvioSiscommate, type Cliente } from '../admin/api';
+import { api, type ContainerType, type EnvioSiscommate, type Cliente, type PreviewAuditoria } from '../admin/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -297,6 +297,64 @@ function pedirEliminarClientes(clientes: Cliente[]) {
   };
 }
 
+// ── Auditoría de datos (SQLite + SISCOMMATE vía Excel) ──────────────────
+// Misma lógica y las mismas dos etapas que el CLI (backend/scripts/dataAudit.js):
+// "calcular" nunca escribe nada, "aplicar" solo corre tras confirmar.
+const archivoAuditoria = ref<File | null>(null);
+const calculandoPreview = ref(false);
+const previewAuditoria = ref<PreviewAuditoria | null>(null);
+const aplicandoAuditoria = ref(false);
+const confirmarAplicarAuditoria = ref(false);
+
+const cambiosAplicables = computed(() => previewAuditoria.value?.plan.filter(p => !p.error).length || 0);
+
+const filasVistaPreviaAuditoria = computed(() => {
+  if (!previewAuditoria.value) return [];
+  const filas: { hoja: string; claves: string; campo: string; antes: string; despues: string; error: string | null }[] = [];
+  for (const item of previewAuditoria.value.plan) {
+    if (item.error) {
+      filas.push({ hoja: item.hoja, claves: JSON.stringify(item.claves), campo: '', antes: '', despues: '', error: item.error });
+      continue;
+    }
+    for (const [campo, { antes, despues }] of Object.entries(item.cambios)) {
+      filas.push({ hoja: item.hoja, claves: JSON.stringify(item.claves), campo, antes: String(antes ?? ''), despues: String(despues ?? ''), error: null });
+    }
+  }
+  return filas;
+});
+
+function alSeleccionarArchivoAuditoria(e: Event) {
+  const input = e.target as HTMLInputElement;
+  archivoAuditoria.value = input.files?.[0] || null;
+  previewAuditoria.value = null;
+}
+
+async function calcularPreviewAuditoria() {
+  if (!archivoAuditoria.value) { toast('Selecciona un archivo Excel primero', 'err'); return; }
+  calculandoPreview.value = true;
+  previewAuditoria.value = null;
+  try {
+    previewAuditoria.value = await api.previewAuditoria(archivoAuditoria.value);
+    if (previewAuditoria.value.plan.length === 0) toast('Sin cambios que aplicar');
+  } catch (e) {
+    toast('Error al calcular cambios: ' + (e as Error).message, 'err');
+  } finally { calculandoPreview.value = false; }
+}
+
+async function aplicarCambiosAuditoria() {
+  if (!previewAuditoria.value) return;
+  confirmarAplicarAuditoria.value = false;
+  aplicandoAuditoria.value = true;
+  try {
+    const r = await api.aplicarAuditoria(previewAuditoria.value.token);
+    toast(`${r.aplicados} aplicado(s), ${r.fallidos} con error`, r.fallidos ? 'err' : 'ok');
+    previewAuditoria.value = null;
+    archivoAuditoria.value = null;
+  } catch (e) {
+    toast('Error al aplicar: ' + (e as Error).message, 'err');
+  } finally { aplicandoAuditoria.value = false; }
+}
+
 onMounted(() => {
   cargarSettings(); cargarTipos(); cargarTamanos(); checkBridge(); cargarHistorial();
   cargarTotalClientes(); buscarClientesAdmin();
@@ -330,6 +388,7 @@ onMounted(() => {
             Clientes
             <Badge v-if="totalClientes !== null" class="ml-1.5 bg-accent-soft text-accent">{{ totalClientes }}</Badge>
           </TabsTrigger>
+          <TabsTrigger value="auditoria">Auditoría de datos</TabsTrigger>
         </TabsList>
 
       <TabsContent value="config">
@@ -606,6 +665,87 @@ onMounted(() => {
           </CardContent>
         </Card>
       </TabsContent>
+
+      <TabsContent value="auditoria">
+        <Card>
+          <CardHeader>
+            <CardTitle>Exportar a Excel</CardTitle>
+            <CardDescription>
+              Descarga un Excel con 11 hojas: clientes, consignadores, consignatarios,
+              manifiestos, B/L y contenedores de SQLite, más el histórico completo de
+              SISCOMMATE (Customers, Manifiestos, B/L, Contenedores, Items). Si el
+              bridge no responde, las hojas de SISCOMMATE quedan vacías pero el resto
+              del Excel se genera igual.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button as-child>
+              <a :href="api.urlExportarAuditoria()" download>Descargar Excel de auditoría</a>
+            </Button>
+          </CardContent>
+        </Card>
+
+        <Card class="mt-6">
+          <CardHeader>
+            <CardTitle>Reinyectar correcciones</CardTitle>
+            <CardDescription>
+              Sube el mismo Excel ya corregido a mano. Primero se calcula qué cambió
+              contra el estado actual — sin escribir nada — y solo se aplica si lo
+              confirmás.
+            </CardDescription>
+          </CardHeader>
+          <CardContent class="flex flex-col gap-3.5">
+            <div class="flex items-center gap-3">
+              <input type="file" accept=".xlsx" class="text-sm" @change="alSeleccionarArchivoAuditoria" />
+              <Button size="sm" :disabled="!archivoAuditoria || calculandoPreview" @click="calcularPreviewAuditoria">
+                {{ calculandoPreview ? 'Calculando…' : 'Calcular cambios' }}
+              </Button>
+            </div>
+
+            <div v-if="previewAuditoria" class="flex flex-col gap-2.5">
+              <p class="text-sm text-ink-muted">
+                {{ cambiosAplicables }} cambio{{ cambiosAplicables === 1 ? '' : 's' }} por aplicar
+                <span v-if="previewAuditoria.plan.length > cambiosAplicables">
+                  · {{ previewAuditoria.plan.length - cambiosAplicables }} con error
+                </span>
+              </p>
+
+              <Table v-if="filasVistaPreviaAuditoria.length">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Hoja</TableHead>
+                    <TableHead>Clave</TableHead>
+                    <TableHead>Campo</TableHead>
+                    <TableHead>Antes</TableHead>
+                    <TableHead>Después</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  <TableRow v-for="(fila, i) in filasVistaPreviaAuditoria" :key="i">
+                    <TableCell class="text-xs">{{ fila.hoja }}</TableCell>
+                    <TableCell class="font-mono text-xs">{{ fila.claves }}</TableCell>
+                    <template v-if="fila.error">
+                      <TableCell colspan="3" class="text-xs text-destructive">ERROR: {{ fila.error }}</TableCell>
+                    </template>
+                    <template v-else>
+                      <TableCell class="text-xs">{{ fila.campo }}</TableCell>
+                      <TableCell class="text-xs text-ink-muted">{{ fila.antes }}</TableCell>
+                      <TableCell class="text-xs font-medium text-accent">{{ fila.despues }}</TableCell>
+                    </template>
+                  </TableRow>
+                </TableBody>
+              </Table>
+
+              <Button
+                class="w-fit" variant="destructive" :disabled="cambiosAplicables === 0 || aplicandoAuditoria"
+                @click="confirmarAplicarAuditoria = true"
+              >
+                {{ aplicandoAuditoria ? 'Aplicando…' : `Aplicar ${cambiosAplicables} cambio(s)` }}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </TabsContent>
       </Tabs>
     </main>
 
@@ -684,6 +824,21 @@ onMounted(() => {
         <DialogFooter>
           <Button variant="outline" @click="confirmarEliminarCliente = null">Cancelar</Button>
           <Button variant="destructive" @click="confirmarEliminarCliente.accion">Eliminar</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog :open="confirmarAplicarAuditoria" @update:open="(v) => !v && (confirmarAplicarAuditoria = false)">
+      <DialogContent>
+        <DialogHeader><DialogTitle>Aplicar cambios de auditoría</DialogTitle></DialogHeader>
+        <p class="text-sm text-ink-muted">
+          Se van a escribir {{ cambiosAplicables }} cambio{{ cambiosAplicables === 1 ? '' : 's' }} en SQLite
+          y/o en SISCOMMATE real. Esta acción no se puede deshacer automáticamente
+          (queda registrada en logs/dataAudit_*.log por si hay que revertir a mano).
+        </p>
+        <DialogFooter>
+          <Button variant="outline" @click="confirmarAplicarAuditoria = false">Cancelar</Button>
+          <Button variant="destructive" @click="aplicarCambiosAuditoria">Aplicar</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

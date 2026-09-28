@@ -19,13 +19,14 @@ const { calcularDiferencias } = require('./diff');
  */
 
 /**
- * @param {string} rutaExcel
+ * @param {string|Buffer} origenExcel Ruta de archivo (CLI) o buffer en memoria (subida por HTTP)
  * @param {{db: import('better-sqlite3').Database, siscommate: object}} deps
  * @returns {Promise<CambioFila[]>}
  */
-async function calcularPlanDeCambios(rutaExcel, deps) {
+async function calcularPlanDeCambios(origenExcel, deps) {
   const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.readFile(rutaExcel);
+  if (Buffer.isBuffer(origenExcel)) await workbook.xlsx.load(origenExcel);
+  else await workbook.xlsx.readFile(origenExcel);
 
   const filasPorProcesar = [];
   for (const spec of construirHojas()) {

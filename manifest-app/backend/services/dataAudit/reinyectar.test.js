@@ -50,6 +50,20 @@ async function crearExcelDePrueba(rutaDestino, nombreCorregido) {
   await workbook.xlsx.writeFile(rutaDestino);
 }
 
+test('calcularPlanDeCambios acepta un buffer en memoria (subida por HTTP), no solo una ruta', async () => {
+  const workbook = new ExcelJS.Workbook();
+  const hoja = workbook.addWorksheet('SQLite_Clientes');
+  hoja.columns = ['id', 'name', 'ss', 'taxid', 'add1', 'add2', 'add3', 'phone1', 'phone2', 'ivu'].map(k => ({ header: k, key: k }));
+  hoja.addRow({ id: 1, name: 'ACME CORP', ss: '123456789' });
+  const buffer = await workbook.xlsx.writeBuffer();
+
+  const db = crearDbDePrueba();
+  const plan = await calcularPlanDeCambios(buffer, { db, siscommate: crearSiscommateFalso() });
+
+  assert.strictEqual(plan.length, 1);
+  assert.deepStrictEqual(plan[0].cambios, { name: { antes: 'ACME', despues: 'ACME CORP' } });
+});
+
 test('calcularPlanDeCambios detecta un cambio real y lo ignora si no hay diferencias', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dataAudit-reinyectar-'));
   const rutaExcel = path.join(dir, 'audit.xlsx');

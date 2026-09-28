@@ -46,6 +46,7 @@ app.use(require('./routes/bl'));
 app.use(require('./routes/catalogs'));
 app.use(require('./routes/settings'));
 app.use(require('./routes/siscommate'));
+app.use(require('./routes/dataAudit'));
 
 // ─── INICIAR ─────────────────────────────────────────────────────────────────
 app.listen(PORT, '0.0.0.0', () => {

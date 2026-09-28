@@ -84,6 +84,25 @@ export interface ResultadoGuardarCliente {
   siscommate: { ok: boolean; error?: string };
 }
 
+/** Una fila del plan de reinyección — ver backend/services/dataAudit/reinyectar.js */
+export interface CambioAuditoria {
+  hoja: string;
+  claves: Record<string, unknown>;
+  cambios: Record<string, { antes: unknown; despues: unknown }>;
+  error: string | null;
+}
+
+export interface PreviewAuditoria {
+  token: string;
+  plan: CambioAuditoria[];
+  vistaPrevia: string;
+}
+
+export interface ResultadoAplicarAuditoria {
+  aplicados: number;
+  fallidos: number;
+}
+
 export const api = {
   getSettings: () => pedir<Settings>('/api/settings'),
 
@@ -137,4 +156,18 @@ export const api = {
     pedir<{ ok: true; deleted: string; siscommate: { ok: boolean; error?: string } }>(
       `/api/catalogs/clients/${id}`, { method: 'DELETE' }
     ),
+
+  // Auditoría de datos (SQLite + SISCOMMATE vía Excel)
+  urlExportarAuditoria: () => '/api/data-audit/exportar',
+  previewAuditoria: async (archivo: File) => {
+    const form = new FormData();
+    form.append('archivo', archivo);
+    const r = await fetch('/api/data-audit/preview', { method: 'POST', body: form });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || await r.text());
+    return r.json() as Promise<PreviewAuditoria>;
+  },
+  aplicarAuditoria: (token: string) =>
+    pedir<ResultadoAplicarAuditoria>('/api/data-audit/aplicar', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }),
+    }),
 };
