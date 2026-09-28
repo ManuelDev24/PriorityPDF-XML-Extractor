@@ -175,6 +175,17 @@ class SiscommateBridge
                         var filas = AnalizarItemClienteTodos();
                         Send(resp, 200, new JavaScriptSerializer().Serialize(filas));
                     }
+                    // Nombres DISTINCT de exportador/consignador de TODO el historico real
+                    // de SISCOMMATE — BOL.exporter es texto libre, no hay una tabla propia
+                    // de consignadores (a diferencia de CUSTOMER para consignatarios). Es
+                    // una consulta agregada (DISTINCT), nunca trae las filas completas de
+                    // BOL — a diferencia de /exportar-tabla, esto es seguro para el bridge
+                    // sin importar cuanto historico real haya.
+                    else if (method == "GET" && path == "/exportadores")
+                    {
+                        var nombres = ObtenerExportadoresDistinct();
+                        Send(resp, 200, new JavaScriptSerializer().Serialize(nombres));
+                    }
                     else if (method == "POST" && path == "/eliminar")
                     {
                         string body2 = new StreamReader(req.InputStream, Encoding.UTF8).ReadToEnd();
@@ -553,6 +564,35 @@ class SiscommateBridge
                 using (var reader = cmd.ExecuteReader())
                 {
                     while (reader.Read()) result.Add(ReadRow(reader));
+                }
+            }
+        }
+        return result;
+    }
+
+    // Nombres DISTINCT de BOL.exporter en TODO el historico real — no hay
+    // tabla propia de consignadores en SISCOMMATE (a diferencia de CUSTOMER
+    // para consignatarios), asi que esto es lo unico disponible para
+    // alimentar un catalogo de consignadores. DISTINCT agrega del lado del
+    // motor VFP: nunca devuelve mas filas que nombres unicos, sin importar
+    // cuantas filas reales tenga BOL.
+    static List<string> ObtenerExportadoresDistinct()
+    {
+        var result = new List<string>();
+        using (var conn = new OleDbConnection(GetConnectionString()))
+        {
+            conn.Open();
+            using (var cmd = new OleDbCommand(
+                "SELECT DISTINCT exporter FROM BOL WHERE exporter <> ''", conn))
+            {
+                cmd.CommandTimeout = 300;
+                using (var reader = cmd.ExecuteReader())
+                {
+                    while (reader.Read())
+                    {
+                        var fila = ReadRow(reader);
+                        if (fila["exporter"] != null) result.Add(fila["exporter"].ToString());
+                    }
                 }
             }
         }

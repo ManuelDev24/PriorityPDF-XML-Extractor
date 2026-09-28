@@ -5,7 +5,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { similitudTexto, normalizarParaComparar } = require('./clientSync');
+const { similitudTexto, normalizarParaComparar, consolidarNombresParecidos } = require('./clientSync');
 
 test('normalizarParaComparar quita acentos, mayúsculas, puntuación y espacios extra', () => {
   // La puntuación se convierte en espacio (no se elimina sin más), por eso
@@ -36,4 +36,29 @@ test('similitudTexto con texto vacío da 0, no rompe', () => {
   assert.strictEqual(similitudTexto('', 'ALGO'), 0);
   assert.strictEqual(similitudTexto('ALGO', ''), 0);
   assert.strictEqual(similitudTexto('', ''), 0);
+});
+
+test('consolidarNombresParecidos colapsa variantes de puntuacion/mayusculas en una sola forma', () => {
+  const r = consolidarNombresParecidos(['ACME SA', 'Acme, S.A.', 'acme sa']);
+  assert.strictEqual(r.length, 1);
+});
+
+test('consolidarNombresParecidos elige la variante mas larga como forma canonica', () => {
+  const r = consolidarNombresParecidos(['CARTONERA ALFREDO HUED', 'CARTONERA ALFREDO HUED SA']);
+  assert.deepStrictEqual(r, ['CARTONERA ALFREDO HUED SA']);
+});
+
+test('consolidarNombresParecidos agrupa transitivamente (A~B, B~C agrupan los tres)', () => {
+  const r = consolidarNombresParecidos(['CARTONERA ALFREDO HUED SAS', 'CARTONERA ALFREDO HEUD SAS', 'CARTONERA ALFREDO HUED SA']);
+  assert.strictEqual(r.length, 1);
+});
+
+test('consolidarNombresParecidos no mezcla nombres genuinamente distintos', () => {
+  const r = consolidarNombresParecidos(['LANCO MANUFACTURING CORP', 'OLEIN RECOVERY CORPORATION']);
+  assert.strictEqual(r.length, 2);
+});
+
+test('consolidarNombresParecidos ignora vacios y duplicados exactos', () => {
+  const r = consolidarNombresParecidos(['ACME', '', '  ', 'ACME', null, undefined]);
+  assert.deepStrictEqual(r, ['ACME']);
 });

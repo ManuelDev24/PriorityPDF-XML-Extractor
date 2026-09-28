@@ -10,7 +10,7 @@ const {
 } = require('../services/siscommateClient');
 const { analizarYGuardar } = require('../services/itemClientAnalysis');
 const { analizarHistorialLocal, normalizarDescripcion } = require('../services/localHistoryAnalysis');
-const { sincronizarClientesDesdeSiscommate, buscarClienteParecido } = require('../services/clientSync');
+const { sincronizarClientesDesdeSiscommate, sincronizarConsignadoresDesdeSiscommate, buscarClienteParecido } = require('../services/clientSync');
 
 const router = express.Router();
 
@@ -170,6 +170,36 @@ router.get('/api/catalogs/consignors', (req, res) => {
     ORDER BY name
     LIMIT ?
   `).all(`%${q}%`, `%${q}%`, limit));
+});
+
+// Segundo grupo del mismo buscador, alimentado desde el histórico real de
+// SISCOMMATE (BOL.exporter, consolidado por similitud — ver
+// services/clientSync.js). Solo nombre: SISCOMMATE no guarda dirección ni
+// documento del consignador aparte. Mismo patrón que "Locales"/"SISCOMMATE"
+// ya usa el consignatario.
+router.get('/api/catalogs/consignors-siscommate', (req, res) => {
+  const q = req.query.q || '';
+  const limit = Math.min(Number(req.query.limit) || 20, 500);
+  res.json(db.prepare(`
+    SELECT name FROM consignor_catalog WHERE name LIKE ? ORDER BY name LIMIT ?
+  `).all(`%${q}%`, limit));
+});
+
+// Cuántos consignadores hay en el catálogo — para el contador en Admin.
+router.get('/api/catalogs/consignors-siscommate/count', (req, res) => {
+  res.json(db.prepare(`SELECT COUNT(*) as total FROM consignor_catalog`).get());
+});
+
+// Trae TODOS los nombres de exportador de BOL.exporter (histórico real de
+// SISCOMMATE), los consolida y los guarda en consignor_catalog — ver
+// services/clientSync.js. Manual desde Admin, igual que el de clientes.
+router.post('/api/catalogs/consignors/sincronizar-siscommate', async (req, res) => {
+  try {
+    const resultado = await sincronizarConsignadoresDesdeSiscommate();
+    res.json({ ok: true, ...resultado });
+  } catch (err) {
+    res.status(500).json({ error: 'No se pudo sincronizar con SISCOMMATE: ' + err.message });
+  }
 });
 
 // Cuántos clientes hay en el catálogo local — para el contador en Admin sin

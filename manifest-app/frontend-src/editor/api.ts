@@ -163,6 +163,14 @@ export interface Consignador {
   city?: string;
 }
 
+/** Consignador hallado en `consignor_catalog` (nombres de BOL.exporter,
+ * histórico real de SISCOMMATE, consolidados por similitud — ver
+ * services/clientSync.js). Solo nombre: SISCOMMATE no guarda dirección ni
+ * documento del consignador aparte. */
+export interface ConsignadorSiscommate {
+  name: string;
+}
+
 export interface Puerto { code: string; description: string; country: string }
 export interface Carrier { code: string; name: string; scac: string; ivu?: string }
 export interface Buque   { code: string; name: string; imo: string; carrier: string; scac: string }
@@ -274,6 +282,8 @@ export const api = {
   buscarClientesSiscommate: (q: string) =>
     pedir<ClienteSiscommate[]>(`/api/catalogs/siscommate-clients?q=${encodeURIComponent(q)}`),
   buscarConsignadores: (q: string) => pedir<Consignador[]>(`/api/catalogs/consignors?q=${encodeURIComponent(q)}`),
+  buscarConsignadoresSiscommate: (q: string) =>
+    pedir<ConsignadorSiscommate[]>(`/api/catalogs/consignors-siscommate?q=${encodeURIComponent(q)}`),
   /** ¿Hay un cliente local con nombre PARECIDO (no igual) al que se está escribiendo?
    * Solo avisa — nunca cambia nada solo. Ver services/clientSync.js. */
   clienteParecido: (nombre: string) =>

@@ -367,11 +367,27 @@ async function analizarItemClienteTodos() {
   return bridgeRequest('GET', '/analisis-item-cliente-todos', null);
 }
 
+/**
+ * Nombres DISTINCT de BOL.exporter en TODO el historial real de SISCOMMATE —
+ * no existe una tabla propia de consignadores (a diferencia de CUSTOMER para
+ * consignatarios), así que esto es lo único disponible para alimentar el
+ * catálogo local `consignor_catalog` (ver clientSync.js). Es una consulta
+ * DISTINCT agregada del lado del bridge — nunca trae filas completas de BOL,
+ * a diferencia del volcado sin límite que ya tumbó el bridge una vez — pero
+ * igual puede tardar sobre historial grande, por eso el mismo timeout largo
+ * que obtenerTablaCompleta.
+ * @returns {Promise<string[]>}
+ */
+async function obtenerExportadoresSiscommate() {
+  return bridgeRequest('GET', '/exportadores', null, TIMEOUT_EXPORTAR_TABLA_MS);
+}
+
 module.exports = {
   getBridgeConfig, bridgeRequest,
   getBridgeStatus, getLote, pushManifest, consultarManifiesto, buscarClientesSiscommate,
   analizarItemClienteTodos, limpiarTextoLibre, calcularPackageUnitCode,
   obtenerMuestra, crearClienteSiscommate, actualizarClienteSiscommate, eliminarClienteSiscommate,
   obtenerTablaCompleta, actualizarBolSiscommate, actualizarBolcontSiscommate, actualizarBolitemSiscommate,
+  obtenerExportadoresSiscommate,
   BRIDGE_TIMEOUT_MS,
 };

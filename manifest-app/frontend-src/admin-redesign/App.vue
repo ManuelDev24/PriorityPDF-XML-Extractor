@@ -224,6 +224,31 @@ async function sincronizarClientes() {
   } finally { sincronizandoClientes.value = false; }
 }
 
+// ── Catálogo de consignadores (BOL.exporter consolidado de SISCOMMATE) ──
+const totalConsignadoresSiscommate = ref<number | null>(null);
+const sincronizandoConsignadores = ref(false);
+const resultadoSincConsignadores = ref<{ canonicos: number; nuevos: number; total_siscommate: number } | null>(null);
+
+async function cargarTotalConsignadoresSiscommate() {
+  try { totalConsignadoresSiscommate.value = (await api.contarConsignadoresSiscommate()).total; }
+  catch { totalConsignadoresSiscommate.value = null; }
+}
+
+async function sincronizarConsignadores() {
+  sincronizandoConsignadores.value = true;
+  resultadoSincConsignadores.value = null;
+  try {
+    const r = await api.sincronizarConsignadoresSiscommate();
+    resultadoSincConsignadores.value = r;
+    toast(`Consignadores actualizados: ${r.nuevos} nuevos (de ${r.canonicos} nombres consolidados)`);
+    await cargarTotalConsignadoresSiscommate();
+  } catch (e) {
+    let msg = 'Error al sincronizar';
+    try { msg = JSON.parse((e as Error).message).error || msg; } catch { /* texto plano */ }
+    toast(msg, 'err');
+  } finally { sincronizandoConsignadores.value = false; }
+}
+
 // ── Crear / editar un cliente — escribe local Y en CUSTOMER.DBF real ──
 // (best-effort: si el bridge falla, el guardado local no se pierde, pero se
 // avisa claramente que no llegó a SISCOMMATE — ver routes/catalogs.js).
@@ -357,7 +382,7 @@ async function aplicarCambiosAuditoria() {
 
 onMounted(() => {
   cargarSettings(); cargarTipos(); cargarTamanos(); checkBridge(); cargarHistorial();
-  cargarTotalClientes(); buscarClientesAdmin();
+  cargarTotalClientes(); buscarClientesAdmin(); cargarTotalConsignadoresSiscommate();
 });
 </script>
 
@@ -625,7 +650,8 @@ onMounted(() => {
             </div>
             <CardDescription>
               Caché local de la tabla CUSTOMER de SISCOMMATE — se usa para autocompletar
-              consignatario/consignador y para avisar cuando un nombre nuevo se parece
+              el consignatario (no el consignador, que no tiene catálogo propio en
+              SISCOMMATE — ver más abajo) y para avisar cuando un nombre nuevo se parece
               mucho a uno ya conocido (posible error de digitación). Ella corrige en
               SISCOMMATE, no acá — este botón trae esos cambios.
             </CardDescription>
@@ -662,6 +688,36 @@ onMounted(() => {
             <p class="text-xs text-ink-faint">
               Muestra hasta 100 resultados a la vez — refiná la búsqueda si no encontrás lo que buscás.
             </p>
+          </CardContent>
+        </Card>
+
+        <Card class="mt-6">
+          <CardHeader>
+            <div class="flex items-center gap-2">
+              <CardTitle>Catálogo de consignadores</CardTitle>
+              <Badge v-if="totalConsignadoresSiscommate !== null" class="bg-accent-soft text-accent">{{ totalConsignadoresSiscommate }} en total</Badge>
+            </div>
+            <CardDescription>
+              SISCOMMATE no guarda un catálogo de consignadores (RD) como CUSTOMER —
+              el nombre del exportador solo existe como texto libre en cada B/L
+              (BOL.exporter). Este botón trae TODOS los nombres distintos del histórico
+              real, agrupa variantes del mismo nombre (typos, mayúsculas, puntuación) y
+              guarda solo la forma más completa de cada uno. Se combina con el historial
+              propio de Priority al buscar consignador en el editor.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div class="flex items-center gap-3">
+              <Button :disabled="sincronizandoConsignadores" @click="sincronizarConsignadores">
+                <RefreshCw class="size-3.5" :class="sincronizandoConsignadores && 'animate-spin'" />
+                {{ sincronizandoConsignadores ? 'Sincronizando…' : 'Actualizar desde SISCOMMATE' }}
+              </Button>
+              <p v-if="resultadoSincConsignadores" class="text-xs text-status-validated">
+                {{ resultadoSincConsignadores.nuevos }} nuevos ·
+                {{ resultadoSincConsignadores.canonicos }} nombres consolidados
+                (de {{ resultadoSincConsignadores.total_siscommate }} en SISCOMMATE)
+              </p>
+            </div>
           </CardContent>
         </Card>
       </TabsContent>

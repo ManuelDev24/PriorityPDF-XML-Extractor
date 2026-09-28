@@ -212,6 +212,16 @@ function runMigrations({
   // demás. NULL en filas viejas — ORDER BY hace COALESCE(sort_seq, id) para
   // no romper el orden ya existente de datos previos a esta columna.
   addColumnIfMissing('bills_of_lading', 'sort_seq', 'INTEGER');
+
+  // Catálogo de consignadores (exportadores RD) alimentado desde el
+  // histórico real de SISCOMMATE (BOL.exporter) — ver services/clientSync.js
+  // (sincronizarConsignadoresDesdeSiscommate). A diferencia de `clients`
+  // (CUSTOMER.DBF, con perfil completo), SISCOMMATE no guarda dirección ni
+  // documento del consignador — BOL.exporter es solo texto libre, así que
+  // este catálogo es nombre únicamente. Se combina con `bills_of_lading`
+  // (que sí tiene perfil completo de los consignadores que Priority ya
+  // cargó) al buscar, igual que "Locales"/"SISCOMMATE" ya hace consignatario.
+  db.exec(`CREATE TABLE IF NOT EXISTS consignor_catalog (name TEXT PRIMARY KEY)`);
 }
 
 module.exports = { runMigrations, addColumnIfMissing };

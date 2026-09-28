@@ -5,7 +5,7 @@
 // vez de fracciones iguales (era el reclamo original: IMO con 7 caracteres
 // ocupaba el mismo ancho que el nombre del buque).
 import { ref, computed, watch } from 'vue';
-import { api, type ItemHacienda, type Cliente, type ClienteSiscommate, type Consignador } from '../editor/api';
+import { api, type ItemHacienda, type Cliente, type ClienteSiscommate, type Consignador, type ConsignadorSiscommate } from '../editor/api';
 import {
   datosManifiesto, blActual, carriers, puertos, buques, contenedoresDelBL, tamanosValidos,
   actualizarBL, actualizarManifiesto, cerrarBL, setEstado, toast, sincronizarEstadoManifiesto,
@@ -420,15 +420,21 @@ function alElegirClienteValor(valor: string) {
 // ── Combobox: consignador (Shipper, RD) — mismo patrón que el buscador de
 // código arancelario y el de consignatario, pero contra el historial de B/L
 // (ver /api/catalogs/consignors: no hay catálogo curado de consignadores). ──
+// Segundo grupo (consignadoresSiscommate) viene de consignor_catalog — solo
+// nombre, no perfil completo, porque SISCOMMATE guarda el consignador como
+// texto libre en BOL.exporter, sin dirección/documento aparte (ver
+// services/clientSync.js sincronizarConsignadoresDesdeSiscommate).
 const consignadorAbierto = ref(false);
 const consignadoresHallados = ref<Consignador[]>([]);
+const consignadoresSiscommate = ref<ConsignadorSiscommate[]>([]);
 let tConsignador: ReturnType<typeof setTimeout> | undefined;
 
 function buscarConsignador(q: string) {
   clearTimeout(tConsignador);
-  if (!q || q.length < 2) { consignadoresHallados.value = []; return; }
+  if (!q || q.length < 2) { consignadoresHallados.value = []; consignadoresSiscommate.value = []; return; }
   tConsignador = setTimeout(async () => {
     try { consignadoresHallados.value = await api.buscarConsignadores(q); } catch { consignadoresHallados.value = []; }
+    try { consignadoresSiscommate.value = await api.buscarConsignadoresSiscommate(q); } catch { consignadoresSiscommate.value = []; }
   }, 200);
 }
 
@@ -443,7 +449,25 @@ function elegirConsignador(c: Consignador) {
   actualizarBL('consignor_city', c.city || '');
   sugerenciaConsignor.value = null;
 }
+// SISCOMMATE solo trae el nombre — se limpia el resto de los campos en vez
+// de dejar datos de un consignador anterior sin relación con este.
+function elegirConsignadorSiscommate(c: ConsignadorSiscommate) {
+  consignadorAbierto.value = false;
+  actualizarBL('consignor_name', c.name);
+  actualizarBL('consignor_document_type', '');
+  actualizarBL('consignor_document_no', '');
+  actualizarBL('consignor_tel', '');
+  actualizarBL('consignor_email', '');
+  actualizarBL('consignor_street', '');
+  actualizarBL('consignor_city', '');
+  sugerenciaConsignor.value = null;
+}
 function alElegirConsignadorValor(valor: string) {
+  if (valor.startsWith('sis:')) {
+    const c = consignadoresSiscommate.value[Number(valor.slice(4))];
+    if (c) elegirConsignadorSiscommate(c);
+    return;
+  }
   const c = consignadoresHallados.value.find(x => String(x.id) === valor);
   if (c) elegirConsignador(c);
 }
@@ -451,7 +475,7 @@ function alElegirConsignadorValor(valor: string) {
 watch(() => bl.value?.id, () => {
   itemAbierto.value = false; clienteAbierto.value = false; clienteAbierto2.value = false; consignadorAbierto.value = false;
   sugerencias.value = []; nombreCliente.value = ''; clienteId.value = null; descItem.value = '';
-  clientesHallados.value = []; clientesSiscommate.value = []; consignadoresHallados.value = [];
+  clientesHallados.value = []; clientesSiscommate.value = []; consignadoresHallados.value = []; consignadoresSiscommate.value = [];
   if (bl.value?.hacienda_item_code) cargarDescItem(bl.value.hacienda_item_code);
   else if (bl.value?.goods_name) sugerir(bl.value.goods_name);
 }, { immediate: true });
@@ -886,10 +910,15 @@ watch(() => bl.value?.id, () => {
             </ComboboxAnchor>
             <ComboboxList>
               <ComboboxEmpty>Sin coincidencias — se usará el nombre escrito</ComboboxEmpty>
-              <ComboboxGroup>
+              <ComboboxGroup v-if="consignadoresHallados.length" heading="Locales">
                 <ComboboxItem v-for="c in consignadoresHallados" :key="c.id" :value="String(c.id)">
                   <span class="flex-1 truncate">{{ c.name }}</span>
                   <span class="font-mono text-xs text-ink-faint">{{ c.document_no || '—' }}</span>
+                </ComboboxItem>
+              </ComboboxGroup>
+              <ComboboxGroup v-if="consignadoresSiscommate.length" heading="SISCOMMATE">
+                <ComboboxItem v-for="(c, i) in consignadoresSiscommate" :key="'sis:'+i" :value="'sis:'+i">
+                  <span class="flex-1 truncate">{{ c.name }}</span>
                 </ComboboxItem>
               </ComboboxGroup>
             </ComboboxList>

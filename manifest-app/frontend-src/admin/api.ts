@@ -75,6 +75,13 @@ export interface ResultadoSincronizarClientes {
   sin_cambios: number;
 }
 
+export interface ResultadoSincronizarConsignadores {
+  ok: true;
+  total_siscommate: number;
+  canonicos: number;
+  nuevos: number;
+}
+
 /** Resultado de crear/actualizar un cliente — separa el guardado local del
  * intento de escribir en CUSTOMER.DBF real (best-effort, puede fallar sin
  * perder el guardado local). */
@@ -146,6 +153,12 @@ export const api = {
   contarClientes: () => pedir<{ total: number }>('/api/catalogs/clients/count'),
   sincronizarClientesSiscommate: () =>
     pedir<ResultadoSincronizarClientes>('/api/catalogs/clients/sincronizar-siscommate', { method: 'POST' }),
+
+  // Catálogo de consignadores (nombres de BOL.exporter, histórico real de
+  // SISCOMMATE, consolidados por similitud)
+  contarConsignadoresSiscommate: () => pedir<{ total: number }>('/api/catalogs/consignors-siscommate/count'),
+  sincronizarConsignadoresSiscommate: () =>
+    pedir<ResultadoSincronizarConsignadores>('/api/catalogs/consignors/sincronizar-siscommate', { method: 'POST' }),
   crearCliente: (c: Partial<Cliente>) =>
     pedir<ResultadoGuardarCliente>('/api/catalogs/clients', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(c),

@@ -7,7 +7,7 @@
 // consultar el bridge en cada carga de PDF.
 
 const db = require('../db/connection');
-const { obtenerMuestra } = require('./siscommateClient');
+const { obtenerMuestra, obtenerExportadoresSiscommate } = require('./siscommateClient');
 
 /**
  * Trae TODO el catálogo CUSTOMER de SISCOMMATE y lo mezcla con el catálogo
@@ -166,8 +166,86 @@ function buscarClienteParecido(nombre) {
   return mejor;
 }
 
+/**
+ * Agrupa nombres parecidos entre sí (mismo criterio que buscarClienteParecido:
+ * Levenshtein normalizado >= UMBRAL_PARECIDO) y devuelve UNA forma canónica
+ * por grupo — la variante más larga, normalmente la más completa ("ACME
+ * CORP S.A." en vez de "ACME CORP" o "ACME"). Usa union-find para que la
+ * agrupación sea transitiva (A~B y B~C agrupan A, B y C juntos aunque A y C
+ * no se parezcan directo) y agrupa primero por las primeras 3 letras
+ * normalizadas para no comparar cada nombre contra TODOS los demás — con
+ * miles de nombres reales de SISCOMMATE, la comparación completa (n²)
+ * tardaría demasiado.
+ * @param {string[]} nombres
+ * @returns {string[]} Nombres canónicos, uno por grupo, ordenados alfabéticamente
+ */
+function consolidarNombresParecidos(nombres) {
+  const unicos = Array.from(new Set(nombres.map(n => String(n || '').trim()).filter(Boolean)));
+
+  const buckets = new Map();
+  unicos.forEach((nombre, i) => {
+    const clave = normalizarParaComparar(nombre).slice(0, 3);
+    if (!clave) return;
+    if (!buckets.has(clave)) buckets.set(clave, []);
+    buckets.get(clave).push(i);
+  });
+
+  const padre = unicos.map((_, i) => i);
+  const encontrar = i => (padre[i] === i ? i : (padre[i] = encontrar(padre[i])));
+  const unir = (a, b) => { const ra = encontrar(a), rb = encontrar(b); if (ra !== rb) padre[ra] = rb; };
+
+  for (const indices of buckets.values()) {
+    for (let a = 0; a < indices.length; a++) {
+      for (let b = a + 1; b < indices.length; b++) {
+        if (similitudTexto(unicos[indices[a]], unicos[indices[b]]) >= UMBRAL_PARECIDO) {
+          unir(indices[a], indices[b]);
+        }
+      }
+    }
+  }
+
+  const grupos = new Map();
+  unicos.forEach((nombre, i) => {
+    const raiz = encontrar(i);
+    const lista = grupos.get(raiz) || [];
+    lista.push(nombre);
+    grupos.set(raiz, lista);
+  });
+
+  return Array.from(grupos.values())
+    .map(grupo => grupo.reduce((mejor, actual) => (actual.length > mejor.length ? actual : mejor)))
+    .sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * Trae TODOS los nombres de exportador/consignador del histórico real de
+ * SISCOMMATE (BOL.exporter — no hay tabla propia de consignadores allá, a
+ * diferencia de CUSTOMER para consignatarios), los consolida (agrupa
+ * variantes del mismo nombre real) y guarda las formas canónicas nuevas en
+ * `consignor_catalog`. Nunca borra nada — igual que sincronizarClientesDesdeSiscommate.
+ * @returns {Promise<{total_siscommate: number, canonicos: number, nuevos: number}>}
+ */
+async function sincronizarConsignadoresDesdeSiscommate() {
+  const nombresRaw = await obtenerExportadoresSiscommate();
+  const canonicos = consolidarNombresParecidos(nombresRaw);
+
+  const existentes = new Set(db.prepare('SELECT name FROM consignor_catalog').all().map(r => r.name));
+  const insertar = db.prepare('INSERT OR IGNORE INTO consignor_catalog (name) VALUES (?)');
+  let nuevos = 0;
+  const transaccion = db.transaction(() => {
+    canonicos.forEach(nombre => {
+      if (!existentes.has(nombre)) { insertar.run(nombre); nuevos++; }
+    });
+  });
+  transaccion();
+
+  return { total_siscommate: nombresRaw.length, canonicos: canonicos.length, nuevos };
+}
+
 module.exports = {
   sincronizarClientesDesdeSiscommate,
+  sincronizarConsignadoresDesdeSiscommate,
+  consolidarNombresParecidos,
   similitudTexto,
   buscarClienteParecido,
   normalizarParaComparar,
