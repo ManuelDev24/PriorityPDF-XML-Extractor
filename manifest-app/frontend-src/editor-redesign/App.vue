@@ -45,6 +45,14 @@ const modal = ref<{
   // particular sin afectar los demás (mensajes de una o dos líneas, que se
   // ven mejor angostos).
   ancho?: boolean;
+  // Solo lo usa el modal de confirmar carga de VARIOS archivos cuando dos o
+  // más comparten el mismo VoyageNo (entre ellos o con un viaje ya existente)
+  // — ver subirVarios(). Cada fila es un input real con v-model propio (no el
+  // texto estático de `cuerpo`), porque cada archivo en conflicto necesita
+  // poder resolverse con un nombre distinto de forma independiente. Objeto
+  // plano (no ref individual): `modal` ya es reactivo en profundidad, así que
+  // mutar `item.nombre` alcanza sin envolver cada campo aparte.
+  archivosConflicto?: Array<{ archivo: File; nombre: string }>;
 } | null>(null);
 // Nombre que el operador escribe para el viaje nuevo cuando el archivo trae
 // un VoyageNo que ya existe pero, a diferencia del caso normal (mismo viaje,
@@ -253,10 +261,9 @@ async function subir(archivo: File | undefined) {
 // TODOS los archivos en un solo resumen y, al confirmar, los sube uno por
 // uno en orden (no en paralelo — el segundo archivo necesita ver en la base
 // el viaje que creó el primero para sumarse ahí en vez de crear uno nuevo).
-// A propósito NO ofrece "mover B/L de otro viaje" ni "cargar como viaje
-// nuevo" acá: son decisiones para un archivo a la vez, y agruparlas para N
-// archivos heterogéneos complicaría el resumen sin un caso real que lo pida
-// todavía — si aparece, usar la carga de un solo archivo para ese caso.
+// A propósito NO ofrece "mover B/L de otro viaje" acá: es una decisión para
+// un archivo a la vez, y agruparla para N archivos heterogéneos complicaría
+// el resumen sin un caso real que lo pida todavía.
 async function subirVarios(archivos: File[]) {
   if (!archivos.length) return;
   if (archivos.length === 1) { await subir(archivos[0]); return; }
@@ -273,6 +280,24 @@ async function subirVarios(archivos: File[]) {
   }));
 
   const validos = previos.filter(p => p.preview);
+
+  // Dos (o más) archivos de este MISMO lote pueden traer el mismo VoyageNo en
+  // su encabezado sin ser, operativamente, el mismo manifiesto — ej. "CF372"
+  // y "CF372TB" (mismo buque/viaje físico, booking distinto). Como la vista
+  // previa de cada archivo se pide en paralelo, ninguno ve todavía el viaje
+  // que crearía OTRO archivo del mismo lote — sin esto, el segundo se suma
+  // calladamente al viaje que el primero acaba de crear. Se detecta tanto la
+  // colisión ENTRE archivos de este lote como contra un viaje que ya existía
+  // antes de subir nada (preview.existe_viaje).
+  const conteoPorViaje = new Map<string, number>();
+  validos.forEach(p => conteoPorViaje.set(p.preview.voyage_no, (conteoPorViaje.get(p.preview.voyage_no) || 0) + 1));
+  const enConflicto = validos.filter(p => p.preview.existe_viaje || (conteoPorViaje.get(p.preview.voyage_no) || 0) > 1);
+  // Se precarga con el MISMO VoyageNo original: si el operador no toca nada,
+  // el comportamiento es idéntico al de siempre (se combinan) — el caso real
+  // de un manifiesto de islas partido en varios PDF SÍ debe combinarse. Solo
+  // si escribe un nombre distinto ese archivo se separa.
+  const nombresConflicto = new Map(enConflicto.map(p => [p.archivo, { archivo: p.archivo, nombre: p.preview.voyage_no }]));
+
   // Grilla de 2 columnas en vez de una lista vertical: con 5+ archivos (caso
   // real: un manifiesto de islas partido en varios PDF) una lista de una
   // sola columna se volvía altísima. Acompañado del modal más ancho
@@ -300,16 +325,19 @@ async function subirVarios(archivos: File[]) {
     titulo: `Confirmar carga de ${validos.length} archivo${validos.length > 1 ? 's' : ''}` +
       (validos.length < previos.length ? ` (${previos.length - validos.length} con error, se omiten)` : ''),
     cuerpo, ancho: true,
+    archivosConflicto: enConflicto.length ? enConflicto.map(p => nombresConflicto.get(p.archivo)!) : undefined,
     botones: [
       { label: 'Cancelar', variant: 'outline', accion: () => { cerrarModal(); if (archivoInput.value) archivoInput.value.value = ''; } },
       { label: `Cargar ${validos.length} archivo${validos.length > 1 ? 's' : ''}`, variant: 'default', accion: async () => {
         cerrarModal();
         let ultimoManifestId: number | null = null;
         const resultados: string[] = [];
-        for (const { archivo } of validos) {
+        for (const { archivo, preview } of validos) {
           setEstado(`Cargando ${archivo.name}...`);
           try {
             const fd = new FormData(); fd.append('xml', archivo);
+            const nombreFinal = nombresConflicto.get(archivo)?.nombre.trim();
+            if (nombreFinal && nombreFinal !== preview.voyage_no) fd.set('voyage_no_override', nombreFinal);
             const r = await fetch('/api/manifests/upload', { method: 'POST', body: fd });
             const data = await r.json();
             if (!data.ok) throw new Error(data.error);
@@ -662,6 +690,17 @@ onMounted(async () => {
         <DialogHeader><DialogTitle>{{ modal.titulo }}</DialogTitle></DialogHeader>
         <div class="text-sm text-ink-muted" v-html="modal.cuerpo"></div>
         <Input v-if="modal.pedirTexto" v-model="nuevoVoyageNo" placeholder="ej. CF371TB" class="h-9 font-mono text-xs" autofocus />
+        <div v-if="modal.archivosConflicto?.length" class="flex flex-col gap-2 rounded-md border border-status-pending/40 bg-status-pending/10 p-2.5">
+          <p class="text-xs text-status-pending">
+            Estos archivos comparten el número de viaje entre sí o con uno ya existente. Si es el
+            MISMO viaje partido en varios archivos, dejalos tal cual (se van a combinar). Si son
+            viajes distintos, escribe un nombre diferente para separarlos.
+          </p>
+          <div v-for="item in modal.archivosConflicto" :key="item.archivo.name" class="flex items-center gap-2">
+            <span class="flex-1 truncate text-xs">{{ item.archivo.name }}</span>
+            <Input v-model="item.nombre" class="h-8 w-36 font-mono text-xs" />
+          </div>
+        </div>
         <label v-if="modal.enOtroViaje?.length" class="flex items-center gap-2 rounded-md border border-border bg-paper-sunken px-3 py-2 text-sm">
           <input type="checkbox" v-model="moverEnOtroViaje" class="size-3.5" />
           Mover esos {{ modal.enOtroViaje.length }} B/L a este viaje también
