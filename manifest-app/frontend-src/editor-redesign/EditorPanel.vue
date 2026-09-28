@@ -599,7 +599,7 @@ watch(() => bl.value?.id, () => {
       <span v-if="posicionBL" class="text-xs text-ink-faint" title="Posición de este B/L dentro del viaje">B/L {{ posicionBL }}</span>
       <div class="flex-1"></div>
       <Button v-if="bl.status === 'validado'" variant="outline" size="sm" @click="blActual && marcar('pendiente')"><X class="size-3.5" />Desvalidar</Button>
-      <Button v-else variant="outline" size="sm" class="border-status-validated text-status-validated hover:bg-status-validated-soft hover:text-status-validated" @click="blActual && marcar('validado')"><Check class="size-3.5" />Validado</Button>
+      <Button v-else variant="outline" size="sm" class="border-status-validated text-status-validated hover:bg-status-validated-soft hover:text-status-validated" @click="blActual && marcar('validado')"><Check class="size-3.5" />Validar</Button>
       <!-- blActual (no el computed bl, que fuerza no-null con !) por si el
            clic llega justo cuando blActual ya pasó a null — evita el
            "Cannot read properties of null (reading 'id')" en este handler. -->
