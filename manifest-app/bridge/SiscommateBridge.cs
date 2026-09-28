@@ -138,6 +138,16 @@ class SiscommateBridge
                         var filas = ObtenerMuestra(tabla, limite);
                         Send(resp, 200, new JavaScriptSerializer().Serialize(filas));
                     }
+                    // Volcado COMPLETO de una tabla, sin límite — a diferencia de
+                    // /muestra (que exige un TOP fijo, pensado para explorar a
+                    // mano). Lo usa el script de auditoría de datos para traer
+                    // TODO el histórico de SISCOMMATE y volcarlo a Excel.
+                    else if (method == "GET" && path == "/exportar-tabla")
+                    {
+                        string tablaExp = req.QueryString["tabla"] ?? "";
+                        var filasExp = ObtenerTablaCompleta(tablaExp);
+                        Send(resp, 200, new JavaScriptSerializer().Serialize(filasExp));
+                    }
                     // Uso puntual/manual: para un código arancelario, busca (cruzando
                     // BOLITEM.code con BOL.consigne por manifest+bolno) cuál
                     // consignatario lo ha usado con más frecuencia en el historial real
@@ -199,6 +209,35 @@ class SiscommateBridge
                         var data5 = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(body5);
                         int filas5 = EliminarClienteDeDBF(GetStr(data5, "name"));
                         Send(resp, 200, "{\"ok\":true,\"filas_afectadas\":" + filas5 + "}");
+                    }
+                    // Corrige el consignatario/consignador de un B/L ya guardado en
+                    // SISCOMMATE. BOL solo tiene estos dos campos de texto libre para
+                    // eso — no hay direccion/documento separados en esa tabla.
+                    else if (method == "POST" && path == "/bol-actualizar")
+                    {
+                        string body6 = new StreamReader(req.InputStream, Encoding.UTF8).ReadToEnd();
+                        var data6 = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(body6);
+                        int filas6 = ActualizarBolEnDBF(data6);
+                        Send(resp, 200, "{\"ok\":true,\"filas_afectadas\":" + filas6 + "}");
+                    }
+                    // Corrige el numero de contenedor o el tamano de una fila de
+                    // BOLCONT ya guardada. Identificada por manifest+bolno+control
+                    // (no por "contain", que es justo el campo que puede estar mal).
+                    else if (method == "POST" && path == "/bolcont-actualizar")
+                    {
+                        string body7 = new StreamReader(req.InputStream, Encoding.UTF8).ReadToEnd();
+                        var data7 = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(body7);
+                        int filas7 = ActualizarBolcontEnDBF(data7);
+                        Send(resp, 200, "{\"ok\":true,\"filas_afectadas\":" + filas7 + "}");
+                    }
+                    // Corrige cantidad/peso/descripcion/codigo/valor de una fila de
+                    // BOLITEM ya guardada. Identificada por manifest+bolno+control.
+                    else if (method == "POST" && path == "/bolitem-actualizar")
+                    {
+                        string body8 = new StreamReader(req.InputStream, Encoding.UTF8).ReadToEnd();
+                        var data8 = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(body8);
+                        int filas8 = ActualizarBolitemEnDBF(data8);
+                        Send(resp, 200, "{\"ok\":true,\"filas_afectadas\":" + filas8 + "}");
                     }
                     else if (method == "OPTIONS")
                     {
@@ -531,6 +570,21 @@ class SiscommateBridge
         return result;
     }
 
+    static List<Dictionary<string, object>> ObtenerTablaCompleta(string tabla)
+    {
+        var result = new List<Dictionary<string, object>>();
+        using (var conn = new OleDbConnection(GetConnectionString()))
+        {
+            conn.Open();
+            using (var cmd = new OleDbCommand("SELECT * FROM " + tabla, conn))
+            using (var reader = cmd.ExecuteReader())
+            {
+                while (reader.Read()) result.Add(ReadRow(reader));
+            }
+        }
+        return result;
+    }
+
     static List<Dictionary<string, object>> ObtenerEsquema(string tabla)
     {
         var result = new List<Dictionary<string, object>>();
@@ -672,6 +726,76 @@ class SiscommateBridge
             using (var cmd = new OleDbCommand("DELETE FROM CUSTOMER WHERE name = ?", conn))
             {
                 cmd.Parameters.AddWithValue("name", nombre);
+                return cmd.ExecuteNonQuery();
+            }
+        }
+    }
+
+    static int ActualizarBolEnDBF(Dictionary<string, object> d)
+    {
+        string manifest = GetStr(d, "manifest");
+        string bolno = GetStr(d, "bolno");
+        if (string.IsNullOrWhiteSpace(manifest) || string.IsNullOrWhiteSpace(bolno))
+            throw new Exception("Falta manifest o bolno.");
+        using (var conn = new OleDbConnection(GetConnectionString()))
+        {
+            conn.Open();
+            using (var cmd = new OleDbCommand(
+                "UPDATE BOL SET consigne=?,exporter=? WHERE manifest=? AND bolno=?", conn))
+            {
+                cmd.Parameters.AddWithValue("consigne", GetStr(d, "consigne"));
+                cmd.Parameters.AddWithValue("exporter", GetStr(d, "exporter"));
+                cmd.Parameters.AddWithValue("manifest", manifest);
+                cmd.Parameters.AddWithValue("bolno", bolno);
+                return cmd.ExecuteNonQuery();
+            }
+        }
+    }
+
+    static int ActualizarBolcontEnDBF(Dictionary<string, object> d)
+    {
+        string manifest = GetStr(d, "manifest");
+        string bolno = GetStr(d, "bolno");
+        string control = GetStr(d, "control");
+        if (string.IsNullOrWhiteSpace(manifest) || string.IsNullOrWhiteSpace(bolno) || string.IsNullOrWhiteSpace(control))
+            throw new Exception("Falta manifest, bolno o control.");
+        using (var conn = new OleDbConnection(GetConnectionString()))
+        {
+            conn.Open();
+            using (var cmd = new OleDbCommand(
+                "UPDATE BOLCONT SET contain=?,size=? WHERE manifest=? AND bolno=? AND control=?", conn))
+            {
+                cmd.Parameters.AddWithValue("contain", GetStr(d, "contain"));
+                cmd.Parameters.AddWithValue("size", GetStr(d, "size"));
+                cmd.Parameters.AddWithValue("manifest", manifest);
+                cmd.Parameters.AddWithValue("bolno", bolno);
+                cmd.Parameters.AddWithValue("control", control);
+                return cmd.ExecuteNonQuery();
+            }
+        }
+    }
+
+    static int ActualizarBolitemEnDBF(Dictionary<string, object> d)
+    {
+        string manifest = GetStr(d, "manifest");
+        string bolno = GetStr(d, "bolno");
+        string control = GetStr(d, "control");
+        if (string.IsNullOrWhiteSpace(manifest) || string.IsNullOrWhiteSpace(bolno) || string.IsNullOrWhiteSpace(control))
+            throw new Exception("Falta manifest, bolno o control.");
+        using (var conn = new OleDbConnection(GetConnectionString()))
+        {
+            conn.Open();
+            using (var cmd = new OleDbCommand(
+                "UPDATE BOLITEM SET qty=?,weight=?,desc=?,code=?,value=? WHERE manifest=? AND bolno=? AND control=?", conn))
+            {
+                AddNumeric(cmd, "qty", GetDec(d, "qty"));
+                AddNumeric(cmd, "weight", GetDec(d, "weight"));
+                cmd.Parameters.AddWithValue("desc", GetStr(d, "desc"));
+                cmd.Parameters.AddWithValue("code", GetStr(d, "code"));
+                AddNumeric(cmd, "value", GetDec(d, "value"));
+                cmd.Parameters.AddWithValue("manifest", manifest);
+                cmd.Parameters.AddWithValue("bolno", bolno);
+                cmd.Parameters.AddWithValue("control", control);
                 return cmd.ExecuteNonQuery();
             }
         }
