@@ -14,6 +14,8 @@ const { calcularDiferencias } = require('./diff');
  * @property {Record<string, any>} claves
  * @property {Record<string, {antes: any, despues: any}>} [cambios]
  * @property {Record<string, any>} [filaFinal]
+ * @property {Record<string, any>} [filaActual] Fila tal cual estaba antes del cambio — algunas
+ *   escrituras (p.ej. actualizar un cliente en SISCOMMATE por su nombre ANTERIOR) la necesitan
  * @property {string} [error]
  * @property {object} [spec] HojaSpec de hojas.js — ausente cuando hay error
  */
@@ -34,11 +36,13 @@ async function calcularPlanDeCambios(origenExcel, deps) {
     const worksheet = workbook.getWorksheet(spec.nombre);
     if (!worksheet) continue;
 
-    const encabezados = worksheet.getRow(1).values.slice(1).map(String);
+    // .values es CellValue[] en la practica (la firma de ExcelJS lo declara
+    // como union con una sobrecarga de funcion que nunca aplica aqui).
+    const encabezados = (/** @type {any[]} */ (worksheet.getRow(1).values)).slice(1).map(String);
     worksheet.eachRow((row, numeroFila) => {
       if (numeroFila === 1) return;
       const filaExcel = {};
-      row.values.slice(1).forEach((valor, i) => { filaExcel[encabezados[i]] = valor; });
+      (/** @type {any[]} */ (row.values)).slice(1).forEach((valor, i) => { filaExcel[encabezados[i]] = valor; });
       const claves = {};
       spec.camposClave.forEach(c => { claves[c] = String(filaExcel[c] ?? '').trim(); });
       filasPorProcesar.push({ spec, claves, filaExcel });
@@ -54,7 +58,7 @@ async function calcularPlanDeCambios(origenExcel, deps) {
     if (Object.keys(cambios).length === 0) return null; // sin cambios, no entra al plan
     const filaFinal = { ...filaActual };
     Object.keys(cambios).forEach(c => { filaFinal[c] = cambios[c].despues; });
-    return { hoja: spec.nombre, claves, cambios, filaFinal, spec };
+    return { hoja: spec.nombre, claves, cambios, filaFinal, filaActual, spec };
   }));
 
   return resueltos.filter(Boolean);
@@ -100,7 +104,7 @@ async function aplicarCambios(plan, deps, registrarCambio) {
       continue;
     }
     try {
-      await item.spec.escribirCambio(deps, item.claves, item.cambios, item.filaFinal);
+      await item.spec.escribirCambio(deps, item.claves, item.cambios, item.filaFinal, item.filaActual);
       registrarCambio({ hoja: item.hoja, claves: item.claves, cambios: item.cambios });
       aplicados++;
     } catch (e) {

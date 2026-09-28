@@ -1,33 +1,25 @@
 // backend/services/dataAudit/exportar.js — Arma el Excel de auditoria con
-// las 11 hojas declaradas en hojas.js. No sabe nada de SQL ni de SISCOMMATE:
-// solo itera la configuracion y escribe filas en un Workbook de exceljs.
+// las hojas declaradas en hojas.js. Nunca golpea el bridge de SISCOMMATE:
+// solo lee SQLite e itera la configuracion para escribir filas en un
+// Workbook de exceljs.
 
 const ExcelJS = require('exceljs');
 const { construirHojas } = require('./hojas');
 
 const COLOR_CLAVE = 'FFD9D9D9'; // gris — columnas tecnicas, no editar
 const NOTA_CLAVE = 'No editar — se usa para identificar la fila al reinyectar.';
-const COLOR_DUPLICADO = 'FFF8D7DA'; // rojo suave — el mismo nombre aparece en dos filas
 const COLOR_ESPECIAL = 'FFFFF3CD'; // amarillo suave — trae un caracter fuera de A-Z/0-9/espacio
+const COLOR_FALTANTE = 'FFFFE0B2'; // naranja suave — le falta documento/direccion/telefono
+const COLOR_DUPLICADO = 'FFF8D7DA'; // rojo suave — nombre parecido a otro de la misma hoja
 
 /**
  * @param {import('better-sqlite3').Database} db
- * @param {object} siscommate Ver backend/services/siscommateClient.js
  * @returns {Promise<import('exceljs').Workbook>}
  */
-async function construirLibroAuditoria(db, siscommate) {
+async function construirLibroAuditoria(db) {
   const workbook = new ExcelJS.Workbook();
   for (const hoja of construirHojas()) {
-    let filas;
-    try {
-      filas = await hoja.obtenerFilas({ db, siscommate });
-    } catch (e) {
-      // Una hoja de SISCOMMATE sin bridge disponible no debe tumbar todo el
-      // export — las hojas de SQLite siguen siendo utiles por si solas. Se
-      // deja la hoja vacia con una nota explicando por que.
-      console.error(`[AVISO] No se pudo traer "${hoja.nombre}": ${e.message}`);
-      filas = [];
-    }
+    const filas = await hoja.obtenerFilas({ db });
     agregarHoja(workbook, hoja, filas);
   }
   return workbook;
@@ -38,9 +30,9 @@ function agregarHoja(workbook, hoja, filas) {
   const columnasClave = hoja.camposClave;
   // Las columnas de datos se derivan de la primera fila real (asi la hoja
   // siempre refleja TODO lo que trae el origen, incluyendo columnas
-  // informativas como bls_asociados que no estan en camposEditables). Si no
-  // hay filas, se cae a camposEditables para que la hoja al menos tenga
-  // encabezados.
+  // informativas como bls_asociados/_campos_faltantes que no estan en
+  // camposEditables). Si no hay filas, se cae a camposEditables para que la
+  // hoja al menos tenga encabezados.
   const columnasResto = filas.length > 0
     ? Object.keys(filas[0]).filter(c => !columnasClave.includes(c))
     : hoja.camposEditables;
@@ -59,28 +51,17 @@ function agregarHoja(workbook, hoja, filas) {
     });
   }
 
-  agregarValidaciones(worksheet, hoja, columnas, filas.length);
+  agregarFormulasEspeciales(worksheet, hoja, columnas, filas.length);
+  colorearColumnaCalculada(worksheet, columnas, '_campos_faltantes', COLOR_FALTANTE);
+  colorearColumnaCalculada(worksheet, columnas, '_posible_duplicado', COLOR_DUPLICADO);
 }
 
 // Formato condicional NATIVO de Excel (no una foto fija): si corriges el
-// valor y ya no hay problema, el color desaparece solo al recalcular, sin
-// volver a exportar. duplicateValues es una regla propia de Excel; el
-// caracter-especial usa una formula porque Excel no trae esa regla de fabrica.
-function agregarValidaciones(worksheet, hoja, columnas, totalFilas) {
-  if (totalFilas === 0) return; // hoja vacia (p.ej. bridge no disponible) — nada que resaltar
+// valor y ya no tiene ningun caracter fuera de A-Z/0-9/espacio, el color
+// desaparece solo al recalcular, sin volver a exportar.
+function agregarFormulasEspeciales(worksheet, hoja, columnas, totalFilas) {
+  if (totalFilas === 0) return; // hoja vacia — nada que resaltar
   const ultimaFila = totalFilas + 1; // +1 por la fila de encabezado
-
-  if (hoja.columnaDuplicados && columnas.includes(hoja.columnaDuplicados)) {
-    const letra = worksheet.getColumn(columnas.indexOf(hoja.columnaDuplicados) + 1).letter;
-    worksheet.addConditionalFormatting({
-      ref: `${letra}2:${letra}${ultimaFila}`,
-      rules: [{
-        type: 'duplicateValues',
-        priority: 1,
-        style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: COLOR_DUPLICADO } } },
-      }],
-    });
-  }
 
   for (const campo of hoja.columnasEspeciales || []) {
     if (!columnas.includes(campo)) continue;
@@ -94,12 +75,28 @@ function agregarValidaciones(worksheet, hoja, columnas, totalFilas) {
       ref: `${letra}2:${letra}${ultimaFila}`,
       rules: [{
         type: 'expression',
-        priority: 2,
+        priority: 1,
         formulae: [formula],
         style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: COLOR_ESPECIAL } } },
       }],
     });
   }
+}
+
+// _campos_faltantes y _posible_duplicado se calculan del lado Node (la
+// similitud usa Levenshtein — no se puede expresar como una formula simple
+// de Excel), asi que el color se aplica ya resuelto al exportar, no como
+// regla viva. Si se corrige el dato hay que volver a exportar para que el
+// color se actualice.
+function colorearColumnaCalculada(worksheet, columnas, nombreColumna, color) {
+  if (!columnas.includes(nombreColumna)) return;
+  const indice = columnas.indexOf(nombreColumna) + 1;
+  worksheet.getColumn(indice).eachCell({ includeEmpty: false }, (celda, numeroFila) => {
+    if (numeroFila === 1) return;
+    if (String(celda.value || '').trim()) {
+      celda.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: color } };
+    }
+  });
 }
 
 module.exports = { construirLibroAuditoria };

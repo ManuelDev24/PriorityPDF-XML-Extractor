@@ -10,6 +10,7 @@ const path = require('path');
 const readline = require('readline');
 const db = require('../db/connection');
 const siscommate = require('../services/siscommateClient');
+const { sincronizarClientesDesdeSiscommate } = require('../services/clientSync');
 const { construirLibroAuditoria } = require('../services/dataAudit/exportar');
 const { calcularPlanDeCambios, formatearVistaPrevia, aplicarCambios } = require('../services/dataAudit/reinyectar');
 const { registrarCambio } = require('../services/dataAudit/log');
@@ -27,8 +28,12 @@ function preguntar(texto) {
 
 async function exportar() {
   const destino = path.join(__dirname, '..', '..', `audit_${marcaDeTiempo()}.xlsx`);
-  console.log('Exportando SQLite + SISCOMMATE...');
-  const workbook = await construirLibroAuditoria(db, siscommate);
+  console.log('Sincronizando clientes desde SISCOMMATE...');
+  try { await sincronizarClientesDesdeSiscommate(); }
+  catch (e) { console.error('[AVISO] No se pudo sincronizar clientes:', e.message); }
+
+  console.log('Exportando desde SQLite...');
+  const workbook = await construirLibroAuditoria(db);
   await workbook.xlsx.writeFile(destino);
   console.log(`[OK] Excel generado: ${destino}`);
 }

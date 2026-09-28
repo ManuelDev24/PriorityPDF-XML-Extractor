@@ -671,11 +671,12 @@ onMounted(() => {
           <CardHeader>
             <CardTitle>Exportar a Excel</CardTitle>
             <CardDescription>
-              Descarga un Excel con 11 hojas: clientes, consignadores, consignatarios,
-              manifiestos, B/L y contenedores de SQLite, más el histórico completo de
-              SISCOMMATE (Customers, Manifiestos, B/L, Contenedores, Items). Si el
-              bridge no responde, las hojas de SISCOMMATE quedan vacías pero el resto
-              del Excel se genera igual.
+              Descarga un Excel con 6 hojas — clientes, consignadores, consignatarios,
+              manifiestos, B/L y contenedores — todas desde SQLite, con el color ya
+              aplicado para caracteres especiales, datos faltantes y posibles nombres
+              duplicados. Antes de armar el Excel actualiza el catálogo de clientes
+              desde SISCOMMATE (acotado y seguro); si el bridge no responde, exporta
+              igual con lo último que haya localmente.
             </CardDescription>
           </CardHeader>
           <CardContent>

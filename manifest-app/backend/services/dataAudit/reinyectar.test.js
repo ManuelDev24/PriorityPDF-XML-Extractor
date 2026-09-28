@@ -120,7 +120,11 @@ test('aplicarCambios ejecuta escribirCambio y registra en el log; no toca las fi
   const db = crearDbDePrueba();
   const siscommate = crearSiscommateFalso();
   const plan = [
-    { hoja: 'SQLite_Clientes', claves: { id: 1 }, cambios: { name: { antes: 'ACME', despues: 'ACME CORP' } }, filaFinal: { id: 1, name: 'ACME CORP' }, spec: require('./hojas').construirHojas().find(h => h.nombre === 'SQLite_Clientes') },
+    {
+      hoja: 'SQLite_Clientes', claves: { id: 1 }, cambios: { name: { antes: 'ACME', despues: 'ACME CORP' } },
+      filaFinal: { id: 1, name: 'ACME CORP' }, filaActual: { id: 1, name: 'ACME' },
+      spec: require('./hojas').construirHojas().find(h => h.nombre === 'SQLite_Clientes'),
+    },
     { hoja: 'SQLite_Clientes', claves: { id: 2 }, error: 'No se encontro el registro original' },
   ];
   const registrados = [];
@@ -129,4 +133,9 @@ test('aplicarCambios ejecuta escribirCambio y registra en el log; no toca las fi
   assert.deepStrictEqual(resultado, { aplicados: 1, fallidos: 1 });
   assert.strictEqual(db.prepare('SELECT name FROM clients WHERE id = 1').get().name, 'ACME CORP');
   assert.strictEqual(registrados.length, 2);
+  // Escribe en los DOS lados: local (verificado arriba) y CUSTOMER.DBF real,
+  // identificado por el nombre ANTERIOR (filaActual.name = 'ACME').
+  assert.deepStrictEqual(siscommate._llamadas.actualizarClienteSiscommate, [
+    { nombre: 'ACME', datos: { id: 1, name: 'ACME CORP' } },
+  ]);
 });

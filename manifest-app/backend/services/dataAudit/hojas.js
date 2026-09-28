@@ -1,15 +1,16 @@
-// backend/services/dataAudit/hojas.js — Unica fuente de verdad de las 11
-// hojas del Excel de auditoria: que tabla/origen alimenta cada una, cual es
-// su clave tecnica (para identificar la fila al reinyectar) y que campos son
+// backend/services/dataAudit/hojas.js — Unica fuente de verdad de las hojas
+// del Excel de auditoria: que tabla/origen alimenta cada una, cual es su
+// clave tecnica (para identificar la fila al reinyectar) y que campos son
 // editables. exportar.js y reinyectar.js usan esta misma lista — asi nunca
 // pueden desalinearse sobre que campo vive en que hoja.
 //
-// Las hojas con leerActual/escribirCambio en null son de SOLO LECTURA: se
-// exportan para auditoria pero reinyectar.js las ignora (ver el filtro en
-// reinyectar.js). Hoy es solo SISCOMMATE_Manifiestos (el INSERT real usa ~25
-// columnas con logica de negocio no trivial — ver SiscommateBridge.cs — y no
-// hay evidencia de que ese dato se corrija con frecuencia, a diferencia de
-// nombres/pesos/documentos).
+// Solo lee SQLite — nunca golpea el bridge de SISCOMMATE al exportar. Las
+// hojas que antes traian el historico completo de SISCOMMATE (Manifiestos,
+// BLs, Contenedores, Items) se quitaron: forzaban un volcado sin limite que
+// tumbaba el bridge (ver commit e1ff3b3). "Clientes" SI representa a
+// SISCOMMATE (CUSTOMER.DBF), pero via el cache local `clients`, que se
+// sincroniza aparte con un limite seguro (ver clientSync.js) — nunca en el
+// momento del export.
 
 const {
   deduplicarConsignadores, deduplicarConsignatarios,
@@ -17,6 +18,7 @@ const {
   actualizarConsignadorPorNombre, actualizarConsignatarioPorNombre,
 } = require('./dedupe');
 const { actualizarFilaSqlite } = require('./sqliteWriter');
+const { camposFaltantes, detectarPosiblesDuplicados } = require('./calidad');
 
 const CAMPOS_EDITABLES_CLIENTS = ['name', 'ss', 'taxid', 'add1', 'add2', 'add3', 'phone1', 'phone2', 'ivu'];
 const CAMPOS_EDITABLES_BL = [
@@ -29,26 +31,19 @@ const CAMPOS_EDITABLES_MANIFESTS = [
   'departure_date', 'arrival_date', 'manifest_no', 'carrier_code', 'docking_number', 'imo',
 ];
 const CAMPOS_EDITABLES_CONTAINERS = ['container_type', 'package_code', 'amount', 'gross_weight', 'net_weight', 'seal_no1', 'size'];
-const CAMPOS_EDITABLES_CUSTOMER = ['ss', 'code', 'type', 'taxid', 'add1', 'add2', 'add3', 'phone1', 'phone2', 'fax1', 'fax2', 'ivu'];
-const CAMPOS_EDITABLES_BOL = ['consigne', 'exporter'];
-const CAMPOS_EDITABLES_BOLCONT = ['contain', 'size'];
-const CAMPOS_EDITABLES_BOLITEM = ['qty', 'weight', 'desc', 'code', 'value'];
 
-function coincideClave(fila, claves) {
-  return Object.keys(claves).every(k => String(fila[k] ?? '').trim() === String(claves[k]).trim());
-}
+const MAPEO_FALTANTES_CLIENTS = { documento: 'ss', direccion: 'add1', telefono: 'phone1' };
+const MAPEO_FALTANTES_CONSIGNADOR = { documento: 'consignor_document_no', direccion: 'consignor_street', telefono: 'consignor_tel' };
+const MAPEO_FALTANTES_CONSIGNATARIO = { documento: 'consignee_document_no', direccion: 'consignee_street', telefono: 'consignee_tel' };
 
 /**
  * @typedef {object} HojaSpec
  * @property {string} nombre
  * @property {string[]} camposClave
  * @property {string[]} camposEditables
- * @property {(deps: {db: object, siscommate: object}) => Promise<object[]>|object[]} obtenerFilas
+ * @property {(deps: {db: object, siscommate?: object}) => Promise<object[]>|object[]} obtenerFilas
  * @property {null | (deps: {db: object, siscommate: object}, claves: Record<string, any>) => Promise<object|null>|object|null} leerActual
- * @property {null | (deps: {db: object, siscommate: object}, claves: Record<string, any>, cambios: object, filaFinal: object) => Promise<void>|void} escribirCambio
- * @property {string} [columnaDuplicados] Columna donde un valor repetido es un problema real
- *   (dos clientes/consignadores con el mismo nombre) — se resalta con formato
- *   condicional nativo de Excel (vivo: si corriges uno, el color desaparece solo).
+ * @property {null | (deps: {db: object, siscommate: object}, claves: Record<string, any>, cambios: object, filaFinal: object, filaActual: object) => Promise<void>|void} escribirCambio
  * @property {string[]} [columnasEspeciales] Columnas de texto libre que SISCOMMATE
  *   limpia a solo A-Z/0-9/espacio antes de guardar (ver limpiarTextoLibre en
  *   siscommateClient.js) — se resaltan si traen acentos, puntuación u otro
@@ -62,32 +57,66 @@ function construirHojas() {
       nombre: 'SQLite_Clientes',
       camposClave: ['id'],
       camposEditables: CAMPOS_EDITABLES_CLIENTS,
-      obtenerFilas: ({ db }) => db.prepare('SELECT * FROM clients ORDER BY name').all(),
+      // Este cliente ES la fuente CUSTOMER.DBF de SISCOMMATE, cacheada
+      // localmente por clientSync.js — por eso ya no existe una hoja
+      // "SISCOMMATE_Customers" aparte, seria la misma tabla dos veces.
+      obtenerFilas: ({ db }) => {
+        const filas = db.prepare('SELECT * FROM clients ORDER BY name').all();
+        const duplicados = detectarPosiblesDuplicados(filas.map(f => f.name));
+        return filas.map((f, i) => ({
+          ...f,
+          _campos_faltantes: camposFaltantes(f, MAPEO_FALTANTES_CLIENTS),
+          _posible_duplicado: duplicados[i],
+        }));
+      },
       leerActual: ({ db }, claves) => db.prepare('SELECT * FROM clients WHERE id = ?').get(claves.id) || null,
-      escribirCambio: ({ db }, claves, cambios) => actualizarFilaSqlite(db, 'clients', claves, cambios),
-      columnaDuplicados: 'name',
+      // Escribe en los DOS lados: el cache local Y el CUSTOMER.DBF real — se
+      // identifica en SISCOMMATE por el nombre ANTERIOR (filaActual.name),
+      // igual que ya hace el editor de clientes en Admin, porque el nombre
+      // mismo puede ser justo el campo que se esta corrigiendo. Si el push a
+      // SISCOMMATE falla, el cambio local ya quedo aplicado — se reporta como
+      // error en el log de auditoria, y se puede reintentar solo el lado
+      // SISCOMMATE desde "Editar cliente" en Admin sin perder la correccion.
+      escribirCambio: async ({ db, siscommate }, claves, cambios, filaFinal, filaActual) => {
+        actualizarFilaSqlite(db, 'clients', claves, cambios);
+        await siscommate.actualizarClienteSiscommate(filaActual.name, filaFinal);
+      },
       columnasEspeciales: ['name'],
     },
     {
       nombre: 'SQLite_Consignadores',
       camposClave: ['consignor_name'],
       camposEditables: CAMPOS_CONSIGNADOR.filter(c => c !== 'consignor_name'),
-      obtenerFilas: ({ db }) => deduplicarConsignadores(db.prepare('SELECT * FROM bills_of_lading').all()),
+      obtenerFilas: ({ db }) => {
+        const filas = deduplicarConsignadores(db.prepare('SELECT * FROM bills_of_lading').all());
+        const duplicados = detectarPosiblesDuplicados(filas.map(f => f.consignor_name));
+        return filas.map((f, i) => ({
+          ...f,
+          _campos_faltantes: camposFaltantes(f, MAPEO_FALTANTES_CONSIGNADOR),
+          _posible_duplicado: duplicados[i],
+        }));
+      },
       leerActual: ({ db }, claves) =>
         db.prepare('SELECT * FROM bills_of_lading WHERE consignor_name = ? LIMIT 1').get(claves.consignor_name) || null,
       escribirCambio: ({ db }, claves, cambios) => actualizarConsignadorPorNombre(db, claves.consignor_name, cambios),
-      columnaDuplicados: 'consignor_name',
       columnasEspeciales: ['consignor_name'],
     },
     {
       nombre: 'SQLite_Consignatarios',
       camposClave: ['consignee_name'],
       camposEditables: CAMPOS_CONSIGNATARIO.filter(c => c !== 'consignee_name'),
-      obtenerFilas: ({ db }) => deduplicarConsignatarios(db.prepare('SELECT * FROM bills_of_lading').all()),
+      obtenerFilas: ({ db }) => {
+        const filas = deduplicarConsignatarios(db.prepare('SELECT * FROM bills_of_lading').all());
+        const duplicados = detectarPosiblesDuplicados(filas.map(f => f.consignee_name));
+        return filas.map((f, i) => ({
+          ...f,
+          _campos_faltantes: camposFaltantes(f, MAPEO_FALTANTES_CONSIGNATARIO),
+          _posible_duplicado: duplicados[i],
+        }));
+      },
       leerActual: ({ db }, claves) =>
         db.prepare('SELECT * FROM bills_of_lading WHERE consignee_name = ? LIMIT 1').get(claves.consignee_name) || null,
       escribirCambio: ({ db }, claves, cambios) => actualizarConsignatarioPorNombre(db, claves.consignee_name, cambios),
-      columnaDuplicados: 'consignee_name',
       columnasEspeciales: ['consignee_name'],
     },
     {
@@ -126,65 +155,6 @@ function construirHojas() {
       },
       leerActual: ({ db }, claves) => db.prepare('SELECT * FROM containers WHERE id = ?').get(claves.id) || null,
       escribirCambio: ({ db }, claves, cambios) => actualizarFilaSqlite(db, 'containers', claves, cambios),
-    },
-    {
-      nombre: 'SISCOMMATE_Customers',
-      camposClave: ['name'],
-      camposEditables: CAMPOS_EDITABLES_CUSTOMER,
-      obtenerFilas: ({ siscommate }) => siscommate.obtenerTablaCompleta('CUSTOMER'),
-      leerActual: async ({ siscommate }, claves) => {
-        const filas = await siscommate.obtenerTablaCompleta('CUSTOMER');
-        return filas.find(f => String(f.name || '').trim() === claves.name) || null;
-      },
-      escribirCambio: ({ siscommate }, claves, cambios, filaFinal) =>
-        siscommate.actualizarClienteSiscommate(claves.name, filaFinal),
-      columnaDuplicados: 'name',
-      columnasEspeciales: ['name'],
-    },
-    {
-      nombre: 'SISCOMMATE_Manifiestos',
-      camposClave: ['manifest'],
-      camposEditables: [],
-      obtenerFilas: ({ siscommate }) => siscommate.obtenerTablaCompleta('MANIFEST'),
-      leerActual: null,
-      escribirCambio: null,
-    },
-    {
-      nombre: 'SISCOMMATE_BLs',
-      camposClave: ['manifest', 'bolno'],
-      camposEditables: CAMPOS_EDITABLES_BOL,
-      obtenerFilas: ({ siscommate }) => siscommate.obtenerTablaCompleta('BOL'),
-      leerActual: async ({ siscommate }, claves) => {
-        const filas = await siscommate.obtenerTablaCompleta('BOL');
-        return filas.find(f => coincideClave(f, claves)) || null;
-      },
-      escribirCambio: ({ siscommate }, claves, cambios, filaFinal) =>
-        siscommate.actualizarBolSiscommate(claves.manifest, claves.bolno, filaFinal),
-      columnasEspeciales: ['consigne', 'exporter'],
-    },
-    {
-      nombre: 'SISCOMMATE_Contenedores',
-      camposClave: ['manifest', 'bolno', 'control'],
-      camposEditables: CAMPOS_EDITABLES_BOLCONT,
-      obtenerFilas: ({ siscommate }) => siscommate.obtenerTablaCompleta('BOLCONT'),
-      leerActual: async ({ siscommate }, claves) => {
-        const filas = await siscommate.obtenerTablaCompleta('BOLCONT');
-        return filas.find(f => coincideClave(f, claves)) || null;
-      },
-      escribirCambio: ({ siscommate }, claves, cambios, filaFinal) =>
-        siscommate.actualizarBolcontSiscommate(claves.manifest, claves.bolno, claves.control, filaFinal),
-    },
-    {
-      nombre: 'SISCOMMATE_Items',
-      camposClave: ['manifest', 'bolno', 'control'],
-      camposEditables: CAMPOS_EDITABLES_BOLITEM,
-      obtenerFilas: ({ siscommate }) => siscommate.obtenerTablaCompleta('BOLITEM'),
-      leerActual: async ({ siscommate }, claves) => {
-        const filas = await siscommate.obtenerTablaCompleta('BOLITEM');
-        return filas.find(f => coincideClave(f, claves)) || null;
-      },
-      escribirCambio: ({ siscommate }, claves, cambios, filaFinal) =>
-        siscommate.actualizarBolitemSiscommate(claves.manifest, claves.bolno, claves.control, filaFinal),
     },
   ];
 }

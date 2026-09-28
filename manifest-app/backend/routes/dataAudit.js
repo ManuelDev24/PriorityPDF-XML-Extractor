@@ -11,6 +11,7 @@ const crypto = require('crypto');
 const multer = require('multer');
 const db = require('../db/connection');
 const siscommate = require('../services/siscommateClient');
+const { sincronizarClientesDesdeSiscommate } = require('../services/clientSync');
 const { construirLibroAuditoria } = require('../services/dataAudit/exportar');
 const { calcularPlanDeCambios, formatearVistaPrevia, aplicarCambios } = require('../services/dataAudit/reinyectar');
 const { registrarCambio } = require('../services/dataAudit/log');
@@ -40,7 +41,14 @@ function paraJson(plan) {
 
 router.get('/api/data-audit/exportar', async (req, res) => {
   try {
-    const workbook = await construirLibroAuditoria(db, siscommate);
+    // Trae lo mas reciente de CUSTOMER.DBF a `clients` antes de armar el
+    // Excel (acotado a 50,000 filas via /muestra — no el volcado sin limite
+    // que tumbo el bridge). Best-effort: si el bridge no responde, se exporta
+    // igual con lo que ya haya en `clients`.
+    try { await sincronizarClientesDesdeSiscommate(); }
+    catch (e) { console.error('[AVISO] No se pudo sincronizar clientes antes de exportar:', e.message); }
+
+    const workbook = await construirLibroAuditoria(db);
     const p = n => String(n).padStart(2, '0');
     const d = new Date();
     const nombre = `audit_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}.xlsx`;
