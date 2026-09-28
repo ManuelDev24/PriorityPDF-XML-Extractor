@@ -116,9 +116,17 @@ router.put('/api/bl/mover-lote', (req, res) => {
   const omitidos = [];
   const origenesAfectados = new Set();
 
-  const moverUno = db.transaction((bl) => {
+  // El B/L movido conserva por defecto el sort_seq de SU documento original
+  // (posición 3 de un PDF de 80, por ejemplo) — eso choca con la numeración
+  // del manifiesto destino y lo hacía aparecer intercalado en cualquier
+  // posición en vez de al final. Se le asigna un sort_seq nuevo, correlativo
+  // al final de lo que ya haya en el destino (uno por B/L movido en este
+  // mismo lote, para que tampoco choquen entre ellos).
+  let siguienteSeq = (db.prepare('SELECT COALESCE(MAX(sort_seq), -1) AS m FROM bills_of_lading WHERE manifest_id=?').get(destinoId).m) + 1;
+
+  const moverUno = db.transaction((bl, seq) => {
     const origenId = bl.manifest_id;
-    db.prepare('UPDATE bills_of_lading SET manifest_id=? WHERE id=?').run(destinoId, bl.id);
+    db.prepare('UPDATE bills_of_lading SET manifest_id=?, sort_seq=? WHERE id=?').run(destinoId, seq, bl.id);
     db.prepare('UPDATE container_bl SET manifest_id=? WHERE bl_no=? AND manifest_id=?')
       .run(destinoId, bl.bl_no, origenId);
     db.prepare(`
@@ -140,7 +148,7 @@ router.put('/api/bl/mover-lote', (req, res) => {
       return;
     }
     origenesAfectados.add(bl.manifest_id);
-    moverUno(bl);
+    moverUno(bl, siguienteSeq++);
     movidos.push({ id: bl.id, bl_no: bl.bl_no });
   });
 
@@ -259,8 +267,12 @@ router.put('/api/bl/:id/mover', (req, res) => {
   }
 
   const origenId = bl.manifest_id;
+  // Mismo motivo que en /api/bl/mover-lote: sin esto el B/L conserva el
+  // sort_seq de su documento original y aparece intercalado en el destino
+  // en vez de al final.
+  const nuevoSeq = (db.prepare('SELECT COALESCE(MAX(sort_seq), -1) AS m FROM bills_of_lading WHERE manifest_id=?').get(destinoId).m) + 1;
   const mover = db.transaction(() => {
-    db.prepare('UPDATE bills_of_lading SET manifest_id=? WHERE id=?').run(destinoId, bl.id);
+    db.prepare('UPDATE bills_of_lading SET manifest_id=?, sort_seq=? WHERE id=?').run(destinoId, nuevoSeq, bl.id);
     db.prepare('UPDATE container_bl SET manifest_id=? WHERE bl_no=? AND manifest_id=?')
       .run(destinoId, bl.bl_no, origenId);
     db.prepare(`
