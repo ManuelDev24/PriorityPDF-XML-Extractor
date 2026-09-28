@@ -240,6 +240,18 @@ function obtenerMuestra(tabla, limite) {
 }
 
 /**
+ * Volcado completo de una tabla real de SISCOMMATE, sin limite (endpoint
+ * /exportar-tabla del bridge) — a diferencia de obtenerMuestra(), que trae
+ * solo las primeras N filas. Lo usa el modulo de auditoria de datos para
+ * traer TODO el historico.
+ * @param {string} tabla Nombre de la tabla real en SISCOMMATE (ej. "BOL")
+ * @returns {Promise<object[]>}
+ */
+function obtenerTablaCompleta(tabla) {
+  return bridgeRequest('GET', `/exportar-tabla?tabla=${encodeURIComponent(tabla)}`, null);
+}
+
+/**
  * Crea un cliente nuevo directo en CUSTOMER.DBF de SISCOMMATE (no en el
  * catálogo local — CUSTOMER es la fuente real). Verificado en vivo contra
  * SISCOMMATE real antes de exponerse acá.
@@ -276,6 +288,53 @@ function eliminarClienteSiscommate(nombre) {
 }
 
 /**
+ * Corrige el consignatario/consignador (BOL.consigne/exporter) de un B/L ya
+ * guardado en SISCOMMATE, identificado por manifest+bolno. Usado por el
+ * modulo de auditoria de datos al reinyectar correcciones.
+ * @param {string} manifest
+ * @param {string} bolno
+ * @param {{consigne?: string, exporter?: string}} datos
+ * @returns {Promise<{ok: true, filas_afectadas: number}>}
+ */
+function actualizarBolSiscommate(manifest, bolno, datos) {
+  return bridgeRequest('POST', '/bol-actualizar', {
+    manifest, bolno, consigne: datos.consigne || '', exporter: datos.exporter || '',
+  });
+}
+
+/**
+ * Corrige el numero de contenedor o tamano de una fila de BOLCONT ya
+ * guardada, identificada por manifest+bolno+control.
+ * @param {string} manifest
+ * @param {string} bolno
+ * @param {string} control
+ * @param {{contain?: string, size?: string}} datos
+ * @returns {Promise<{ok: true, filas_afectadas: number}>}
+ */
+function actualizarBolcontSiscommate(manifest, bolno, control, datos) {
+  return bridgeRequest('POST', '/bolcont-actualizar', {
+    manifest, bolno, control, contain: datos.contain || '', size: datos.size || '',
+  });
+}
+
+/**
+ * Corrige cantidad/peso/descripcion/codigo/valor de una fila de BOLITEM ya
+ * guardada, identificada por manifest+bolno+control.
+ * @param {string} manifest
+ * @param {string} bolno
+ * @param {string} control
+ * @param {{qty?: number, weight?: number, desc?: string, code?: string, value?: number}} datos
+ * @returns {Promise<{ok: true, filas_afectadas: number}>}
+ */
+function actualizarBolitemSiscommate(manifest, bolno, control, datos) {
+  return bridgeRequest('POST', '/bolitem-actualizar', {
+    manifest, bolno, control,
+    qty: datos.qty || 0, weight: datos.weight || 0,
+    desc: datos.desc || '', code: datos.code || '', value: datos.value || 0,
+  });
+}
+
+/**
  * Busca clientes reales de SISCOMMATE (tabla CUSTOMER) por nombre o SS/EIN,
  * para autocompletar el consignatario en el editor. Nunca lanza: si el
  * bridge no responde, se devuelve una lista vacía en vez de romper la
@@ -303,5 +362,6 @@ module.exports = {
   getBridgeStatus, getLote, pushManifest, consultarManifiesto, buscarClientesSiscommate,
   analizarItemClienteTodos, limpiarTextoLibre, calcularPackageUnitCode,
   obtenerMuestra, crearClienteSiscommate, actualizarClienteSiscommate, eliminarClienteSiscommate,
+  obtenerTablaCompleta, actualizarBolSiscommate, actualizarBolcontSiscommate, actualizarBolitemSiscommate,
   BRIDGE_TIMEOUT_MS,
 };
