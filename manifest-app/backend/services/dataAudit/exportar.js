@@ -16,7 +16,16 @@ const NOTA_CLAVE = 'No editar — se usa para identificar la fila al reinyectar.
 async function construirLibroAuditoria(db, siscommate) {
   const workbook = new ExcelJS.Workbook();
   for (const hoja of construirHojas()) {
-    const filas = await hoja.obtenerFilas({ db, siscommate });
+    let filas;
+    try {
+      filas = await hoja.obtenerFilas({ db, siscommate });
+    } catch (e) {
+      // Una hoja de SISCOMMATE sin bridge disponible no debe tumbar todo el
+      // export — las hojas de SQLite siguen siendo utiles por si solas. Se
+      // deja la hoja vacia con una nota explicando por que.
+      console.error(`[AVISO] No se pudo traer "${hoja.nombre}": ${e.message}`);
+      filas = [];
+    }
     agregarHoja(workbook, hoja, filas);
   }
   return workbook;

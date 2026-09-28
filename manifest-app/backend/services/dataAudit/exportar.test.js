@@ -76,3 +76,11 @@ test('SISCOMMATE_BLs trae los datos del "siscommate" falso inyectado', async () 
   const hoja = workbook.getWorksheet('SISCOMMATE_BLs');
   assert.strictEqual(hoja.getRow(2).getCell('consigne').value, 'JOHN DOE');
 });
+
+test('si el bridge no responde, las hojas SQLite igual se generan (la hoja SISCOMMATE queda vacia)', async () => {
+  const siscommateRoto = { obtenerTablaCompleta: async () => { throw new Error('Conexión rechazada por localhost:5001'); } };
+  const workbook = await construirLibroAuditoria(crearDbDePrueba(), siscommateRoto);
+  assert.strictEqual(workbook.worksheets.length, 11);
+  assert.strictEqual(workbook.getWorksheet('SQLite_Clientes').getRow(2).getCell('name').value, 'ACME');
+  assert.strictEqual(workbook.getWorksheet('SISCOMMATE_Customers').rowCount, 1); // solo encabezado
+});
