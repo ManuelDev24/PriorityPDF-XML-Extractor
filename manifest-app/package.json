@@ -11,6 +11,8 @@
     "test": "node --test",
     "typecheck": "tsc --noEmit -p tsconfig.backend.json",
     "backup": "node backend/scripts/backup.js",
+    "data-audit:exportar": "node backend/scripts/dataAudit.js exportar",
+    "data-audit:reinyectar": "node backend/scripts/dataAudit.js reinyectar",
     "init-db": "node db/init.js",
     "build": "vite build",
     "typecheck:front": "vue-tsc --noEmit -p frontend-src/tsconfig.json"
