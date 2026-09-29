@@ -244,41 +244,41 @@ function detectarClientesDuplicados() {
 }
 
 /**
- * Igual que detectarClientesDuplicados, pero además confirma contra
- * SISCOMMATE EN VIVO (CUSTOMER.DBF real, no el caché) cuál variante de cada
- * grupo sigue existiendo ahora mismo — responde justo lo que en Admin no se
- * puede saber a simple vista: "¿esta fila es la que sigue en SISCOMMATE, o
- * quedó huérfana del lado del SQL local?". Si una variante ya no aparece en
- * una búsqueda exacta contra SISCOMMATE, es la candidata más probable a
- * eliminar — pero la decisión final sigue siendo de quien revisa en Admin.
- * `existe_en_siscommate: null` significa que no se pudo verificar (bridge
- * caído), nunca se asume nada en ese caso.
- * @returns {Promise<Array<Array<{id:number, name:string, ss:string, existe_en_siscommate: boolean|null}>>>}
+ * Confirma contra SISCOMMATE EN VIVO (CUSTOMER.DBF real, no el caché) cuáles
+ * de estos nombres siguen existiendo ahora mismo — responde justo lo que en
+ * Admin no se puede saber a simple vista: "¿esta fila es la que sigue en
+ * SISCOMMATE, o quedó huérfana del lado del SQL local?". Recibe una lista
+ * ACOTADA de nombres (una página de grupos, no el catálogo completo): con
+ * cientos de duplicados reales, verificar TODOS de una sola pasada significa
+ * cientos de consultas secuenciales al bridge en una sola petición HTTP — en
+ * producción (10,000+ clientes) eso tarda minutos y puede colgar el
+ * navegador o saturar el bridge VFP, que no está pensado para ese volumen de
+ * consultas seguidas. Verificar solo la página visible acota el trabajo a un
+ * tamaño fijo sin importar cuántos duplicados haya en total.
+ * `null` en el resultado significa que no se pudo verificar (bridge caído),
+ * nunca se asume nada en ese caso.
+ * @param {string[]} nombres
+ * @returns {Promise<Record<string, boolean|null>>}
  */
-async function detectarClientesDuplicadosConEstado() {
-  const grupos = detectarClientesDuplicados();
+async function verificarExistenciaSiscommate(nombres) {
+  const unicos = [...new Set(nombres.map(n => String(n || '').trim()).filter(Boolean))];
+  /** @type {Record<string, boolean|null>} */
+  const resultado = {};
 
   // buscarClientesSiscommate ya atrapa sus propios errores y devuelve []
   // cuando el bridge no responde (nunca lanza) — así que un try/catch acá
-  // NUNCA distinguiría "no está en SISCOMMATE" de "no se pudo consultar".
-  // Se verifica la conexión UNA vez antes de las (potencialmente cientos
-  // de) consultas individuales: si el bridge está caído, ninguna de esas
-  // consultas puede decir nada real, y no vale la pena ni intentarlas.
+  // NUNCA distinguiría "no está en SISCOMMATE" de "no se pudo consultar". Se
+  // verifica la conexión UNA vez antes de las consultas individuales.
   const bridge = await getBridgeStatus();
   if (!bridge.online) {
-    return grupos.map(grupo => grupo.map(c => ({ ...c, existe_en_siscommate: null })));
+    unicos.forEach(n => { resultado[n] = null; });
+    return resultado;
   }
 
-  const resultado = [];
-  for (const grupo of grupos) {
-    const grupoConEstado = [];
-    for (const c of grupo) {
-      const real = await buscarClientesSiscommate(c.name);
-      const norm = c.name.trim().toUpperCase();
-      const existe = real.some(r => (r.name || '').trim().toUpperCase() === norm);
-      grupoConEstado.push({ ...c, existe_en_siscommate: existe });
-    }
-    resultado.push(grupoConEstado);
+  for (const nombre of unicos) {
+    const real = await buscarClientesSiscommate(nombre);
+    const norm = nombre.trim().toUpperCase();
+    resultado[nombre] = real.some(r => (r.name || '').trim().toUpperCase() === norm);
   }
   return resultado;
 }
@@ -331,7 +331,7 @@ module.exports = {
   consolidarNombresParecidos,
   agruparParecidos,
   detectarClientesDuplicados,
-  detectarClientesDuplicadosConEstado,
+  verificarExistenciaSiscommate,
   detectarConsignadoresDuplicados,
   similitudTexto,
   buscarClienteParecido,

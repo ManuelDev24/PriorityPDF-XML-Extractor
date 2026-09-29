@@ -222,6 +222,15 @@ function runMigrations({
   // (que sí tiene perfil completo de los consignadores que Priority ya
   // cargó) al buscar, igual que "Locales"/"SISCOMMATE" ya hace consignatario.
   db.exec(`CREATE TABLE IF NOT EXISTS consignor_catalog (name TEXT PRIMARY KEY)`);
+
+  // Campos editables a mano desde Admin — SISCOMMATE no trae nada de esto
+  // (BOL.exporter es solo texto libre), así que no hay forma de sincronizarlos
+  // automáticamente. Sirven para que quien conoce al consignador de memoria
+  // pueda dejarlo anotado, igual que ya se puede con un cliente nuevo.
+  addColumnIfMissing('consignor_catalog', 'document_no', 'TEXT');
+  addColumnIfMissing('consignor_catalog', 'tel',         'TEXT');
+  addColumnIfMissing('consignor_catalog', 'street',      'TEXT');
+  addColumnIfMissing('consignor_catalog', 'city',        'TEXT');
 }
 
 module.exports = { runMigrations, addColumnIfMissing };

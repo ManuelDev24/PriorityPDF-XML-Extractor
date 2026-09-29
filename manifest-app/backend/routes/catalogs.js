@@ -12,7 +12,7 @@ const { analizarYGuardar } = require('../services/itemClientAnalysis');
 const { analizarHistorialLocal, normalizarDescripcion } = require('../services/localHistoryAnalysis');
 const {
   sincronizarClientesDesdeSiscommate, sincronizarConsignadoresDesdeSiscommate, buscarClienteParecido,
-  detectarClientesDuplicadosConEstado, detectarConsignadoresDuplicados,
+  detectarClientesDuplicados, verificarExistenciaSiscommate, detectarConsignadoresDuplicados,
 } = require('../services/clientSync');
 
 const router = express.Router();
@@ -224,8 +224,23 @@ router.get('/api/catalogs/consignors-siscommate/lista', (req, res) => {
   const offset = Math.max(Number(req.query.offset) || 0, 0);
   const patron = `%${q}%`;
   const total = db.prepare(`SELECT COUNT(*) AS n FROM consignor_catalog WHERE name LIKE ?`).get(patron).n;
-  const rows = db.prepare(`SELECT name FROM consignor_catalog WHERE name LIKE ? ORDER BY name LIMIT ? OFFSET ?`).all(patron, limit, offset);
+  const rows = db.prepare(
+    `SELECT name, document_no, tel, street, city FROM consignor_catalog WHERE name LIKE ? ORDER BY name LIMIT ? OFFSET ?`
+  ).all(patron, limit, offset);
   res.json({ total, rows });
+});
+
+// Edita los campos manuales de un consignador — el nombre es la clave
+// (viene de SISCOMMATE, no se renombra acá) pero documento/teléfono/
+// dirección no existen en SISCOMMATE (BOL.exporter es solo texto libre), así
+// que solo se pueden completar a mano desde Admin.
+router.put('/api/catalogs/consignors-siscommate/:name', (req, res) => {
+  const { document_no, tel, street, city } = req.body || {};
+  const r = db.prepare(
+    `UPDATE consignor_catalog SET document_no=?, tel=?, street=?, city=? WHERE name=?`
+  ).run(document_no || '', tel || '', street || '', city || '', req.params.name);
+  if (!r.changes) return res.status(404).json({ error: 'Consignador no encontrado' });
+  res.json({ ok: true });
 });
 
 // Trae TODOS los nombres de exportador de BOL.exporter (histórico real de
@@ -244,7 +259,10 @@ router.post('/api/catalogs/consignors/sincronizar-siscommate', async (req, res) 
 // real guardado dos veces con una redacción distinta) — ver
 // detectarConsignadoresDuplicados en clientSync.js.
 router.get('/api/catalogs/consignors-siscommate/duplicados', (req, res) => {
-  res.json(detectarConsignadoresDuplicados());
+  const limit = Math.min(Number(req.query.limit) || 15, 100);
+  const offset = Math.max(Number(req.query.offset) || 0, 0);
+  const todos = detectarConsignadoresDuplicados();
+  res.json({ total: todos.length, groups: todos.slice(offset, offset + limit) });
 });
 
 // Borra un nombre puntual de consignor_catalog — uso manual desde Admin tras
@@ -273,13 +291,29 @@ router.post('/api/catalogs/clients/sincronizar-siscommate', async (req, res) => 
 });
 
 // Grupos de clientes locales con nombres parecidos (candidatos al mismo
-// cliente real guardado dos veces) — cada uno con existe_en_siscommate
-// confirmado en vivo contra CUSTOMER.DBF real, para saber cuál variante
-// sigue siendo la vigente antes de borrar la otra. Puede tardar (una
-// consulta al bridge por nombre) — uso manual desde Admin.
-router.get('/api/catalogs/clients/duplicados', async (req, res) => {
+// cliente real guardado dos veces) — SOLO la agrupación local, sin tocar el
+// bridge (rápido, agrupar 8,000+ nombres es pura CPU/SQLite). Paginado: con
+// cientos de grupos reales, devolverlos todos de un tirón no tiene sentido
+// si además cada uno se va a verificar contra SISCOMMATE por separado (ver
+// /duplicados/verificar) — antes esto SÍ verificaba TODO de una pasada, lo
+// que en producción (10,000+ clientes) significaba cientos de consultas
+// secuenciales al bridge en una sola petición HTTP: colgaba el navegador y
+// arriesgaba saturar el bridge VFP.
+router.get('/api/catalogs/clients/duplicados', (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 15, 100);
+  const offset = Math.max(Number(req.query.offset) || 0, 0);
+  const todos = detectarClientesDuplicados();
+  res.json({ total: todos.length, groups: todos.slice(offset, offset + limit) });
+});
+
+// Confirma en vivo, contra CUSTOMER.DBF real, cuáles de estos nombres siguen
+// existiendo — pensado para verificar SOLO los nombres de la página de
+// duplicados que se está mostrando (acotado por el frontend a esa página),
+// nunca el catálogo completo de un tirón.
+router.post('/api/catalogs/clients/duplicados/verificar', async (req, res) => {
+  const nombres = Array.isArray(req.body?.nombres) ? req.body.nombres.slice(0, 200) : [];
   try {
-    res.json(await detectarClientesDuplicadosConEstado());
+    res.json({ ok: true, estado: await verificarExistenciaSiscommate(nombres) });
   } catch (err) {
     res.status(500).json({ error: 'No se pudo verificar contra SISCOMMATE: ' + err.message });
   }

@@ -18,6 +18,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Trash2, Search, RefreshCw, Plus } from '@lucide/vue';
 import ClientesTable from './ClientesTable.vue';
 import ConsignadoresTable from './ConsignadoresTable.vue';
+import Paginador from './Paginador.vue';
 
 // Barra lateral de navegación — cada sección es su propia pantalla completa,
 // nunca se apilan varias tarjetas grandes una debajo de otra (motivo del
@@ -348,38 +349,77 @@ async function sincronizarConsignadores() {
 }
 
 // ── Duplicados: mismo cliente/consignador real guardado dos veces bajo una
-// redacción distinta (ver clientSync.js: detectarClientesDuplicadosConEstado
-// / detectarConsignadoresDuplicados) — la sincronización empareja por nombre
+// redacción distinta (ver clientSync.js: detectarClientesDuplicados /
+// detectarConsignadoresDuplicados) — la sincronización empareja por nombre
 // exacto o solo agrupa dentro de su propia corrida, así que una redacción
 // nueva en SISCOMMATE puede dejar una fila vieja huérfana en vez de
 // actualizarla. Búsqueda bajo demanda desde Admin, nunca automática.
+//
+// Paginado en ambos casos: con cientos de grupos reales, traerlos todos de
+// un tirón (y para clientes, verificar cada nombre contra SISCOMMATE en la
+// misma pasada) fue justo lo que colgó el navegador la primera vez —
+// producción tiene 10,000+ clientes, muchos más candidatos a duplicado que
+// en desarrollo. Cada página pide sus propios grupos, y para clientes
+// además dispara la verificación en vivo SOLO de los nombres de esa página
+// (nunca del total).
+const POR_PAGINA_DUPLICADOS = 15;
+
 const buscandoDuplicadosClientes = ref(false);
 const duplicadosClientes = ref<ClienteDuplicado[][] | null>(null);
+const totalDuplicadosClientes = ref(0);
+const paginaDuplicadosClientes = ref(0);
+const verificandoDuplicadosClientes = ref(false);
 
-async function buscarDuplicadosClientes() {
+async function buscarPaginaDuplicadosClientes(pagina: number) {
+  paginaDuplicadosClientes.value = pagina;
   buscandoDuplicadosClientes.value = true;
   try {
-    duplicadosClientes.value = await api.clientesDuplicados();
+    const r = await api.clientesDuplicados(POR_PAGINA_DUPLICADOS, pagina * POR_PAGINA_DUPLICADOS);
+    duplicadosClientes.value = r.groups;
+    totalDuplicadosClientes.value = r.total;
+    buscandoDuplicadosClientes.value = false;
+    // La verificación en vivo puede tardar (un viaje al bridge por nombre) —
+    // se muestra la tabla de una vez con "Sin verificar" y se van llenando
+    // las etiquetas cuando responde, en vez de bloquear toda la página.
+    if (r.groups.length) {
+      verificandoDuplicadosClientes.value = true;
+      const nombres = [...new Set(r.groups.flat().map(c => c.name))];
+      try {
+        const { estado } = await api.verificarClientesSiscommate(nombres);
+        duplicadosClientes.value = r.groups.map(grupo =>
+          grupo.map(c => ({ ...c, existe_en_siscommate: estado[c.name] ?? null }))
+        );
+      } catch { /* se queda en "Sin verificar" — no es crítico */ }
+      finally { verificandoDuplicadosClientes.value = false; }
+    }
   } catch (e) {
     let msg = 'Error al buscar duplicados';
     try { msg = JSON.parse((e as Error).message).error || msg; } catch { /* texto plano */ }
     toast(msg, 'err');
-  } finally { buscandoDuplicadosClientes.value = false; }
+    buscandoDuplicadosClientes.value = false;
+  }
 }
+function buscarDuplicadosClientes() { buscarPaginaDuplicadosClientes(0); }
 
 const buscandoDuplicadosConsignadores = ref(false);
 const duplicadosConsignadores = ref<string[][] | null>(null);
+const totalDuplicadosConsignadores = ref(0);
+const paginaDuplicadosConsignadores = ref(0);
 
-async function buscarDuplicadosConsignadores() {
+async function buscarPaginaDuplicadosConsignadores(pagina: number) {
+  paginaDuplicadosConsignadores.value = pagina;
   buscandoDuplicadosConsignadores.value = true;
   try {
-    duplicadosConsignadores.value = await api.consignadoresDuplicados();
+    const r = await api.consignadoresDuplicados(POR_PAGINA_DUPLICADOS, pagina * POR_PAGINA_DUPLICADOS);
+    duplicadosConsignadores.value = r.groups;
+    totalDuplicadosConsignadores.value = r.total;
   } catch (e) {
     let msg = 'Error al buscar duplicados';
     try { msg = JSON.parse((e as Error).message).error || msg; } catch { /* texto plano */ }
     toast(msg, 'err');
   } finally { buscandoDuplicadosConsignadores.value = false; }
 }
+function buscarDuplicadosConsignadores() { buscarPaginaDuplicadosConsignadores(0); }
 
 async function eliminarConsignadorDuplicado(name: string) {
   try {
@@ -397,6 +437,34 @@ async function eliminarConsignadorDuplicado(name: string) {
     try { msg = JSON.parse((e as Error).message).error || msg; } catch { /* texto plano */ }
     toast(msg, 'err');
   }
+}
+
+// ── Crear / editar un consignador — solo campos manuales (ver arriba: sin
+// fuente real en SISCOMMATE, así que no hay nada que dual-escribir). ──
+type FormConsignador = { nombreOriginal: string } & Consignador;
+const consignadorForm = ref<FormConsignador | null>(null);
+const guardandoConsignador = ref(false);
+
+function abrirEditarConsignador(c: Consignador) {
+  consignadorForm.value = { nombreOriginal: c.name, ...c };
+}
+
+async function guardarConsignador() {
+  const f = consignadorForm.value;
+  if (!f) return;
+  guardandoConsignador.value = true;
+  try {
+    await api.actualizarConsignador(f.nombreOriginal, {
+      document_no: f.document_no, tel: f.tel, street: f.street, city: f.city,
+    });
+    toast('Consignador actualizado');
+    consignadorForm.value = null;
+    await buscarConsignadoresAdmin();
+  } catch (e) {
+    let msg = 'Error al guardar';
+    try { msg = JSON.parse((e as Error).message).error || msg; } catch { /* texto plano */ }
+    toast(msg, 'err');
+  } finally { guardandoConsignador.value = false; }
 }
 
 // ── Crear / editar un cliente — escribe local Y en CUSTOMER.DBF real ──
@@ -856,14 +924,16 @@ onMounted(() => {
                   {{ buscandoDuplicadosClientes ? 'Buscando (consulta SISCOMMATE por cada candidato)…' : 'Buscar duplicados' }}
                 </Button>
                 <span v-if="duplicadosClientes" class="text-xs text-ink-faint">
-                  {{ duplicadosClientes.length }} grupo{{ duplicadosClientes.length === 1 ? '' : 's' }} de nombres parecidos
+                  {{ totalDuplicadosClientes }} grupo{{ totalDuplicadosClientes === 1 ? '' : 's' }} de nombres parecidos
+                  <template v-if="verificandoDuplicadosClientes"> · verificando contra SISCOMMATE…</template>
                 </span>
               </div>
               <p class="text-xs text-ink-faint">
                 Nombres muy parecidos entre sí (mismo umbral que el aviso de error de
                 digitación) — casi siempre el mismo cliente real guardado dos veces con
                 una redacción distinta. Se confirma contra SISCOMMATE en vivo cuál
-                variante sigue existiendo, para saber cuál conviene borrar.
+                variante sigue existiendo, para saber cuál conviene borrar — solo para
+                los nombres de la página que estás viendo, nunca todos de un tirón.
               </p>
               <div v-if="duplicadosClientes?.length" class="flex flex-col gap-2.5">
                 <div
@@ -883,6 +953,10 @@ onMounted(() => {
                     </Button>
                   </div>
                 </div>
+                <Paginador
+                  :pagina="paginaDuplicadosClientes" :por-pagina="POR_PAGINA_DUPLICADOS" :total="totalDuplicadosClientes"
+                  @cambiar="buscarPaginaDuplicadosClientes"
+                />
               </div>
               <p v-else-if="duplicadosClientes" class="text-xs text-ink-faint">No se encontraron nombres parecidos entre sí.</p>
             </div>
@@ -932,7 +1006,7 @@ onMounted(() => {
               <ConsignadoresTable
                 :consignadores="consignadoresFiltrados" :total="totalConsignadoresFiltrados"
                 :pagina="paginaConsignadores" :por-pagina="POR_PAGINA_CONSIGNADORES"
-                @eliminar-uno="eliminarConsignadorLista" @cambiar-pagina="cambiarPaginaConsignadores"
+                @editar="abrirEditarConsignador" @eliminar-uno="eliminarConsignadorLista" @cambiar-pagina="cambiarPaginaConsignadores"
               />
             </div>
 
@@ -943,7 +1017,7 @@ onMounted(() => {
                   {{ buscandoDuplicadosConsignadores ? 'Buscando…' : 'Buscar duplicados' }}
                 </Button>
                 <span v-if="duplicadosConsignadores" class="text-xs text-ink-faint">
-                  {{ duplicadosConsignadores.length }} grupo{{ duplicadosConsignadores.length === 1 ? '' : 's' }} de nombres parecidos
+                  {{ totalDuplicadosConsignadores }} grupo{{ totalDuplicadosConsignadores === 1 ? '' : 's' }} de nombres parecidos
                 </span>
               </div>
               <p class="text-xs text-ink-faint">
@@ -966,6 +1040,10 @@ onMounted(() => {
                     </Button>
                   </div>
                 </div>
+                <Paginador
+                  :pagina="paginaDuplicadosConsignadores" :por-pagina="POR_PAGINA_DUPLICADOS" :total="totalDuplicadosConsignadores"
+                  @cambiar="buscarPaginaDuplicadosConsignadores"
+                />
               </div>
               <p v-else-if="duplicadosConsignadores" class="text-xs text-ink-faint">No se encontraron nombres parecidos entre sí.</p>
             </div>
@@ -1121,6 +1199,46 @@ onMounted(() => {
           <Button variant="outline" @click="clienteForm = null">Cancelar</Button>
           <Button :disabled="guardandoCliente || !clienteForm.name.trim()" @click="guardarCliente">
             {{ guardandoCliente ? 'Guardando…' : 'Guardar' }}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog :open="!!consignadorForm" @update:open="(v) => !v && (consignadorForm = null)">
+      <DialogContent v-if="consignadorForm" class="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Editar consignador</DialogTitle>
+        </DialogHeader>
+        <p class="-mt-2 text-xs text-ink-faint">
+          SISCOMMATE no guarda estos datos (BOL.exporter es solo texto libre) — se
+          guardan únicamente acá, para tenerlos anotados la próxima vez.
+        </p>
+        <div class="grid grid-cols-12 gap-x-3 gap-y-2.5">
+          <div class="col-span-12 flex flex-col gap-1">
+            <Label class="text-xs">Nombre</Label>
+            <Input :model-value="consignadorForm.name" disabled class="h-9 text-xs" />
+          </div>
+          <div class="col-span-6 flex flex-col gap-1">
+            <Label class="text-xs">Documento</Label>
+            <Input v-model="consignadorForm.document_no" class="h-9 font-mono text-xs" />
+          </div>
+          <div class="col-span-6 flex flex-col gap-1">
+            <Label class="text-xs">Teléfono</Label>
+            <Input v-model="consignadorForm.tel" class="h-9 font-mono text-xs" />
+          </div>
+          <div class="col-span-12 md:col-span-7 flex flex-col gap-1">
+            <Label class="text-xs">Dirección</Label>
+            <Input v-model="consignadorForm.street" class="h-9 text-xs" />
+          </div>
+          <div class="col-span-12 md:col-span-5 flex flex-col gap-1">
+            <Label class="text-xs">Ciudad</Label>
+            <Input v-model="consignadorForm.city" class="h-9 text-xs" />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" @click="consignadorForm = null">Cancelar</Button>
+          <Button :disabled="guardandoConsignador" @click="guardarConsignador">
+            {{ guardandoConsignador ? 'Guardando…' : 'Guardar' }}
           </Button>
         </DialogFooter>
       </DialogContent>

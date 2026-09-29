@@ -82,19 +82,38 @@ export interface ResultadoSincronizarConsignadores {
   nuevos: number;
 }
 
-/** Un cliente local dentro de un grupo de posibles duplicados — ver detectarClientesDuplicados. */
+/**
+ * Un cliente local dentro de un grupo de posibles duplicados — ver
+ * detectarClientesDuplicados. existe_en_siscommate llega vacío (undefined)
+ * hasta que se verifica esa página en vivo contra SISCOMMATE (ver
+ * verificarClientesSiscommate) — null significa que sí se intentó verificar
+ * pero el bridge no respondió, nunca se asume nada en ese caso.
+ */
 export interface ClienteDuplicado {
   id: number;
   name: string;
   ss: string;
-  existe_en_siscommate: boolean | null;
+  existe_en_siscommate?: boolean | null;
 }
 
 /** Una página de resultados con paginación real (offset+total de la búsqueda, no del catálogo completo). */
 export interface Pagina<T> { total: number; rows: T[]; }
 
-/** Fila del catálogo de consignadores (consignor_catalog) — solo nombre, ver clientSync.js. */
-export interface Consignador { name: string; }
+/** Una página de grupos de duplicados (offset+total de grupos, no de filas). */
+export interface PaginaGrupos<T> { total: number; groups: T[][]; }
+
+/**
+ * Fila del catálogo de consignadores (consignor_catalog) — SISCOMMATE solo
+ * da el nombre (BOL.exporter es texto libre); el resto son campos editables
+ * a mano desde Admin, sin fuente real que sincronizar.
+ */
+export interface Consignador {
+  name: string;
+  document_no?: string;
+  tel?: string;
+  street?: string;
+  city?: string;
+}
 
 /** Resultado de crear/actualizar un cliente — separa el guardado local del
  * intento de escribir en CUSTOMER.DBF real (best-effort, puede fallar sin
@@ -179,13 +198,26 @@ export const api = {
   contarConsignadoresSiscommate: () => pedir<{ total: number }>('/api/catalogs/consignors-siscommate/count'),
   sincronizarConsignadoresSiscommate: () =>
     pedir<ResultadoSincronizarConsignadores>('/api/catalogs/consignors/sincronizar-siscommate', { method: 'POST' }),
-  consignadoresDuplicados: () => pedir<string[][]>('/api/catalogs/consignors-siscommate/duplicados'),
+  consignadoresDuplicados: (limit: number, offset: number) =>
+    pedir<PaginaGrupos<string>>(`/api/catalogs/consignors-siscommate/duplicados?limit=${limit}&offset=${offset}`),
   eliminarConsignadorSiscommate: (name: string) =>
     pedir<{ ok: true }>(`/api/catalogs/consignors-siscommate/${encodeURIComponent(name)}`, { method: 'DELETE' }),
   listaConsignadores: (q: string, limit: number, offset: number) =>
     pedir<Pagina<Consignador>>(`/api/catalogs/consignors-siscommate/lista?q=${encodeURIComponent(q)}&limit=${limit}&offset=${offset}`),
+  actualizarConsignador: (name: string, datos: Partial<Consignador>) =>
+    pedir<{ ok: true }>(`/api/catalogs/consignors-siscommate/${encodeURIComponent(name)}`, json(datos)),
 
-  clientesDuplicados: () => pedir<ClienteDuplicado[][]>('/api/catalogs/clients/duplicados'),
+  // Duplicados de clientes: la lista de grupos es rápida (agrupación local,
+  // sin bridge) y paginada; verificar cuál variante sigue en SISCOMMATE es
+  // lento (una consulta al bridge por nombre) así que se pide aparte, acotado
+  // a los nombres de la página que se está mostrando — nunca el catálogo
+  // completo de un tirón (eso fue lo que colgaba el navegador antes).
+  clientesDuplicados: (limit: number, offset: number) =>
+    pedir<PaginaGrupos<ClienteDuplicado>>(`/api/catalogs/clients/duplicados?limit=${limit}&offset=${offset}`),
+  verificarClientesSiscommate: (nombres: string[]) =>
+    pedir<{ ok: true; estado: Record<string, boolean | null> }>('/api/catalogs/clients/duplicados/verificar', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nombres }),
+    }),
   crearCliente: (c: Partial<Cliente>) =>
     pedir<ResultadoGuardarCliente>('/api/catalogs/clients', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(c),
