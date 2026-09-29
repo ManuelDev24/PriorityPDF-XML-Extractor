@@ -5,7 +5,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { similitudTexto, normalizarParaComparar, consolidarNombresParecidos } = require('./clientSync');
+const { similitudTexto, normalizarParaComparar, consolidarNombresParecidos, agruparParecidos } = require('./clientSync');
 
 test('normalizarParaComparar quita acentos, mayúsculas, puntuación y espacios extra', () => {
   // La puntuación se convierte en espacio (no se elimina sin más), por eso
@@ -61,4 +61,21 @@ test('consolidarNombresParecidos no mezcla nombres genuinamente distintos', () =
 test('consolidarNombresParecidos ignora vacios y duplicados exactos', () => {
   const r = consolidarNombresParecidos(['ACME', '', '  ', 'ACME', null, undefined]);
   assert.deepStrictEqual(r, ['ACME']);
+});
+
+test('agruparParecidos agrupa objetos por nombre parecido, preservando el objeto completo', () => {
+  const clientes = [
+    { id: 1, name: 'CARTONERA ALFREDO HUED' },
+    { id: 2, name: 'CARTONERA ALFREDO HUED SA' },
+    { id: 3, name: 'OLEIN RECOVERY CORPORATION' },
+  ];
+  const grupos = agruparParecidos(clientes, c => c.name).filter(g => g.length >= 2);
+  assert.strictEqual(grupos.length, 1);
+  assert.deepStrictEqual(new Set(grupos[0].map(c => c.id)), new Set([1, 2]));
+});
+
+test('agruparParecidos no agrupa nada cuando todos los nombres son distintos', () => {
+  const items = [{ name: 'LANCO MANUFACTURING CORP' }, { name: 'OLEIN RECOVERY CORPORATION' }];
+  const grupos = agruparParecidos(items, x => x.name).filter(g => g.length >= 2);
+  assert.strictEqual(grupos.length, 0);
 });

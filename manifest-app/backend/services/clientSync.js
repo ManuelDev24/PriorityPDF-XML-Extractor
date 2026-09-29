@@ -7,7 +7,7 @@
 // consultar el bridge en cada carga de PDF.
 
 const db = require('../db/connection');
-const { obtenerMuestra, obtenerExportadoresSiscommate } = require('./siscommateClient');
+const { obtenerMuestra, obtenerExportadoresSiscommate, buscarClientesSiscommate, getBridgeStatus } = require('./siscommateClient');
 
 /**
  * Trae TODO el catálogo CUSTOMER de SISCOMMATE y lo mezcla con el catálogo
@@ -167,37 +167,36 @@ function buscarClienteParecido(nombre) {
 }
 
 /**
- * Agrupa nombres parecidos entre sí (mismo criterio que buscarClienteParecido:
- * Levenshtein normalizado >= UMBRAL_PARECIDO) y devuelve UNA forma canónica
- * por grupo — la variante más larga, normalmente la más completa ("ACME
- * CORP S.A." en vez de "ACME CORP" o "ACME"). Usa union-find para que la
- * agrupación sea transitiva (A~B y B~C agrupan A, B y C juntos aunque A y C
- * no se parezcan directo) y agrupa primero por las primeras 3 letras
- * normalizadas para no comparar cada nombre contra TODOS los demás — con
- * miles de nombres reales de SISCOMMATE, la comparación completa (n²)
- * tardaría demasiado.
- * @param {string[]} nombres
- * @returns {string[]} Nombres canónicos, uno por grupo, ordenados alfabéticamente
+ * Agrupa cualquier lista de elementos por similitud de su nombre (mismo
+ * criterio que buscarClienteParecido: Levenshtein normalizado >=
+ * UMBRAL_PARECIDO), de forma transitiva (union-find: A~B y B~C agrupan los
+ * tres aunque A y C no se parezcan directo). Agrupa primero por las primeras
+ * 3 letras normalizadas para no comparar cada elemento contra TODOS los
+ * demás — con miles de nombres reales de SISCOMMATE, la comparación
+ * completa (n²) tardaría demasiado. Base compartida de consolidarNombresParecidos
+ * y de los detectores de duplicados de abajo.
+ * @template T
+ * @param {T[]} items
+ * @param {(item: T) => string} obtenerNombre
+ * @returns {T[][]} Un grupo por cada raíz — incluye grupos de un solo elemento
  */
-function consolidarNombresParecidos(nombres) {
-  const unicos = Array.from(new Set(nombres.map(n => String(n || '').trim()).filter(Boolean)));
-
+function agruparParecidos(items, obtenerNombre) {
   const buckets = new Map();
-  unicos.forEach((nombre, i) => {
-    const clave = normalizarParaComparar(nombre).slice(0, 3);
+  items.forEach((item, i) => {
+    const clave = normalizarParaComparar(obtenerNombre(item)).slice(0, 3);
     if (!clave) return;
     if (!buckets.has(clave)) buckets.set(clave, []);
     buckets.get(clave).push(i);
   });
 
-  const padre = unicos.map((_, i) => i);
+  const padre = items.map((_, i) => i);
   const encontrar = i => (padre[i] === i ? i : (padre[i] = encontrar(padre[i])));
   const unir = (a, b) => { const ra = encontrar(a), rb = encontrar(b); if (ra !== rb) padre[ra] = rb; };
 
   for (const indices of buckets.values()) {
     for (let a = 0; a < indices.length; a++) {
       for (let b = a + 1; b < indices.length; b++) {
-        if (similitudTexto(unicos[indices[a]], unicos[indices[b]]) >= UMBRAL_PARECIDO) {
+        if (similitudTexto(obtenerNombre(items[indices[a]]), obtenerNombre(items[indices[b]])) >= UMBRAL_PARECIDO) {
           unir(indices[a], indices[b]);
         }
       }
@@ -205,16 +204,100 @@ function consolidarNombresParecidos(nombres) {
   }
 
   const grupos = new Map();
-  unicos.forEach((nombre, i) => {
+  items.forEach((item, i) => {
     const raiz = encontrar(i);
     const lista = grupos.get(raiz) || [];
-    lista.push(nombre);
+    lista.push(item);
     grupos.set(raiz, lista);
   });
+  return Array.from(grupos.values());
+}
 
-  return Array.from(grupos.values())
+/**
+ * Agrupa nombres parecidos entre sí y devuelve UNA forma canónica por grupo
+ * — la variante más larga, normalmente la más completa ("ACME CORP S.A." en
+ * vez de "ACME CORP" o "ACME").
+ * @param {string[]} nombres
+ * @returns {string[]} Nombres canónicos, uno por grupo, ordenados alfabéticamente
+ */
+function consolidarNombresParecidos(nombres) {
+  const unicos = Array.from(new Set(nombres.map(n => String(n || '').trim()).filter(Boolean)));
+  return agruparParecidos(unicos, n => n)
     .map(grupo => grupo.reduce((mejor, actual) => (actual.length > mejor.length ? actual : mejor)))
     .sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * Agrupa filas de `clients` con nombres parecidos entre sí — candidatas a
+ * ser el MISMO cliente real guardado dos veces bajo una redacción distinta.
+ * Pasa esto: la sincronización empareja por nombre EXACTO (ver
+ * sincronizarClientesDesdeSiscommate) — si CUSTOMER.DBF cambia la redacción
+ * de un nombre, en vez de actualizar la fila existente se crea una nueva, y
+ * la vieja queda huérfana (ya no se toca, pero tampoco se borra sola). Solo
+ * agrupa, nunca borra — la decisión de cuál mantener es de quien revisa en
+ * Admin (ver detectarClientesDuplicadosConEstado para el chequeo en vivo).
+ * @returns {{id:number, name:string, ss:string}[][]} Solo grupos con 2+ filas
+ */
+function detectarClientesDuplicados() {
+  const clientes = db.prepare(`SELECT id, name, ss FROM clients WHERE name IS NOT NULL AND name != ''`).all();
+  return agruparParecidos(clientes, c => c.name).filter(g => g.length >= 2);
+}
+
+/**
+ * Igual que detectarClientesDuplicados, pero además confirma contra
+ * SISCOMMATE EN VIVO (CUSTOMER.DBF real, no el caché) cuál variante de cada
+ * grupo sigue existiendo ahora mismo — responde justo lo que en Admin no se
+ * puede saber a simple vista: "¿esta fila es la que sigue en SISCOMMATE, o
+ * quedó huérfana del lado del SQL local?". Si una variante ya no aparece en
+ * una búsqueda exacta contra SISCOMMATE, es la candidata más probable a
+ * eliminar — pero la decisión final sigue siendo de quien revisa en Admin.
+ * `existe_en_siscommate: null` significa que no se pudo verificar (bridge
+ * caído), nunca se asume nada en ese caso.
+ * @returns {Promise<Array<Array<{id:number, name:string, ss:string, existe_en_siscommate: boolean|null}>>>}
+ */
+async function detectarClientesDuplicadosConEstado() {
+  const grupos = detectarClientesDuplicados();
+
+  // buscarClientesSiscommate ya atrapa sus propios errores y devuelve []
+  // cuando el bridge no responde (nunca lanza) — así que un try/catch acá
+  // NUNCA distinguiría "no está en SISCOMMATE" de "no se pudo consultar".
+  // Se verifica la conexión UNA vez antes de las (potencialmente cientos
+  // de) consultas individuales: si el bridge está caído, ninguna de esas
+  // consultas puede decir nada real, y no vale la pena ni intentarlas.
+  const bridge = await getBridgeStatus();
+  if (!bridge.online) {
+    return grupos.map(grupo => grupo.map(c => ({ ...c, existe_en_siscommate: null })));
+  }
+
+  const resultado = [];
+  for (const grupo of grupos) {
+    const grupoConEstado = [];
+    for (const c of grupo) {
+      const real = await buscarClientesSiscommate(c.name);
+      const norm = c.name.trim().toUpperCase();
+      const existe = real.some(r => (r.name || '').trim().toUpperCase() === norm);
+      grupoConEstado.push({ ...c, existe_en_siscommate: existe });
+    }
+    resultado.push(grupoConEstado);
+  }
+  return resultado;
+}
+
+/**
+ * Igual que detectarClientesDuplicados pero sobre consignor_catalog. Acá
+ * TODAS las filas vienen de SISCOMMATE (no hay una vía de creación local
+ * aparte — ver sincronizarConsignadoresDesdeSiscommate), pero como esa
+ * sincronización agrupa nombres parecidos SOLO dentro de cada corrida (nunca
+ * contra lo que ya existe en la tabla), una corrida posterior con una
+ * redacción nueva de un consignador ya guardado inserta un duplicado. No hay
+ * chequeo en vivo posible acá (SISCOMMATE no tiene un catálogo propio de
+ * consignadores que buscar por nombre) — se muestra el grupo y la decisión
+ * de cuál mantener queda para quien revisa en Admin.
+ * @returns {string[][]} Solo grupos con 2+ nombres
+ */
+function detectarConsignadoresDuplicados() {
+  const nombres = db.prepare(`SELECT name FROM consignor_catalog`).all().map(r => r.name);
+  return agruparParecidos(nombres, n => n).filter(g => g.length >= 2);
 }
 
 /**
@@ -246,6 +329,10 @@ module.exports = {
   sincronizarClientesDesdeSiscommate,
   sincronizarConsignadoresDesdeSiscommate,
   consolidarNombresParecidos,
+  agruparParecidos,
+  detectarClientesDuplicados,
+  detectarClientesDuplicadosConEstado,
+  detectarConsignadoresDuplicados,
   similitudTexto,
   buscarClienteParecido,
   normalizarParaComparar,

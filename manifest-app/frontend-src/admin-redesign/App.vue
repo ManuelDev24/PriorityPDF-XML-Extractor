@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import { api, type ContainerType, type EnvioSiscommate, type Cliente, type PreviewAuditoria } from '../admin/api';
+import { api, type ContainerType, type EnvioSiscommate, type Cliente, type ClienteDuplicado, type PreviewAuditoria } from '../admin/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -247,6 +247,57 @@ async function sincronizarConsignadores() {
     try { msg = JSON.parse((e as Error).message).error || msg; } catch { /* texto plano */ }
     toast(msg, 'err');
   } finally { sincronizandoConsignadores.value = false; }
+}
+
+// ── Duplicados: mismo cliente/consignador real guardado dos veces bajo una
+// redacción distinta (ver clientSync.js: detectarClientesDuplicadosConEstado
+// / detectarConsignadoresDuplicados) — la sincronización empareja por nombre
+// exacto o solo agrupa dentro de su propia corrida, así que una redacción
+// nueva en SISCOMMATE puede dejar una fila vieja huérfana en vez de
+// actualizarla. Búsqueda bajo demanda desde Admin, nunca automática.
+const buscandoDuplicadosClientes = ref(false);
+const duplicadosClientes = ref<ClienteDuplicado[][] | null>(null);
+
+async function buscarDuplicadosClientes() {
+  buscandoDuplicadosClientes.value = true;
+  try {
+    duplicadosClientes.value = await api.clientesDuplicados();
+  } catch (e) {
+    let msg = 'Error al buscar duplicados';
+    try { msg = JSON.parse((e as Error).message).error || msg; } catch { /* texto plano */ }
+    toast(msg, 'err');
+  } finally { buscandoDuplicadosClientes.value = false; }
+}
+
+const buscandoDuplicadosConsignadores = ref(false);
+const duplicadosConsignadores = ref<string[][] | null>(null);
+
+async function buscarDuplicadosConsignadores() {
+  buscandoDuplicadosConsignadores.value = true;
+  try {
+    duplicadosConsignadores.value = await api.consignadoresDuplicados();
+  } catch (e) {
+    let msg = 'Error al buscar duplicados';
+    try { msg = JSON.parse((e as Error).message).error || msg; } catch { /* texto plano */ }
+    toast(msg, 'err');
+  } finally { buscandoDuplicadosConsignadores.value = false; }
+}
+
+async function eliminarConsignadorDuplicado(name: string) {
+  try {
+    await api.eliminarConsignadorSiscommate(name);
+    toast(`"${name}" eliminado`);
+    if (duplicadosConsignadores.value) {
+      duplicadosConsignadores.value = duplicadosConsignadores.value
+        .map(grupo => grupo.filter(n => n !== name))
+        .filter(grupo => grupo.length >= 2);
+    }
+    await cargarTotalConsignadoresSiscommate();
+  } catch (e) {
+    let msg = 'Error al eliminar';
+    try { msg = JSON.parse((e as Error).message).error || msg; } catch { /* texto plano */ }
+    toast(msg, 'err');
+  }
 }
 
 // ── Crear / editar un cliente — escribe local Y en CUSTOMER.DBF real ──
@@ -690,6 +741,44 @@ onMounted(() => {
             <p class="text-xs text-ink-faint">
               Muestra hasta 100 resultados a la vez — refiná la búsqueda si no encontrás lo que buscás.
             </p>
+
+            <div class="flex flex-col gap-3 border-t border-border pt-3.5">
+              <div class="flex items-center gap-3">
+                <Button variant="outline" size="sm" :disabled="buscandoDuplicadosClientes" @click="buscarDuplicadosClientes">
+                  <Search class="size-3.5" />
+                  {{ buscandoDuplicadosClientes ? 'Buscando (consulta SISCOMMATE por cada candidato)…' : 'Buscar duplicados' }}
+                </Button>
+                <span v-if="duplicadosClientes" class="text-xs text-ink-faint">
+                  {{ duplicadosClientes.length }} grupo{{ duplicadosClientes.length === 1 ? '' : 's' }} de nombres parecidos
+                </span>
+              </div>
+              <p class="text-xs text-ink-faint">
+                Nombres muy parecidos entre sí (mismo umbral que el aviso de error de
+                digitación) — casi siempre el mismo cliente real guardado dos veces con
+                una redacción distinta. Se confirma contra SISCOMMATE en vivo cuál
+                variante sigue existiendo, para saber cuál conviene borrar.
+              </p>
+              <div v-if="duplicadosClientes?.length" class="flex flex-col gap-2.5">
+                <div
+                  v-for="(grupo, i) in duplicadosClientes" :key="i"
+                  class="flex flex-col gap-1.5 rounded-lg border border-status-pending/40 bg-status-pending/5 p-3"
+                >
+                  <div v-for="c in grupo" :key="c.id" class="flex items-center justify-between gap-3 text-sm">
+                    <div class="flex min-w-0 items-center gap-2">
+                      <span class="truncate">{{ c.name }}</span>
+                      <span class="font-mono text-xs text-ink-faint">{{ c.ss || '—' }}</span>
+                      <Badge v-if="c.existe_en_siscommate === true" class="bg-status-validated/15 text-status-validated">En SISCOMMATE</Badge>
+                      <Badge v-else-if="c.existe_en_siscommate === false" class="bg-destructive/15 text-destructive">No está en SISCOMMATE</Badge>
+                      <Badge v-else class="bg-ink-faint/10 text-ink-faint">Sin verificar</Badge>
+                    </div>
+                    <Button variant="ghost" size="icon-sm" class="text-destructive hover:text-destructive" title="Eliminar" @click="pedirEliminarCliente(c)">
+                      <Trash2 class="size-3.5" />
+                    </Button>
+                  </div>
+                </div>
+              </div>
+              <p v-else-if="duplicadosClientes" class="text-xs text-ink-faint">No se encontraron nombres parecidos entre sí.</p>
+            </div>
           </CardContent>
         </Card>
 
@@ -719,6 +808,40 @@ onMounted(() => {
                 {{ resultadoSincConsignadores.canonicos }} nombres consolidados
                 (de {{ resultadoSincConsignadores.total_siscommate }} en SISCOMMATE)
               </p>
+            </div>
+
+            <div class="flex flex-col gap-3 border-t border-border pt-3.5 mt-3.5">
+              <div class="flex items-center gap-3">
+                <Button variant="outline" size="sm" :disabled="buscandoDuplicadosConsignadores" @click="buscarDuplicadosConsignadores">
+                  <Search class="size-3.5" />
+                  {{ buscandoDuplicadosConsignadores ? 'Buscando…' : 'Buscar duplicados' }}
+                </Button>
+                <span v-if="duplicadosConsignadores" class="text-xs text-ink-faint">
+                  {{ duplicadosConsignadores.length }} grupo{{ duplicadosConsignadores.length === 1 ? '' : 's' }} de nombres parecidos
+                </span>
+              </div>
+              <p class="text-xs text-ink-faint">
+                Cada corrida de "Actualizar desde SISCOMMATE" agrupa nombres parecidos
+                solo entre sí misma, nunca contra lo que ya había guardado — una
+                redacción nueva del mismo consignador real puede quedar duplicada acá.
+                No hay forma de confirmar en vivo cuál es "la correcta" (SISCOMMATE no
+                tiene un catálogo propio de consignadores): elegí la más completa y
+                borrá el resto.
+              </p>
+              <div v-if="duplicadosConsignadores?.length" class="flex flex-col gap-2.5">
+                <div
+                  v-for="(grupo, i) in duplicadosConsignadores" :key="i"
+                  class="flex flex-col gap-1.5 rounded-lg border border-status-pending/40 bg-status-pending/5 p-3"
+                >
+                  <div v-for="nombre in grupo" :key="nombre" class="flex items-center justify-between gap-3 text-sm">
+                    <span class="truncate">{{ nombre }}</span>
+                    <Button variant="ghost" size="icon-sm" class="text-destructive hover:text-destructive" title="Eliminar" @click="eliminarConsignadorDuplicado(nombre)">
+                      <Trash2 class="size-3.5" />
+                    </Button>
+                  </div>
+                </div>
+              </div>
+              <p v-else-if="duplicadosConsignadores" class="text-xs text-ink-faint">No se encontraron nombres parecidos entre sí.</p>
             </div>
           </CardContent>
         </Card>

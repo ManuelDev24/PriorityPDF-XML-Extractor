@@ -82,6 +82,14 @@ export interface ResultadoSincronizarConsignadores {
   nuevos: number;
 }
 
+/** Un cliente local dentro de un grupo de posibles duplicados — ver detectarClientesDuplicados. */
+export interface ClienteDuplicado {
+  id: number;
+  name: string;
+  ss: string;
+  existe_en_siscommate: boolean | null;
+}
+
 /** Resultado de crear/actualizar un cliente — separa el guardado local del
  * intento de escribir en CUSTOMER.DBF real (best-effort, puede fallar sin
  * perder el guardado local). */
@@ -159,6 +167,11 @@ export const api = {
   contarConsignadoresSiscommate: () => pedir<{ total: number }>('/api/catalogs/consignors-siscommate/count'),
   sincronizarConsignadoresSiscommate: () =>
     pedir<ResultadoSincronizarConsignadores>('/api/catalogs/consignors/sincronizar-siscommate', { method: 'POST' }),
+  consignadoresDuplicados: () => pedir<string[][]>('/api/catalogs/consignors-siscommate/duplicados'),
+  eliminarConsignadorSiscommate: (name: string) =>
+    pedir<{ ok: true }>(`/api/catalogs/consignors-siscommate/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+
+  clientesDuplicados: () => pedir<ClienteDuplicado[][]>('/api/catalogs/clients/duplicados'),
   crearCliente: (c: Partial<Cliente>) =>
     pedir<ResultadoGuardarCliente>('/api/catalogs/clients', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(c),

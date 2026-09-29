@@ -10,7 +10,10 @@ const {
 } = require('../services/siscommateClient');
 const { analizarYGuardar } = require('../services/itemClientAnalysis');
 const { analizarHistorialLocal, normalizarDescripcion } = require('../services/localHistoryAnalysis');
-const { sincronizarClientesDesdeSiscommate, sincronizarConsignadoresDesdeSiscommate, buscarClienteParecido } = require('../services/clientSync');
+const {
+  sincronizarClientesDesdeSiscommate, sincronizarConsignadoresDesdeSiscommate, buscarClienteParecido,
+  detectarClientesDuplicadosConEstado, detectarConsignadoresDuplicados,
+} = require('../services/clientSync');
 
 const router = express.Router();
 
@@ -202,6 +205,20 @@ router.post('/api/catalogs/consignors/sincronizar-siscommate', async (req, res) 
   }
 });
 
+// Nombres parecidos en consignor_catalog (candidatos al mismo consignador
+// real guardado dos veces con una redacción distinta) — ver
+// detectarConsignadoresDuplicados en clientSync.js.
+router.get('/api/catalogs/consignors-siscommate/duplicados', (req, res) => {
+  res.json(detectarConsignadoresDuplicados());
+});
+
+// Borra un nombre puntual de consignor_catalog — uso manual desde Admin tras
+// revisar un grupo de duplicados, nunca automático.
+router.delete('/api/catalogs/consignors-siscommate/:name', (req, res) => {
+  db.prepare(`DELETE FROM consignor_catalog WHERE name=?`).run(req.params.name);
+  res.json({ ok: true });
+});
+
 // Cuántos clientes hay en el catálogo local — para el contador en Admin sin
 // tener que traer las filas.
 router.get('/api/catalogs/clients/count', (req, res) => {
@@ -217,6 +234,19 @@ router.post('/api/catalogs/clients/sincronizar-siscommate', async (req, res) => 
     res.json({ ok: true, ...resultado });
   } catch (err) {
     res.status(500).json({ error: 'No se pudo sincronizar con SISCOMMATE: ' + err.message });
+  }
+});
+
+// Grupos de clientes locales con nombres parecidos (candidatos al mismo
+// cliente real guardado dos veces) — cada uno con existe_en_siscommate
+// confirmado en vivo contra CUSTOMER.DBF real, para saber cuál variante
+// sigue siendo la vigente antes de borrar la otra. Puede tardar (una
+// consulta al bridge por nombre) — uso manual desde Admin.
+router.get('/api/catalogs/clients/duplicados', async (req, res) => {
+  try {
+    res.json(await detectarClientesDuplicadosConEstado());
+  } catch (err) {
+    res.status(500).json({ error: 'No se pudo verificar contra SISCOMMATE: ' + err.message });
   }
 });
 
