@@ -14,20 +14,57 @@ import {
 import {
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell, TableFooter,
 } from '@/components/ui/table';
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Trash2, Search, RefreshCw, Plus } from '@lucide/vue';
 import ClientesTable from './ClientesTable.vue';
 
-// Recordar la pestaña activa entre recargas — conveniencia por navegador,
-// no dato que valga la pena guardar en el servidor.
-function pestanaGuardada(): string {
-  try { return localStorage.getItem('admin_pestana') || 'config'; } catch { return 'config'; }
+// Barra lateral de navegación — cada sección es su propia pantalla completa,
+// nunca se apilan varias tarjetas grandes una debajo de otra (motivo del
+// cambio: la vieja estructura de 3 pestañas obligaba a escrollear cada vez
+// más a medida que se agregaban funciones nuevas a la misma pestaña).
+interface SeccionNav { id: string; label: string; badge?: number | null }
+interface GrupoNav { titulo: string; items: SeccionNav[] }
+
+const navGrupos = computed<GrupoNav[]>(() => [
+  {
+    titulo: 'Sistema',
+    items: [
+      { id: 'bridge', label: 'Conexión SISCOMMATE' },
+      { id: 'contenedores', label: 'Tipos de contenedor', badge: filas.value.length || null },
+      { id: 'historial', label: 'Historial de envíos', badge: historial.value.length || null },
+    ],
+  },
+  {
+    titulo: 'Catálogos',
+    items: [
+      { id: 'clientes', label: 'Clientes', badge: totalClientes.value },
+      { id: 'consignadores', label: 'Consignadores', badge: totalConsignadoresSiscommate.value },
+      { id: 'sugerencias', label: 'Sugerencias inteligentes' },
+    ],
+  },
+  {
+    titulo: 'Datos',
+    items: [
+      { id: 'auditoria', label: 'Auditoría de datos' },
+    ],
+  },
+]);
+const IDS_SECCION_VALIDOS = ['bridge', 'contenedores', 'historial', 'clientes', 'consignadores', 'sugerencias', 'auditoria'];
+
+// Recordar la sección activa entre recargas — conveniencia por navegador, no
+// dato que valga la pena guardar en el servidor. Si quedó guardado un id de
+// la vieja estructura de pestañas (p.ej. "config"), no calza con ninguna
+// sección nueva y cae al respaldo en vez de mostrar una pantalla en blanco.
+function seccionGuardada(): string {
+  try {
+    const v = localStorage.getItem('admin_seccion');
+    return v && IDS_SECCION_VALIDOS.includes(v) ? v : 'bridge';
+  } catch { return 'bridge'; }
 }
-const pestanaAdmin = ref(pestanaGuardada());
-function cambiarPestanaAdmin(v: string) {
-  pestanaAdmin.value = v;
-  try { localStorage.setItem('admin_pestana', v); } catch { /* privado/bloqueado: no pasa nada */ }
+const seccionActiva = ref(seccionGuardada());
+function cambiarSeccion(id: string) {
+  seccionActiva.value = id;
+  try { localStorage.setItem('admin_seccion', id); } catch { /* privado/bloqueado: no pasa nada */ }
 }
 
 const FALLBACK_TAMANOS = ['20', '40', '40HC', '45', '48', '53', 'RORO'];
@@ -438,8 +475,8 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="min-h-screen bg-paper">
-    <header class="flex h-14 items-center gap-3 border-b border-border bg-paper-raised px-6">
+  <div class="flex h-screen flex-col bg-paper">
+    <header class="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-paper-raised px-6">
       <span class="text-sm font-semibold text-accent">Priority Global</span>
       <span class="text-xs text-ink-muted">Manifiestos DGA → Hacienda PR</span>
       <div class="flex-1"></div>
@@ -448,26 +485,29 @@ onMounted(() => {
       </Button>
     </header>
 
-    <!-- Configuración se queda angosta (son formularios cortos, se leen mejor
-         así) — Clientes necesita todo el ancho posible: son hasta 13 columnas
-         reales de CUSTOMER.DBF y una tabla angosta las hace ilegibles. -->
-    <main class="mx-auto px-6 py-8" :class="pestanaAdmin === 'clientes' ? 'max-w-none' : 'max-w-4xl'">
-      <h1 class="text-2xl font-semibold text-ink">Administración</h1>
-      <p class="mt-1 text-sm text-ink-muted">
-        Configuración del sistema, mapeo de contenedores, conexión con SISCOMMATE y catálogo de clientes
-      </p>
+    <div class="flex min-h-0 flex-1">
+      <!-- Barra lateral: cada ítem es una pantalla completa e independiente —
+           agregar una función nueva es un ítem nuevo acá, nunca alarga una
+           pantalla existente (motivo del cambio: antes 3 pestañas apilaban
+           varias tarjetas grandes cada una, y había que escrollear cada vez
+           más a medida que se agregaban funciones). -->
+      <nav class="w-60 shrink-0 overflow-y-auto border-r border-border bg-paper-raised px-3 py-6">
+        <div v-for="grupo in navGrupos" :key="grupo.titulo" class="mb-6">
+          <p class="mb-1.5 px-2.5 text-xs font-medium uppercase tracking-wide text-ink-faint">{{ grupo.titulo }}</p>
+          <button
+            v-for="item in grupo.items" :key="item.id" type="button"
+            class="flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors"
+            :class="seccionActiva === item.id ? 'bg-accent-soft font-medium text-accent' : 'text-ink-muted hover:bg-paper-sunken hover:text-ink'"
+            @click="cambiarSeccion(item.id)"
+          >
+            <span class="truncate">{{ item.label }}</span>
+            <Badge v-if="item.badge" class="shrink-0" :class="seccionActiva === item.id ? 'bg-paper text-accent' : 'bg-paper-sunken text-ink-faint'">{{ item.badge }}</Badge>
+          </button>
+        </div>
+      </nav>
 
-      <Tabs :model-value="pestanaAdmin" class="mt-6" @update:model-value="(v) => cambiarPestanaAdmin(String(v))">
-        <TabsList>
-          <TabsTrigger value="config">Configuración</TabsTrigger>
-          <TabsTrigger value="clientes">
-            Clientes
-            <Badge v-if="totalClientes !== null" class="ml-1.5 bg-accent-soft text-accent">{{ totalClientes }}</Badge>
-          </TabsTrigger>
-          <TabsTrigger value="auditoria">Auditoría de datos</TabsTrigger>
-        </TabsList>
-
-      <TabsContent value="config">
+      <main class="min-w-0 flex-1 overflow-y-auto px-8 py-8">
+      <div v-if="seccionActiva === 'bridge'" class="max-w-3xl">
       <!-- ── Bridge SISCOMMATE ── -->
       <Card class="mt-6">
         <CardHeader>
@@ -523,9 +563,11 @@ onMounted(() => {
           </div>
         </CardContent>
       </Card>
+      </div>
 
       <!-- ── Tipos de contenedor ── -->
-      <Card class="mt-6">
+      <div v-else-if="seccionActiva === 'contenedores'" class="max-w-4xl">
+      <Card>
         <CardHeader>
           <div class="flex items-center gap-2">
             <CardTitle>Tipos de contenedor XML → Tamaño SISCOMMATE</CardTitle>
@@ -593,9 +635,11 @@ onMounted(() => {
           </Table>
         </CardContent>
       </Card>
+      </div>
 
       <!-- ── Historial de envíos a SISCOMMATE ── -->
-      <Card class="mt-6">
+      <div v-else-if="seccionActiva === 'historial'" class="max-w-4xl">
+      <Card>
         <CardHeader>
           <div class="flex items-center gap-2">
             <CardTitle>Historial de envíos a SISCOMMATE</CardTitle>
@@ -635,9 +679,11 @@ onMounted(() => {
           <p v-else class="text-sm text-ink-faint">Todavía no se hizo ningún envío a SISCOMMATE.</p>
         </CardContent>
       </Card>
+      </div>
 
       <!-- ── Sugerencias inteligentes (código, SS/EIN, nombre consignatario) ── -->
-      <Card class="mt-6">
+      <div v-else-if="seccionActiva === 'sugerencias'" class="max-w-3xl">
+      <Card>
         <CardHeader>
           <CardTitle>Sugerencias inteligentes</CardTitle>
           <CardDescription>
@@ -692,9 +738,10 @@ onMounted(() => {
           </div>
         </CardContent>
       </Card>
-      </TabsContent>
+      </div>
 
-      <TabsContent value="clientes">
+      <!-- ── Catálogo de clientes ── -->
+      <div v-else-if="seccionActiva === 'clientes'">
         <Card>
           <CardHeader>
             <div class="flex items-center gap-2">
@@ -781,8 +828,11 @@ onMounted(() => {
             </div>
           </CardContent>
         </Card>
+      </div>
 
-        <Card class="mt-6">
+      <!-- ── Catálogo de consignadores ── -->
+      <div v-else-if="seccionActiva === 'consignadores'">
+        <Card>
           <CardHeader>
             <div class="flex items-center gap-2">
               <CardTitle>Catálogo de consignadores</CardTitle>
@@ -845,9 +895,10 @@ onMounted(() => {
             </div>
           </CardContent>
         </Card>
-      </TabsContent>
+      </div>
 
-      <TabsContent value="auditoria">
+      <!-- ── Auditoría de datos ── -->
+      <div v-else-if="seccionActiva === 'auditoria'" class="max-w-4xl">
         <Card>
           <CardHeader>
             <CardTitle>Exportar a Excel</CardTitle>
@@ -927,9 +978,9 @@ onMounted(() => {
             </div>
           </CardContent>
         </Card>
-      </TabsContent>
-      </Tabs>
-    </main>
+      </div>
+      </main>
+    </div>
 
     <Dialog :open="!!clienteForm" @update:open="(v) => !v && (clienteForm = null)">
       <DialogContent v-if="clienteForm" class="sm:max-w-xl">
