@@ -175,6 +175,14 @@ class SiscommateBridge
                         var filas = AnalizarItemClienteTodos();
                         Send(resp, 200, new JavaScriptSerializer().Serialize(filas));
                     }
+                    // Igual que /analisis-item-cliente-todos pero agrupando por
+                    // BOL.exporter (consignador) en vez de BOL.consigne — misma
+                    // idea, mismo código arancelario, la otra punta del envío.
+                    else if (method == "GET" && path == "/analisis-item-exportador-todos")
+                    {
+                        var filasExp = AnalizarItemExportadorTodos();
+                        Send(resp, 200, new JavaScriptSerializer().Serialize(filasExp));
+                    }
                     // Nombres DISTINCT de exportador/consignador de TODO el historico real
                     // de SISCOMMATE — BOL.exporter es texto libre, no hay una tabla propia
                     // de consignadores (a diferencia de CUSTOMER para consignatarios). Es
@@ -559,6 +567,31 @@ class SiscommateBridge
                 "FROM bolitem bi INNER JOIN bol b ON b.manifest = bi.manifest AND b.bolno = bi.bolno " +
                 "WHERE bi.code <> '' AND b.consigne <> '' " +
                 "GROUP BY bi.code, b.consigne", conn))
+            {
+                cmd.CommandTimeout = 300;
+                using (var reader = cmd.ExecuteReader())
+                {
+                    while (reader.Read()) result.Add(ReadRow(reader));
+                }
+            }
+        }
+        return result;
+    }
+
+    // Igual que AnalizarItemClienteTodos pero agrupando por BOL.exporter
+    // (consignador) en vez de BOL.consigne — misma pasada agregada, elegir
+    // "el mas frecuente por codigo" se hace del lado de Node.
+    static List<Dictionary<string, object>> AnalizarItemExportadorTodos()
+    {
+        var result = new List<Dictionary<string, object>>();
+        using (var conn = new OleDbConnection(GetConnectionString()))
+        {
+            conn.Open();
+            using (var cmd = new OleDbCommand(
+                "SELECT bi.code, b.exporter, COUNT(*) AS n " +
+                "FROM bolitem bi INNER JOIN bol b ON b.manifest = bi.manifest AND b.bolno = bi.bolno " +
+                "WHERE bi.code <> '' AND b.exporter <> '' " +
+                "GROUP BY bi.code, b.exporter", conn))
             {
                 cmd.CommandTimeout = 300;
                 using (var reader = cmd.ExecuteReader())

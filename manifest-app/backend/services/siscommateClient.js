@@ -368,6 +368,17 @@ async function analizarItemClienteTodos() {
 }
 
 /**
+ * Igual que analizarItemClienteTodos pero (code, exporter, n) — la misma
+ * asociación código arancelario → parte más frecuente, del lado del
+ * consignador (BOL.exporter) en vez del consignatario (BOL.consigne). Ver
+ * services/itemClientAnalysis.js.
+ * @returns {Promise<{code:string, exporter:string, n:number}[]>}
+ */
+async function analizarItemExportadorTodos() {
+  return bridgeRequest('GET', '/analisis-item-exportador-todos', null);
+}
+
+/**
  * Nombres DISTINCT de BOL.exporter en TODO el historial real de SISCOMMATE —
  * no existe una tabla propia de consignadores (a diferencia de CUSTOMER para
  * consignatarios), así que esto es lo único disponible para alimentar el
@@ -385,7 +396,7 @@ async function obtenerExportadoresSiscommate() {
 module.exports = {
   getBridgeConfig, bridgeRequest,
   getBridgeStatus, getLote, pushManifest, consultarManifiesto, buscarClientesSiscommate,
-  analizarItemClienteTodos, limpiarTextoLibre, calcularPackageUnitCode,
+  analizarItemClienteTodos, analizarItemExportadorTodos, limpiarTextoLibre, calcularPackageUnitCode,
   obtenerMuestra, crearClienteSiscommate, actualizarClienteSiscommate, eliminarClienteSiscommate,
   obtenerTablaCompleta, actualizarBolSiscommate, actualizarBolcontSiscommate, actualizarBolitemSiscommate,
   obtenerExportadoresSiscommate,

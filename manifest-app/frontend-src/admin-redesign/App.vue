@@ -622,9 +622,9 @@ onMounted(() => {
               <div>
                 <p class="text-sm font-medium">Historial completo de SISCOMMATE</p>
                 <p class="text-xs text-ink-faint">
-                  Código → consignatario más frecuente entre TODOS los usuarios de
-                  SISCOMMATE, no solo Priority. Consulta el bridge repetidamente —
-                  puede tardar.
+                  Código → consignatario y código → consignador más frecuentes
+                  entre TODOS los usuarios de SISCOMMATE, no solo Priority.
+                  Consulta el bridge repetidamente — puede tardar.
                 </p>
               </div>
               <Button size="sm" variant="outline" :disabled="corriendoSiscommate" @click="correrAnalisisSiscommate">
@@ -634,7 +634,9 @@ onMounted(() => {
             <p v-if="resultadoSiscommate" class="text-xs text-status-validated">
               {{ resultadoSiscommate.codigos_asociados_local }} asociados por catálogo local ·
               {{ resultadoSiscommate.codigos_asociados_siscommate }} por CUSTOMER.DBF ·
-              {{ resultadoSiscommate.sin_ss }} sin SS/EIN encontrado.
+              {{ resultadoSiscommate.sin_ss }} sin SS/EIN encontrado ·
+              {{ resultadoSiscommate.consignadores_asociados }} de
+              {{ resultadoSiscommate.consignadores_con_historial }} códigos con consignador aprendido.
             </p>
           </div>
         </CardContent>
