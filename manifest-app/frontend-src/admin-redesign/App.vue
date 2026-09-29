@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import { api, type ContainerType, type EnvioSiscommate, type Cliente, type ClienteDuplicado, type PreviewAuditoria } from '../admin/api';
+import { api, type ContainerType, type EnvioSiscommate, type Cliente, type ClienteDuplicado, type Consignador, type PreviewAuditoria } from '../admin/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -17,6 +17,7 @@ import {
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Trash2, Search, RefreshCw, Plus } from '@lucide/vue';
 import ClientesTable from './ClientesTable.vue';
+import ConsignadoresTable from './ConsignadoresTable.vue';
 
 // Barra lateral de navegación — cada sección es su propia pantalla completa,
 // nunca se apilan varias tarjetas grandes una debajo de otra (motivo del
@@ -220,9 +221,17 @@ async function correrAnalisisLocal() {
 }
 
 // ── Catálogo de clientes (caché local de CUSTOMER.DBF de SISCOMMATE) ──
+// Paginación real (ver admin/api.ts: listaClientes) — antes se traían como
+// mucho 100 filas y se "paginaban" del lado del navegador sobre ese
+// recorte: con más de 100 coincidencias reales, el resto quedaba invisible
+// sin ningún aviso. Ahora cada página pide exactamente sus filas al
+// servidor, con el total REAL de la búsqueda.
+const POR_PAGINA_CLIENTES = 25;
 const totalClientes = ref<number | null>(null);
 const busquedaCliente = ref('');
 const clientesFiltrados = ref<Cliente[]>([]);
+const totalClientesFiltrados = ref(0);
+const paginaClientes = ref(0);
 const buscandoClientes = ref(false);
 const sincronizandoClientes = ref(false);
 const resultadoSincronizacion = ref<{ creados: number; actualizados: number; sin_cambios: number; total_siscommate: number } | null>(null);
@@ -235,14 +244,23 @@ async function cargarTotalClientes() {
 
 async function buscarClientesAdmin() {
   buscandoClientes.value = true;
-  try { clientesFiltrados.value = await api.buscarClientes(busquedaCliente.value, 100); }
-  catch { clientesFiltrados.value = []; }
+  try {
+    const r = await api.listaClientes(busquedaCliente.value, POR_PAGINA_CLIENTES, paginaClientes.value * POR_PAGINA_CLIENTES);
+    clientesFiltrados.value = r.rows;
+    totalClientesFiltrados.value = r.total;
+  } catch { clientesFiltrados.value = []; totalClientesFiltrados.value = 0; }
   finally { buscandoClientes.value = false; }
 }
 
 function alBuscarCliente() {
+  paginaClientes.value = 0;
   clearTimeout(temporizadorBusqueda);
   temporizadorBusqueda = setTimeout(buscarClientesAdmin, 250);
+}
+
+function cambiarPaginaClientes(p: number) {
+  paginaClientes.value = p;
+  buscarClientesAdmin();
 }
 
 async function sincronizarClientes() {
@@ -262,9 +280,51 @@ async function sincronizarClientes() {
 }
 
 // ── Catálogo de consignadores (BOL.exporter consolidado de SISCOMMATE) ──
+// Mismo patrón de paginación real que clientes, ver arriba.
+const POR_PAGINA_CONSIGNADORES = 25;
 const totalConsignadoresSiscommate = ref<number | null>(null);
 const sincronizandoConsignadores = ref(false);
 const resultadoSincConsignadores = ref<{ canonicos: number; nuevos: number; total_siscommate: number } | null>(null);
+const busquedaConsignador = ref('');
+const consignadoresFiltrados = ref<Consignador[]>([]);
+const totalConsignadoresFiltrados = ref(0);
+const paginaConsignadores = ref(0);
+const buscandoConsignadores = ref(false);
+let temporizadorBusquedaConsignador: ReturnType<typeof setTimeout> | undefined;
+
+async function buscarConsignadoresAdmin() {
+  buscandoConsignadores.value = true;
+  try {
+    const r = await api.listaConsignadores(busquedaConsignador.value, POR_PAGINA_CONSIGNADORES, paginaConsignadores.value * POR_PAGINA_CONSIGNADORES);
+    consignadoresFiltrados.value = r.rows;
+    totalConsignadoresFiltrados.value = r.total;
+  } catch { consignadoresFiltrados.value = []; totalConsignadoresFiltrados.value = 0; }
+  finally { buscandoConsignadores.value = false; }
+}
+
+function alBuscarConsignador() {
+  paginaConsignadores.value = 0;
+  clearTimeout(temporizadorBusquedaConsignador);
+  temporizadorBusquedaConsignador = setTimeout(buscarConsignadoresAdmin, 250);
+}
+
+function cambiarPaginaConsignadores(p: number) {
+  paginaConsignadores.value = p;
+  buscarConsignadoresAdmin();
+}
+
+async function eliminarConsignadorLista(c: Consignador) {
+  try {
+    await api.eliminarConsignadorSiscommate(c.name);
+    toast(`"${c.name}" eliminado`);
+    await cargarTotalConsignadoresSiscommate();
+    await buscarConsignadoresAdmin();
+  } catch (e) {
+    let msg = 'Error al eliminar';
+    try { msg = JSON.parse((e as Error).message).error || msg; } catch { /* texto plano */ }
+    toast(msg, 'err');
+  }
+}
 
 async function cargarTotalConsignadoresSiscommate() {
   try { totalConsignadoresSiscommate.value = (await api.contarConsignadoresSiscommate()).total; }
@@ -279,6 +339,7 @@ async function sincronizarConsignadores() {
     resultadoSincConsignadores.value = r;
     toast(`Consignadores actualizados: ${r.nuevos} nuevos (de ${r.canonicos} nombres consolidados)`);
     await cargarTotalConsignadoresSiscommate();
+    await buscarConsignadoresAdmin();
   } catch (e) {
     let msg = 'Error al sincronizar';
     try { msg = JSON.parse((e as Error).message).error || msg; } catch { /* texto plano */ }
@@ -330,6 +391,7 @@ async function eliminarConsignadorDuplicado(name: string) {
         .filter(grupo => grupo.length >= 2);
     }
     await cargarTotalConsignadoresSiscommate();
+    await buscarConsignadoresAdmin();
   } catch (e) {
     let msg = 'Error al eliminar';
     try { msg = JSON.parse((e as Error).message).error || msg; } catch { /* texto plano */ }
@@ -470,7 +532,7 @@ async function aplicarCambiosAuditoria() {
 
 onMounted(() => {
   cargarSettings(); cargarTipos(); cargarTamanos(); checkBridge(); cargarHistorial();
-  cargarTotalClientes(); buscarClientesAdmin(); cargarTotalConsignadoresSiscommate();
+  cargarTotalClientes(); buscarClientesAdmin(); cargarTotalConsignadoresSiscommate(); buscarConsignadoresAdmin();
 });
 </script>
 
@@ -507,7 +569,7 @@ onMounted(() => {
       </nav>
 
       <main class="min-w-0 flex-1 overflow-y-auto px-8 py-8">
-      <div v-if="seccionActiva === 'bridge'" class="max-w-3xl">
+      <div v-if="seccionActiva === 'bridge'" class="mx-auto max-w-3xl">
       <!-- ── Bridge SISCOMMATE ── -->
       <Card class="mt-6">
         <CardHeader>
@@ -566,7 +628,7 @@ onMounted(() => {
       </div>
 
       <!-- ── Tipos de contenedor ── -->
-      <div v-else-if="seccionActiva === 'contenedores'" class="max-w-4xl">
+      <div v-else-if="seccionActiva === 'contenedores'" class="mx-auto max-w-4xl">
       <Card>
         <CardHeader>
           <div class="flex items-center gap-2">
@@ -638,7 +700,7 @@ onMounted(() => {
       </div>
 
       <!-- ── Historial de envíos a SISCOMMATE ── -->
-      <div v-else-if="seccionActiva === 'historial'" class="max-w-4xl">
+      <div v-else-if="seccionActiva === 'historial'" class="mx-auto max-w-4xl">
       <Card>
         <CardHeader>
           <div class="flex items-center gap-2">
@@ -682,7 +744,7 @@ onMounted(() => {
       </div>
 
       <!-- ── Sugerencias inteligentes (código, SS/EIN, nombre consignatario) ── -->
-      <div v-else-if="seccionActiva === 'sugerencias'" class="max-w-3xl">
+      <div v-else-if="seccionActiva === 'sugerencias'" class="mx-auto max-w-3xl">
       <Card>
         <CardHeader>
           <CardTitle>Sugerencias inteligentes</CardTitle>
@@ -778,16 +840,14 @@ onMounted(() => {
                 class="h-8 max-w-sm text-sm" @input="alBuscarCliente"
               />
               <span v-if="buscandoClientes" class="text-xs text-ink-faint">Buscando…</span>
-              <span v-else class="text-xs text-ink-faint">{{ clientesFiltrados.length }} resultados</span>
             </div>
 
             <ClientesTable
-              :clientes="clientesFiltrados" @editar="abrirEditarCliente"
-              @eliminar-uno="pedirEliminarCliente" @eliminar-varios="pedirEliminarClientes"
+              :clientes="clientesFiltrados" :total="totalClientesFiltrados"
+              :pagina="paginaClientes" :por-pagina="POR_PAGINA_CLIENTES"
+              @editar="abrirEditarCliente" @eliminar-uno="pedirEliminarCliente" @eliminar-varios="pedirEliminarClientes"
+              @cambiar-pagina="cambiarPaginaClientes"
             />
-            <p class="text-xs text-ink-faint">
-              Muestra hasta 100 resultados a la vez — refiná la búsqueda si no encontrás lo que buscás.
-            </p>
 
             <div class="flex flex-col gap-3 border-t border-border pt-3.5">
               <div class="flex items-center gap-3">
@@ -860,6 +920,22 @@ onMounted(() => {
               </p>
             </div>
 
+            <div class="mt-3.5 flex flex-col gap-2.5 border-t border-border pt-3.5">
+              <div class="flex items-center gap-2">
+                <Search class="size-3.5 shrink-0 text-ink-faint" />
+                <Input
+                  v-model="busquedaConsignador" placeholder="Buscar por nombre..."
+                  class="h-8 max-w-sm text-sm" @input="alBuscarConsignador"
+                />
+                <span v-if="buscandoConsignadores" class="text-xs text-ink-faint">Buscando…</span>
+              </div>
+              <ConsignadoresTable
+                :consignadores="consignadoresFiltrados" :total="totalConsignadoresFiltrados"
+                :pagina="paginaConsignadores" :por-pagina="POR_PAGINA_CONSIGNADORES"
+                @eliminar-uno="eliminarConsignadorLista" @cambiar-pagina="cambiarPaginaConsignadores"
+              />
+            </div>
+
             <div class="flex flex-col gap-3 border-t border-border pt-3.5 mt-3.5">
               <div class="flex items-center gap-3">
                 <Button variant="outline" size="sm" :disabled="buscandoDuplicadosConsignadores" @click="buscarDuplicadosConsignadores">
@@ -898,7 +974,7 @@ onMounted(() => {
       </div>
 
       <!-- ── Auditoría de datos ── -->
-      <div v-else-if="seccionActiva === 'auditoria'" class="max-w-4xl">
+      <div v-else-if="seccionActiva === 'auditoria'" class="mx-auto max-w-4xl">
         <Card>
           <CardHeader>
             <CardTitle>Exportar a Excel</CardTitle>

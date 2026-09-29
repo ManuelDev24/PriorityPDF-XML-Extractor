@@ -6,7 +6,7 @@
 // por columna en vez de forzar una sola vista fija.
 import { ref, computed, h } from 'vue';
 import {
-  useVueTable, getCoreRowModel, getSortedRowModel, getPaginationRowModel,
+  useVueTable, getCoreRowModel, getSortedRowModel,
   type ColumnDef, type SortingState, type VisibilityState, FlexRender,
 } from '@tanstack/vue-table';
 import type { Cliente } from '../admin/api';
@@ -15,13 +15,22 @@ import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover
 import {
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell,
 } from '@/components/ui/table';
-import { ArrowUp, ArrowDown, ArrowUpDown, Columns3, ChevronLeft, ChevronRight, Pencil, Trash2 } from '@lucide/vue';
+import { ArrowUp, ArrowDown, ArrowUpDown, Columns3, Pencil, Trash2 } from '@lucide/vue';
+import Paginador from './Paginador.vue';
 
-const props = defineProps<{ clientes: Cliente[] }>();
+// Paginación real del lado del servidor (ver App.vue: listaClientes) — el
+// componente recibe exactamente UNA página de filas y el total REAL de la
+// búsqueda, no un recorte de 100 que luego se repartía en páginas del
+// navegador (con más de 100 coincidencias, el resto quedaba invisible sin
+// ningún aviso). El orden por columna sigue siendo local: solo reordena las
+// filas de la página actual, no toda la búsqueda — hacerlo contra el
+// servidor requeriría ORDER BY dinámico por columna, fuera de alcance acá.
+const props = defineProps<{ clientes: Cliente[]; total: number; pagina: number; porPagina: number }>();
 const emit = defineEmits<{
   editar: [cliente: Cliente];
   eliminarUno: [cliente: Cliente];
   eliminarVarios: [clientes: Cliente[]];
+  cambiarPagina: [pagina: number];
 }>();
 
 function texto(v: string | undefined) { return v && v.trim() ? v : '—'; }
@@ -95,8 +104,6 @@ const table = useVueTable({
   onColumnVisibilityChange: updater => { visibilidad.value = typeof updater === 'function' ? updater(visibilidad.value) : updater; },
   getCoreRowModel: getCoreRowModel(),
   getSortedRowModel: getSortedRowModel(),
-  getPaginationRowModel: getPaginationRowModel(),
-  initialState: { pagination: { pageSize: 25 } },
 });
 
 const columnasOcultables = computed(() => table.getAllColumns().filter(c => c.getCanHide()));
@@ -115,7 +122,7 @@ const ANCHOS: Record<string, string> = {
 <template>
   <div class="flex flex-col gap-2.5">
     <div class="flex items-center justify-between">
-      <p class="text-xs text-ink-faint">{{ props.clientes.length }} resultados cargados</p>
+      <p class="text-xs text-ink-faint">{{ total }} resultado{{ total === 1 ? '' : 's' }} en total</p>
       <Popover>
         <PopoverTrigger as-child>
           <Button variant="outline" size="sm"><Columns3 class="size-3.5" />Columnas</Button>
@@ -184,16 +191,6 @@ const ANCHOS: Record<string, string> = {
       </Table>
     </div>
 
-    <div v-if="table.getPageCount() > 1" class="flex items-center justify-between text-xs text-ink-muted">
-      <span>Página {{ table.getState().pagination.pageIndex + 1 }} de {{ table.getPageCount() }}</span>
-      <div class="flex items-center gap-1">
-        <Button variant="outline" size="icon-sm" :disabled="!table.getCanPreviousPage()" @click="table.previousPage()">
-          <ChevronLeft class="size-3.5" />
-        </Button>
-        <Button variant="outline" size="icon-sm" :disabled="!table.getCanNextPage()" @click="table.nextPage()">
-          <ChevronRight class="size-3.5" />
-        </Button>
-      </div>
-    </div>
+    <Paginador :pagina="pagina" :por-pagina="porPagina" :total="total" @cambiar="p => emit('cambiarPagina', p)" />
   </div>
 </template>

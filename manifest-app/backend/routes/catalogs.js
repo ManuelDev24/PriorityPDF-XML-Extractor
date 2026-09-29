@@ -150,6 +150,27 @@ router.get('/api/catalogs/clients', (req, res) => {
   ).all(`%${q}%`, `%${q}%`, `%${q}%`, limit));
 });
 
+// Igual que /api/catalogs/clients pero con paginación real (offset + total
+// de la búsqueda, no del catálogo completo) — para la pantalla de Admin, que
+// antes solo traía como mucho 100 filas y las "paginaba" del lado del
+// navegador sobre ese recorte: con más de 100 coincidencias reales, el resto
+// quedaba invisible sin ningún aviso. No se reutiliza para el editor (ni
+// para el endpoint de arriba) porque ahí un array plano es lo que ya
+// esperan — cambiar la forma de esa respuesta los rompería.
+router.get('/api/catalogs/clients/lista', (req, res) => {
+  const q = req.query.q || '';
+  const limit = Math.min(Number(req.query.limit) || 25, 200);
+  const offset = Math.max(Number(req.query.offset) || 0, 0);
+  const patron = `%${q}%`;
+  const total = db.prepare(
+    `SELECT COUNT(*) AS n FROM clients WHERE name LIKE ? OR taxid LIKE ? OR ss LIKE ?`
+  ).get(patron, patron, patron).n;
+  const rows = db.prepare(
+    `SELECT * FROM clients WHERE name LIKE ? OR taxid LIKE ? OR ss LIKE ? ORDER BY name LIMIT ? OFFSET ?`
+  ).all(patron, patron, patron, limit, offset);
+  res.json({ total, rows });
+});
+
 // ── CONSIGNADORES (Shipper, República Dominicana) ────────────────────────────
 // A diferencia de `clients` (consignatarios de PR, catálogo curado a mano con
 // SS/EIN de 9 dígitos), no existe un catálogo de consignadores — el RNC/
@@ -191,6 +212,20 @@ router.get('/api/catalogs/consignors-siscommate', (req, res) => {
 // Cuántos consignadores hay en el catálogo — para el contador en Admin.
 router.get('/api/catalogs/consignors-siscommate/count', (req, res) => {
   res.json(db.prepare(`SELECT COUNT(*) as total FROM consignor_catalog`).get());
+});
+
+// Igual que /api/catalogs/consignors-siscommate pero con paginación real
+// (offset + total de la búsqueda) — para la lista completa en Admin. Ver el
+// mismo comentario en /api/catalogs/clients/lista: no se reutiliza el
+// endpoint de arriba porque el editor espera un array plano de ese.
+router.get('/api/catalogs/consignors-siscommate/lista', (req, res) => {
+  const q = req.query.q || '';
+  const limit = Math.min(Number(req.query.limit) || 25, 200);
+  const offset = Math.max(Number(req.query.offset) || 0, 0);
+  const patron = `%${q}%`;
+  const total = db.prepare(`SELECT COUNT(*) AS n FROM consignor_catalog WHERE name LIKE ?`).get(patron).n;
+  const rows = db.prepare(`SELECT name FROM consignor_catalog WHERE name LIKE ? ORDER BY name LIMIT ? OFFSET ?`).all(patron, limit, offset);
+  res.json({ total, rows });
 });
 
 // Trae TODOS los nombres de exportador de BOL.exporter (histórico real de

@@ -90,6 +90,12 @@ export interface ClienteDuplicado {
   existe_en_siscommate: boolean | null;
 }
 
+/** Una página de resultados con paginación real (offset+total de la búsqueda, no del catálogo completo). */
+export interface Pagina<T> { total: number; rows: T[]; }
+
+/** Fila del catálogo de consignadores (consignor_catalog) — solo nombre, ver clientSync.js. */
+export interface Consignador { name: string; }
+
 /** Resultado de crear/actualizar un cliente — separa el guardado local del
  * intento de escribir en CUSTOMER.DBF real (best-effort, puede fallar sin
  * perder el guardado local). */
@@ -161,6 +167,12 @@ export const api = {
   contarClientes: () => pedir<{ total: number }>('/api/catalogs/clients/count'),
   sincronizarClientesSiscommate: () =>
     pedir<ResultadoSincronizarClientes>('/api/catalogs/clients/sincronizar-siscommate', { method: 'POST' }),
+  // Lista completa con paginación real — a diferencia de buscarClientes
+  // (usado también por el editor, capado a un puñado de resultados para
+  // autocompletar), esta trae el total REAL de la búsqueda para poder
+  // navegar hasta el final sin que nada quede invisible.
+  listaClientes: (q: string, limit: number, offset: number) =>
+    pedir<Pagina<Cliente>>(`/api/catalogs/clients/lista?q=${encodeURIComponent(q)}&limit=${limit}&offset=${offset}`),
 
   // Catálogo de consignadores (nombres de BOL.exporter, histórico real de
   // SISCOMMATE, consolidados por similitud)
@@ -170,6 +182,8 @@ export const api = {
   consignadoresDuplicados: () => pedir<string[][]>('/api/catalogs/consignors-siscommate/duplicados'),
   eliminarConsignadorSiscommate: (name: string) =>
     pedir<{ ok: true }>(`/api/catalogs/consignors-siscommate/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+  listaConsignadores: (q: string, limit: number, offset: number) =>
+    pedir<Pagina<Consignador>>(`/api/catalogs/consignors-siscommate/lista?q=${encodeURIComponent(q)}&limit=${limit}&offset=${offset}`),
 
   clientesDuplicados: () => pedir<ClienteDuplicado[][]>('/api/catalogs/clients/duplicados'),
   crearCliente: (c: Partial<Cliente>) =>
