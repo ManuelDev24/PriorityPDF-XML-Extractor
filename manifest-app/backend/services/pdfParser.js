@@ -9,6 +9,7 @@
 // El PDF debe ser digital (generado por un sistema), no un escaneo sin texto.
 
 const pdfParse = require('pdf-parse');
+const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js');
 
 /** @typedef {import('../types').ParsedManifest} ParsedManifest */
 /** @typedef {import('../types').ParsedBL} ParsedBL */
@@ -265,15 +266,103 @@ function collectPartyBlocks(lines, blIdx) {
   return blocks;  // [shipper, consignee, notify]
 }
 
+// ── Extracción posicional (pdfjs-dist) para pesos por fila ──────────────────
+// pdf-parse linealiza el PDF en texto plano en el orden en que el documento
+// dibuja los objetos, no en su orden visual real. Confirmado con un
+// manifiesto real de las islas (AU051S): el peso de cada fila va impreso en
+// la columna derecha de la MISMA fila que su B/L, pero pdf-parse lo separa
+// de esa fila y lo deja suelto en un bloque de números al inicio de cada
+// página, sin decir a qué fila pertenece cada uno — el código de abajo
+// (fondo común secuencial) asume que ese bloque trae un peso por fila en el
+// mismo orden, pero en AU051S ese bloque trae MENOS números de los que hay
+// filas (94 pares para 117 filas) y a veces el mismo par repetido varias
+// veces seguidas — así que ya desde la primera página con ese problema,
+// TODAS las filas siguientes quedan con el peso de otra fila (confirmado:
+// el peso total real de este manifiesto es ~2.95M kg; el fondo común solo
+// sumaba ~1.58M kg, casi la mitad perdida). Usando pdfjs-dist se lee la
+// posición (x, y) real de cada palabra y se toma el peso directamente de la
+// columna derecha de la fila real de cada B/L — sin adivinar nada.
+
+/**
+ * Agrupa los ítems de texto de cada página en filas por coordenada Y real.
+ * @param {Buffer} buffer
+ * @returns {Promise<Array<Array<Array<{str:string,x:number}>>>>} Por página, filas (de arriba hacia abajo), cada una con sus ítems (de izquierda a derecha)
+ */
+async function agruparFilasPosicionales(buffer) {
+  const doc = await pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
+  const paginas = [];
+  for (let p = 1; p <= doc.numPages; p++) {
+    const page = await doc.getPage(p);
+    const content = await page.getTextContent();
+    const porY = new Map();
+    content.items.forEach(raw => {
+      // content.items mezcla TextItem (con str/transform) y TextMarkedContent
+      // (marcadores de estructura, sin texto) — los pdf.js reales de este
+      // documento son todos TextItem, pero el tipo declarado es la unión.
+      const it = /** @type {{str: string, transform: number[]}} */ (raw);
+      const texto = it.str;
+      if (!texto || !texto.trim()) return;
+      const y = Math.round(it.transform[5]);
+      if (!porY.has(y)) porY.set(y, []);
+      porY.get(y).push({ str: texto.trim(), x: it.transform[4] });
+    });
+    const ysOrdenados = [...porY.keys()].sort((a, b) => b - a);
+    paginas.push(ysOrdenados.map(y => porY.get(y).sort((a, b) => a.x - b.x)));
+    page.cleanup();
+  }
+  return paginas;
+}
+
+/**
+ * Recorre las filas posicionales con la misma lógica de reconexión de
+ * contenedores huérfanos que usa parseCustoms1302 sobre el texto (mismo
+ * PREFIJOS_NO_BL, mismo criterio de contenedor/vehículo) y extrae, para cada
+ * fila real de B/L o contenedor, el peso en KG impreso en su propia columna
+ * derecha — el número decimal más a la derecha de la fila.
+ * @param {Array<Array<Array<{str:string,x:number}>>>} paginas
+ * @returns {Map<string, number[]>} Pesos en KG por B/L, en el orden en que aparecen sus filas
+ */
+function extraerPesosPosicionales(paginas) {
+  const PREFIJOS_NO_BL = /^(PALLET|BOX|LCL|CRATE|CARTON|DRUM|SKID|BUNDLE|ROLL|PACKAGE|PKG|LOOSE)$/i;
+  const pesosPorBl = new Map();
+  let lastBlNo = '';
+  paginas.forEach(filas => {
+    filas.forEach(fila => {
+      if (!fila.length) return;
+      const primero = fila[0].str;
+      const m = primero.match(/^([A-Z]{2,6})-(\d{5,10})$/);
+      let blNo = '';
+      if (m && !PREFIJOS_NO_BL.test(m[1])) {
+        blNo = m[1] + m[2];
+        lastBlNo = blNo;
+      } else {
+        if (!lastBlNo) return;
+        const cleaned = normContainerNo(primero);
+        const esContVin = isIsoContainer(cleaned) || /^[A-Z]{2}\d{8}$/i.test(cleaned);
+        if (!esContVin) return;
+        blNo = lastBlNo;
+      }
+      let kg = 0;
+      for (const it of fila) {
+        if (/^\d{1,3}(?:,\d{3})*\.\d{2}$/.test(it.str)) kg = parsePdfNum(it.str);
+      }
+      if (!pesosPorBl.has(blNo)) pesosPorBl.set(blNo, []);
+      pesosPorBl.get(blNo).push(kg);
+    });
+  });
+  return pesosPorBl;
+}
+
 /**
  * Parsea el formato US Customs 1302 (cargo manifest de Priority RORO).
  *
  * Es el único parser que produce cargoItems: genera una entrada por cada línea
  * del manifiesto, lo que permite varios ítems o vehículos por un mismo B/L.
  * @param {string} text Texto extraído del PDF
+ * @param {Map<string, number[]>} [pesosPosicionales] Pesos por B/L extraídos por posición (ver extraerPesosPosicionales) — si su conteo total no cuadra con las filas detectadas acá, se ignora y se usa el fondo común secuencial de siempre.
  * @returns {ParsedManifest}
  */
-function parseCustoms1302(text) {
+function parseCustoms1302(text, pesosPosicionales) {
   const header = {
     voyage_no:'', vessel_code:'', vessel_name:'', biz_company_code:'',
     loading_port:'', unloading_port:'', departure_date:'', arrival_date:'',
@@ -528,7 +617,12 @@ function parseCustoms1302(text) {
         desc.push(t);
         if (desc.join(' ').length > 400) break;
       }
-      e.goods = desc.join(' ').replace(/\s+/g, ' ').trim().substring(0, 300);
+      // La unidad de peso a veces queda pegada a la última línea de la
+      // descripción en vez de venir en su propia línea (confirmado en
+      // AU051S: "TOYOTA CAMRY-HV  KG" en una sola línea) — el corte de
+      // arriba no la separa porque la línea no es SOLO "KG"/"LBS", así que
+      // se recorta acá como último paso, ya con la descripción completa.
+      e.goods = desc.join(' ').replace(/\s+/g, ' ').trim().replace(/\s+(?:KG|LBS)$/i, '').substring(0, 300);
 
       // "— KG"/"— LBS" con guión (a diferencia de " KG"/" LBS" sin guión, que
       // es el caso normal cuyo número está diferido a la página siguiente):
@@ -589,19 +683,40 @@ function parseCustoms1302(text) {
   // A diferencia de pesoVacioExplicito, acá el dato SÍ existía en el
   // manifiesto real, solo que no en el recorte que llegó — por eso amerita
   // su propio aviso en vez de mezclarse con el de "— KG" genuinamente vacío.
+  // Si pdfjs-dist encontró exactamente una fila posicional por cada entrada
+  // detectada acá (mismo conteo total), el peso de cada entrada se lee
+  // directamente de su propia fila — no hay fondo común que pueda
+  // desalinearse, así que ninguna de las advertencias de peso de abajo
+  // aplica. Si el conteo no cuadra (formato distinto, u otra falla puntual
+  // de extracción), se cae al método secuencial de siempre.
+  const totalPosicional = pesosPosicionales
+    ? [...pesosPosicionales.values()].reduce((a, arr) => a + arr.length, 0)
+    : 0;
+  const usarPesoPosicional = !!pesosPosicionales && totalPosicional === allEntries.length;
+
   let pesosSinPagina = 0;
-  let weightPtr = 0;
-  allEntries.forEach(e => {
-    if (e.pesoVacioExplicito) {
-      const siguiente = allWeightsKg[weightPtr];
-      if (siguiente !== undefined && siguiente < 1) weightPtr++;
-      e.gross_weight = 0;
-      return;
-    }
-    if (weightPtr >= allWeightsKg.length) pesosSinPagina++;
-    e.gross_weight = weightPtr < allWeightsKg.length ? allWeightsKg[weightPtr] : 0;
-    weightPtr++;
-  });
+  if (usarPesoPosicional) {
+    const cursores = new Map();
+    allEntries.forEach(e => {
+      const idx = cursores.get(e.bl_no) || 0;
+      const pesos = pesosPosicionales.get(e.bl_no) || [];
+      e.gross_weight = pesos[idx] ?? 0;
+      cursores.set(e.bl_no, idx + 1);
+    });
+  } else {
+    let weightPtr = 0;
+    allEntries.forEach(e => {
+      if (e.pesoVacioExplicito) {
+        const siguiente = allWeightsKg[weightPtr];
+        if (siguiente !== undefined && siguiente < 1) weightPtr++;
+        e.gross_weight = 0;
+        return;
+      }
+      if (weightPtr >= allWeightsKg.length) pesosSinPagina++;
+      e.gross_weight = weightPtr < allWeightsKg.length ? allWeightsKg[weightPtr] : 0;
+      weightPtr++;
+    });
+  }
 
   // Consolidar B/Ls y extraer Contenedores y Cargo Items
   const blMap = new Map();
@@ -693,7 +808,10 @@ function parseCustoms1302(text) {
   const warnings = [];
   const totalWeightAsignado = bls.reduce((a, bl) => a + bl.gross_weight, 0);
   // Margen de 1 kg: redondeos de parsePdfNum entre páginas, no un error real.
-  if (Math.abs(totalWeightAsignado - totalWeightPdf) > 1) {
+  // En modo posicional (usarPesoPosicional) esta comparación no aplica: el
+  // "peso total impreso" de abajo viene del fondo común de página (el mismo
+  // que resultó incompleto/duplicado en AU051S), no del peso real de cada fila.
+  if (!usarPesoPosicional && Math.abs(totalWeightAsignado - totalWeightPdf) > 1) {
     warnings.push(
       `El peso total repartido entre los B/L (${totalWeightAsignado.toFixed(2)} kg) no coincide ` +
       `con el peso total impreso en el PDF (${totalWeightPdf.toFixed(2)} kg) — puede haberse ` +
@@ -887,7 +1005,14 @@ async function parsePdfManifest(buffer) {
 
   // Tipo 1 — US Customs 1302 (cargo manifest Priority RORO / SIGA / Inbound & Outbound)
   if (isCustoms1302(text)) {
-    const r = parseCustoms1302(text);
+    let pesosPosicionales;
+    try {
+      const paginas = await agruparFilasPosicionales(buffer);
+      pesosPosicionales = extraerPesosPosicionales(paginas);
+    } catch (err) {
+      console.error('No se pudo extraer posiciones del PDF para leer los pesos (se usa el método anterior):', err.message);
+    }
+    const r = parseCustoms1302(text, pesosPosicionales);
     if (r.bls.length) return r;
   }
 
@@ -931,4 +1056,5 @@ module.exports = {
   parsePdfParty, collectPartyBlocks,
   isCustoms1302, parseCustoms1302, parseGenericDga, parsePdfManifest,
   advertirContenedoresEnVariosBl,
+  agruparFilasPosicionales, extraerPesosPosicionales,
 };
