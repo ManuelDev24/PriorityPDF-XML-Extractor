@@ -185,6 +185,8 @@
  *   hacienda_item_code?: string,
  *   hacienda_tariff?: string,
  *   containers?: string[],
+ *   containerSizes?: Record<string, string>,
+ *   containerWeights?: Record<string, number>,
  *   cargoItems?: CargoItemRow[]
  * }} BLRow
  */

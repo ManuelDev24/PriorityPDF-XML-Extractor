@@ -8,6 +8,7 @@ import {
   manifiestos, manifiestosFiltrados, datosManifiesto, blActual, expandidos,
   pestana, seleccionarManifiesto, seleccionarBL, cargarManifiestos, cargarStats,
   toast, setEstado, sincronizarEstadoManifiesto, manifiestosEliminadosSiscommate,
+  contenedoresSinTamano,
 } from '../editor/store';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -36,7 +37,8 @@ function blIncompleto(bl: BL): boolean {
   // pasar sin problema.
   const esViajeSinSS = /^(AU|CF)/i.test((datosManifiesto.value?.manifest.voyage_no || '').trim());
   const sinSS = !esViajeSinSS && !bl.hacienda_client_ss && !bl.consignee_document_no;
-  return sinCodigo || sinSS;
+  // El TXT lleva el tamaño de cada contenedor; en blanco Hacienda rechaza el registro.
+  return sinCodigo || sinSS || contenedoresSinTamano(bl.bl_no) > 0;
 }
 const nuevoBlPara = ref<number | null>(null);
 const nuevoBlNo = ref('');

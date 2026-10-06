@@ -77,11 +77,15 @@ const puertoDescarga = computed({
   get: () => m.value.discharge_port || '',
   set: (v: string) => actualizarManifiesto('discharge_port', v),
 });
-const tarifa = computed({
-  get: () => bl.value.hacienda_tariff || '040',
-  set: (v: string) => actualizarBL('hacienda_tariff', v),
+// B/L con varios contenedores: el TXT reparte la SUMA de sus pesos. Si el peso
+// del B/L es distinto (suele ser el de un solo contenedor), se avisa.
+const sumaPesoContenedores = computed(() => {
+  const cs = contenedoresDelBL.value;
+  if (cs.length < 2 || cs.some(c => !c.peso)) return null;
+  return Math.round(cs.reduce((n, c) => n + c.peso, 0) * 100) / 100;
 });
-const libreArancel = computed(() => tarifa.value !== '045');
+const pesoBlDifiere = computed(() =>
+  sumaPesoContenedores.value !== null && Math.abs(sumaPesoContenedores.value - (Number(bl.value.gross_weight) || 0)) > 1);
 const contenedorHacienda = computed(() => bl.value.hacienda_container_no || contenedoresDelBL.value[0]?.container_no || '');
 
 function imoDelBuque(code: string) { return buques.value.find(v => v.code === code)?.imo ?? ''; }
@@ -131,12 +135,15 @@ function seleccionarTextoInput(e: FocusEvent) {
   window.setTimeout(() => el.select(), 0);
 }
 
-async function alCambiarTamano(id: number | null, size: string) {
-  if (!id) return;
+async function alCambiarTamano(containerNo: string, size: string) {
+  const d = datosManifiesto.value;
+  if (!d) return;
   try {
-    await api.actualizarTamano(id, size);
-    const c = datosManifiesto.value?.containers.find(ct => ct.id === id);
-    if (c) c.size = size;
+    // Por número de contenedor: si no tenía fila en containers, el servidor la crea.
+    const { container } = await api.fijarTamanoContenedor(d.manifest.id, containerNo, size);
+    const c = d.containers.find(ct => ct.container_no === container.container_no);
+    if (c) c.size = container.size;
+    else d.containers.push(container);
     setEstado('Tamaño guardado', new Date().toLocaleTimeString('es-PR'));
   } catch (e) { toast('Error guardando tamaño: ' + (e as Error).message, 'err'); }
 }
@@ -674,25 +681,6 @@ watch(() => bl.value?.id, () => {
             </Combobox>
             <p v-if="descItem" class="text-xs text-status-validated">{{ descItem }}</p>
           </div>
-          <div class="col-span-12 md:col-span-4 flex flex-col gap-1">
-            <Label class="text-xs">Tarifa (arbitrio)</Label>
-            <Select v-model="tarifa">
-              <SelectTrigger class="h-9 w-full bg-paper-raised text-xs"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="040">040 — Libre arancel</SelectItem>
-                <SelectItem value="045">045 — Carga general</SelectItem>
-                <!-- 020 y 048 confirmados contra un TXT real ya aceptado por
-                     SISCOMMATE (3309832.TXT / K1339: 020 en STEEL REBAR,
-                     048 en STEEL GALVANIZED TUBING) — antes no se podían
-                     seleccionar acá aunque son códigos válidos reales. Sin
-                     el nombre oficial exacto del arbitrio para confirmar el
-                     texto, se muestra solo el código. -->
-                <SelectItem value="020">020</SelectItem>
-                <SelectItem value="048">048</SelectItem>
-              </SelectContent>
-            </Select>
-            <p class="text-xs text-ink-faint">{{ libreArancel ? 'FOB será 0 en el TXT' : 'Incluye valor FOB' }}</p>
-          </div>
         </div>
 
         <div v-if="sugerencias.length" class="w-full flex flex-col gap-2 rounded-lg border border-blue-200 bg-blue-50/60 p-3">
@@ -798,7 +786,7 @@ watch(() => bl.value?.id, () => {
                   <Input :model-value="c.container_no" :disabled="!c.id" class="h-7 w-32 font-mono text-xs font-semibold text-accent"
                     @change="(e:Event) => alCambiarNumeroContenedor(c.id, (e.target as HTMLInputElement).value)" />
                 </div>
-                <Select :model-value="c.size" :disabled="!c.id" @update:model-value="(v) => alCambiarTamano(c.id, String(v))">
+                <Select :model-value="c.size" @update:model-value="(v) => alCambiarTamano(c.container_no, String(v))">
                   <SelectTrigger class="h-7 w-24 text-xs" :class="!c.size && 'border-danger bg-danger-soft'"><SelectValue placeholder="— tamaño —" /></SelectTrigger>
                   <SelectContent>
                     <SelectItem v-for="s in opcionesTamano(c.size)" :key="s" :value="s">{{ s }}</SelectItem>
@@ -828,11 +816,14 @@ watch(() => bl.value?.id, () => {
           <div class="col-span-12 flex flex-col gap-1 md:col-span-3">
             <Label class="text-xs">Peso bruto (kg)</Label>
             <Input type="number" step="0.01" :model-value="bl.gross_weight || 0" class="h-9 text-xs" @change="(e:Event) => actualizarBL('gross_weight', (e.target as HTMLInputElement).value)" />
+            <p v-if="pesoBlDifiere" class="text-[11px] leading-tight text-danger">
+              Los contenedores suman {{ sumaPesoContenedores }} kg; el TXT usa esa suma.
+              <button type="button" class="underline" @click="actualizarBL('gross_weight', String(sumaPesoContenedores))">Usar la suma</button>
+            </p>
           </div>
           <div class="col-span-12 flex flex-col gap-1 md:col-span-3">
             <Label class="text-xs">Valor FOB (USD)</Label>
-            <Input type="number" step="0.01" :model-value="bl.value || 0" class="h-9 text-xs" :class="libreArancel && 'opacity-50'"
-              :title="libreArancel ? '040 Libre arancel — se fuerza a 0 en el TXT' : ''"
+            <Input type="number" step="0.01" :model-value="bl.value || 0" class="h-9 text-xs"
               @change="(e:Event) => actualizarBL('value', (e.target as HTMLInputElement).value)" />
           </div>
           <div class="col-span-12 flex flex-col gap-1 md:col-span-2">

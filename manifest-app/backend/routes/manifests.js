@@ -13,7 +13,8 @@ const db = require('../db/connection');
 
 const { parseXmlManifest } = require('../services/xmlParser');
 const { parsePdfManifest, advertirContenedoresEnVariosBl } = require('../services/pdfParser');
-const { toSiscommatePort, generateFullTxt } = require('../services/txtGenerator');
+const { toSiscommatePort, generateFullTxt, contenedoresSinTamano, pesoMaximoPorLinea } = require('../services/txtGenerator');
+const { verificarTxt, pesosFueraDeRango } = require('../services/txtVerifier');
 const { validateForSubmission } = require('../services/blValidation');
 const { recalcularEstadoManifiesto } = require('./bl');
 
@@ -323,6 +324,16 @@ router.post('/api/manifests/upload', upload.single('xml'), async (req, res) => {
       const insCBL = db.prepare(`INSERT INTO container_bl (container_no,bl_no,manifest_id) VALUES (?,?,?)`);
       parsed.containerBLs.forEach(cb => insCBL.run(cb.container_no, cb.bl_no, manifestId));
     }
+    // Todo contenedor vinculado a un B/L necesita su fila en containers (donde
+    // vive el tamaño); si el parser lo vinculó sin listarlo, se crea vacío para
+    // que el editor lo marque en rojo y se le pueda dar tamaño.
+    db.prepare(`
+      INSERT INTO containers (manifest_id, container_no, size)
+      SELECT DISTINCT cb.manifest_id, cb.container_no, ''
+      FROM container_bl cb
+      WHERE cb.manifest_id=? AND cb.container_no<>''
+        AND NOT EXISTS (SELECT 1 FROM containers c WHERE c.manifest_id=cb.manifest_id AND c.container_no=cb.container_no)
+    `).run(manifestId);
 
     if (movidos.length) recalcularEstadoManifiesto(manifestId);
     res.json({
@@ -436,15 +447,38 @@ router.get('/api/manifests/:id/export-txt', (req, res) => {
   db.prepare('SELECT * FROM bl_cargo_items WHERE manifest_id=? ORDER BY seq').all(req.params.id).forEach(ci => {
     (cargoItemsByBl[ci.bl_id] = cargoItemsByBl[ci.bl_id] || []).push(ci);
   });
+  /** @type {Record<string, string>} */
+  const sizeByContainer = {};
+  /** @type {Record<string, number>} */
+  const weightByContainer = {};
+  db.prepare('SELECT container_no, size, gross_weight FROM containers WHERE manifest_id=?').all(req.params.id).forEach(c => {
+    sizeByContainer[c.container_no] = c.size;
+    weightByContainer[c.container_no] = c.gross_weight;
+  });
   bls.forEach(bl => {
     bl.containers = containersByBl[bl.bl_no] && containersByBl[bl.bl_no].length
       ? containersByBl[bl.bl_no]
       : [bl.hacienda_container_no || ''];
     if (!bl.hacienda_container_no) bl.hacienda_container_no = bl.containers[0] || '';
     bl.cargoItems = cargoItemsByBl[bl.id] || null;
+    bl.containerSizes = sizeByContainer;
+    bl.containerWeights = weightByContainer;
   });
 
+  // Hacienda rechaza el registro si el tamaño del contenedor va en blanco.
+  const sinTamano = bls.flatMap(bl => contenedoresSinTamano(bl).map(c => `${c} (B/L ${bl.bl_no})`));
+  if (sinTamano.length) {
+    return res.status(400).json({
+      error: `Falta el tamaño (20, 40, 45, 48, 53) de ${sinTamano.length} contenedor(es): ${sinTamano.join(', ')}. Corrígelos en el editor antes de exportar.`
+    });
+  }
+
   const txt = generateFullTxt(manifest, bls);
+
+  // Revisión final con las mismas reglas que aplica la web de Hacienda: si el
+  // TXT va a salir rechazado, mejor decirlo aquí con la línea exacta.
+  const problemas = [...pesosFueraDeRango(bls, pesoMaximoPorLinea), ...verificarTxt(txt)];
+  if (problemas.length) return res.status(400).json({ error: problemas.join(' | ') });
   // Antes el nombre era siempre igual (voyage_no fijo) — reexportar el mismo
   // manifiesto (p.ej. después de corregir un B/L) sobrescribía el TXT
   // anterior en la carpeta de descargas sin avisar. La marca de tiempo hace

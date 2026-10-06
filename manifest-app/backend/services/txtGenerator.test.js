@@ -7,6 +7,7 @@ const assert = require('node:assert');
 const {
   pad, padZ, sanitizeSS, toSiscommatePort, calcularPuertosDbf,
   generateTxtLine0, generateTxtLine1, generateTxtLine2, generateFullTxt,
+  normalizarTamano, contenedoresSinTamano,
 } = require('./txtGenerator');
 
 // ── Datos de ejemplo ─────────────────────────────────────────────────────────
@@ -34,6 +35,7 @@ const bl = {
   hacienda_item_code:    '391400',
   hacienda_tariff:       '045',
   hacienda_container_no: 'PRRU2010106',
+  containerSizes:        { PRRU2010106: '40', MSCU1234567: '53HC' },
   goods_name:            'PACKAGES CONTAINING PAINT',
   package_qty:           288,
   gross_weight:          12500.5,
@@ -102,7 +104,7 @@ test('línea 1 coloca cada campo en su posición documentada', () => {
   assert.strictEqual(l1.substring(76, 83), 'C      ',        'tipo C en [76:83]');
   assert.strictEqual(l1.substring(143, 146), 'DRP',          'puerto origen en [143:146]');
   assert.strictEqual(l1.substring(146, 149), 'XSJ',          'puerto descarga en [146:149]');
-  assert.strictEqual(l1.substring(186, 190), '045R',         'tarifa+R en [186:190]');
+  assert.strictEqual(l1.substring(186, 190), '040R',         'tamaño del contenedor+R en [186:190]');
   assert.strictEqual(l1.substring(190, 201), '01406530016',  'IVU en [190:201]');
 });
 
@@ -120,7 +122,7 @@ test('línea 2 coloca cada campo en su posición documentada', () => {
   assert.strictEqual(l2.substring(17, 22), '00288',       'cantidad en [17:22]');
   assert.strictEqual(l2.substring(22, 28), 'BOX   ',      'unidad en [22:28]');
   assert.strictEqual(l2.substring(28, 35), '1250050',     'peso ×100 en [28:35]');
-  assert.strictEqual(l2.substring(35, 38), '045',         'tarifa en [35:38]');
+  assert.strictEqual(l2.substring(35, 38), '040',         'tamaño del contenedor en [35:38]');
   assert.strictEqual(l2.substring(38, 159), pad('PACKAGES CONTAINING PAINT', 121), 'descripción en [38:159]');
   assert.strictEqual(l2.substring(159, 164), '00288',     'cantidad repetida en [159:164]');
   assert.strictEqual(l2.substring(164, 179), padZ('391400', 15), 'código Hacienda en [164:179]');
@@ -128,21 +130,56 @@ test('línea 2 coloca cada campo en su posición documentada', () => {
 });
 
 // ── Reglas de negocio ────────────────────────────────────────────────────────
-test('tarifa 040 (libre arancel) fuerza el valor FOB a cero', () => {
-  const libre = { ...bl, hacienda_tariff: '040', value: 9999.99 };
-  const l1 = generateTxtLine1(libre, manifest, 'PRRU2010106');
-  assert.strictEqual(l1.substring(153, 162), '000000000', 'FOB debe ser 0 con tarifa 040');
+test('el FOB es siempre el valor del B/L, aunque haya una tarifa 040 guardada', () => {
+  const vieja = { ...bl, hacienda_tariff: '040', value: 9999.99 };
+  const l1 = generateTxtLine1(vieja, manifest, 'PRRU2010106');
+  assert.strictEqual(l1.substring(153, 162), '000999999');
 });
 
-test('tarifa 045 sí incluye el valor FOB en centavos', () => {
+test('el valor FOB sale en centavos', () => {
   const l1 = generateTxtLine1(bl, manifest, 'PRRU2010106');
   assert.strictEqual(l1.substring(153, 162), '000123456', '1234.56 USD → 123456 centavos');
 });
 
-test('sin tarifa, el campo tarifa+R queda en blanco', () => {
+test('el tamaño sale del contenedor de cada línea, no de la tarifa del B/L', () => {
   const sinTarifa = { ...bl, hacienda_tariff: '' };
-  const l1 = generateTxtLine1(sinTarifa, manifest, 'PRRU2010106');
-  assert.strictEqual(l1.substring(186, 190), '    ');
+  const l1 = generateTxtLine1(sinTarifa, manifest, 'MSCU1234567');
+  const l2 = generateTxtLine2(sinTarifa, 'MSCU1234567', 1, null);
+  assert.strictEqual(l1.substring(186, 190), '053R', '53HC → 053R');
+  assert.strictEqual(l2.substring(35, 38), '053');
+  assert.strictEqual(l1.length, 205);
+});
+
+test('contenedor sin tamaño conocido deja el campo en blanco y se detecta', () => {
+  const sinTam = { ...bl, containers: ['PRRU2010106', 'XXXX9999999'] };
+  assert.strictEqual(generateTxtLine1(sinTam, manifest, 'XXXX9999999').substring(186, 190), '    ');
+  assert.deepStrictEqual(contenedoresSinTamano(sinTam), ['XXXX9999999']);
+  assert.deepStrictEqual(contenedoresSinTamano({ ...bl, hacienda_container_no: '', containers: [''] }), []);
+});
+
+test('B/L con varios contenedores reparte la SUMA de los contenedores, no el peso del B/L', () => {
+  const multi = {
+    ...bl, gross_weight: 9500, containers: ['PRRU2010106', 'MSCU1234567'],
+    containerWeights: { PRRU2010106: 20000, MSCU1234567: 27500 },
+  };
+  // (20000 + 27500) / 2 = 23750 kg → 2375000
+  assert.strictEqual(generateTxtLine2(multi, 'PRRU2010106', 2, null).substring(28, 35), '2375000');
+});
+
+test('sin pesos de contenedor confiables se reparte el peso del B/L', () => {
+  const sinPeso = {
+    ...bl, gross_weight: 9500, containers: ['PRRU2010106', 'MSCU1234567'],
+    containerWeights: { PRRU2010106: 20000, MSCU1234567: 0 },
+  };
+  assert.strictEqual(generateTxtLine2(sinPeso, 'PRRU2010106', 2, null).substring(28, 35), '0475000');
+});
+
+test('normalizarTamano sigue la regla del bridge', () => {
+  assert.strictEqual(normalizarTamano('20'), '020');
+  assert.strictEqual(normalizarTamano('40HC'), '040');
+  assert.strictEqual(normalizarTamano('053'), '053');
+  assert.strictEqual(normalizarTamano('RORO'), '');
+  assert.strictEqual(normalizarTamano(null), '');
 });
 
 test('sin contenedor, la unidad es LSE en vez de BOX', () => {

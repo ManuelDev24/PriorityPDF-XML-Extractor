@@ -782,7 +782,9 @@ function parseCustoms1302(text, pesosPosicionales) {
           gross_weight: e.gross_weight,
           net_weight: 0,
           seal_no1: '',
-          size: e.size || '40'
+          // Sin tamaño en el PDF queda vacío (el editor lo marca en rojo): un
+          // '40' inventado terminaba en el TXT como si fuera real.
+          size: e.size || ''
         });
       }
     }

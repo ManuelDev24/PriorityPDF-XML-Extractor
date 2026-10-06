@@ -8,7 +8,7 @@ import {
   datosManifiesto, blActual, stats, estado, estadoDerecha, toastMsg, toastTipo,
   cargarCatalogos, cargarManifiestos, seleccionarManifiesto, cargarStats,
   guardarPendientes, toast, setEstado, restaurarSeleccion,
-  manifiestosEliminadosSiscommate,
+  manifiestosEliminadosSiscommate, sinTamanoEnValidados,
 } from '../editor/store';
 import Sidebar from './Sidebar.vue';
 import EditorPanel from './EditorPanel.vue';
@@ -598,7 +598,12 @@ onMounted(async () => {
           <span class="text-xs text-ink-faint">{{ datosManifiesto.manifest.vessel_name || '' }}</span>
           <div class="flex-1"></div>
           <Button variant="outline" size="sm" :disabled="!blActual" @click="blActual && verTxt(blActual.id)"><Eye class="size-3.5" />Ver TXT</Button>
-          <Button size="sm" @click="exportarTxt"><FileOutput class="size-3.5" />Exportar TXT</Button>
+          <Button size="sm" :variant="sinTamanoEnValidados ? 'destructive' : 'default'"
+            :title="sinTamanoEnValidados ? `Faltan ${sinTamanoEnValidados} tamaño(s) de contenedor en B/L validados; el export se bloqueará` : ''"
+            @click="exportarTxt">
+            <FileOutput class="size-3.5" />Exportar TXT
+            <span v-if="sinTamanoEnValidados" class="ml-1 rounded-full bg-destructive/20 px-1.5 text-[11px]">{{ sinTamanoEnValidados }} sin tamaño</span>
+          </Button>
           <Button size="sm" variant="outline" class="border-status-siscommate text-status-siscommate hover:bg-status-siscommate-soft hover:text-status-siscommate" :disabled="enviando" @click="pushSiscommate">
             <Loader2 v-if="enviando" class="size-3.5 animate-spin" /><DatabaseZap v-else class="size-3.5" />
             {{ enviando ? 'Guardando...' : 'Guardar en SISCOMMATE' }}

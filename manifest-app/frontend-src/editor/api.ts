@@ -68,6 +68,7 @@ export interface Contenedor {
   container_type: string;
   size?: string;
   amount?: number;
+  gross_weight?: number | null;
 }
 
 export interface VinculoContenedor {
@@ -261,6 +262,8 @@ export const api = {
   // Contenedores
   actualizarTamano: (id: number, size: string) =>
     pedir<{ ok: true }>(`/api/containers/${id}`, cuerpo('PUT', { size })),
+  fijarTamanoContenedor: (manifestId: number, containerNo: string, size: string) =>
+    pedir<{ ok: true; container: Contenedor }>(`/api/manifests/${manifestId}/containers-size`, cuerpo('PUT', { container_no: containerNo, size })),
   actualizarContenedor: (id: number, campos: { size?: string; container_no?: string }) =>
     pedir<{ ok: true; container_no: string }>(`/api/containers/${id}`, cuerpo('PUT', campos)),
   eliminarContenedorDeBL: (blId: number, containerNo: string) =>

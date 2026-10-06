@@ -312,6 +312,14 @@ router.get('/api/bl/:id/txt-preview', (req, res) => {
   const carrier = db.prepare('SELECT ivu FROM carriers WHERE code=?').get(bl.carrier_code);
   bl.carrier_ivu = carrier ? carrier.ivu : '';
 
+  const containerSizes = {};
+  const containerWeights = {};
+  db.prepare('SELECT container_no, size, gross_weight FROM containers WHERE manifest_id=?').all(bl.manifest_id)
+    .forEach(c => { containerSizes[c.container_no] = c.size; containerWeights[c.container_no] = c.gross_weight; });
+  bl.containerSizes = containerSizes;
+  bl.containerWeights = containerWeights;
+  bl.containers = containerNos;
+
   // Un par línea1+línea2 por contenedor (igual que el TXT real)
   const pairs = containerNos.map(containerNo => ({
     containerNo,
@@ -352,6 +360,34 @@ router.put('/api/containers/:id', (req, res) => {
   });
   actualizar();
   res.json({ ok: true, container_no: nuevoNo });
+});
+
+// Fija el tamaño de un contenedor por su número, creando la fila en containers
+// si no existe. Hay contenedores que están en container_bl (el B/L los lista)
+// pero sin fila propia — sin id el editor no podía darles tamaño y el TXT
+// salía con el campo en blanco.
+router.put('/api/manifests/:manifestId/containers-size', (req, res) => {
+  const manifestId = Number(req.params.manifestId);
+  const containerNo = String(req.body?.container_no || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const size = String(req.body?.size || '').trim();
+  if (!containerNo) return res.status(400).json({ error: 'Falta el número de contenedor' });
+  if (!size) return res.status(400).json({ error: 'Falta el tamaño' });
+  if (!db.prepare('SELECT 1 FROM manifests WHERE id=?').get(manifestId)) {
+    return res.status(404).json({ error: 'Manifiesto no encontrado' });
+  }
+  const vinculado = db.prepare('SELECT 1 FROM container_bl WHERE container_no=? AND manifest_id=?').get(containerNo, manifestId);
+  const existente = db.prepare('SELECT id FROM containers WHERE container_no=? AND manifest_id=?').get(containerNo, manifestId);
+  if (!vinculado && !existente) return res.status(404).json({ error: 'Ese contenedor no pertenece al manifiesto' });
+
+  let id;
+  if (existente) {
+    id = existente.id;
+    db.prepare('UPDATE containers SET size=? WHERE id=?').run(size, id);
+  } else {
+    id = db.prepare('INSERT INTO containers (manifest_id,container_no,size) VALUES (?,?,?)')
+      .run(manifestId, containerNo, size).lastInsertRowid;
+  }
+  res.json({ ok: true, container: db.prepare('SELECT * FROM containers WHERE id=?').get(id) });
 });
 
 // Quita un contenedor de la lista "Contenedores asociados" de UN B/L — para

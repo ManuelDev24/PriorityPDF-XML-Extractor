@@ -256,6 +256,23 @@ export async function restaurarSeleccion() {
   if (m) pestana.value = completado(m) ? 'completed' : 'active';
 }
 
+/** Cuántos contenedores de un B/L no tienen tamaño (el TXT los llevaría en blanco). */
+export function contenedoresSinTamano(blNo: string): number {
+  const d = datosManifiesto.value;
+  if (!d) return 0;
+  return d.container_bl.filter(c => {
+    if (c.bl_no !== blNo || !c.container_no) return false;
+    return !d.containers.find(ct => ct.container_no === c.container_no)?.size;
+  }).length;
+}
+
+/** Contenedores sin tamaño en los B/L validados — los que entran al export. */
+export const sinTamanoEnValidados = computed(() => {
+  const d = datosManifiesto.value;
+  if (!d) return 0;
+  return d.bls.filter(b => b.status === 'validado').reduce((n, b) => n + contenedoresSinTamano(b.bl_no), 0);
+});
+
 /** Contenedores vinculados al B/L abierto, con su tamaño. */
 export const contenedoresDelBL = computed(() => {
   const d = datosManifiesto.value;
@@ -265,6 +282,6 @@ export const contenedoresDelBL = computed(() => {
     .filter(c => c.bl_no === bl.bl_no)
     .map(c => {
       const full = d.containers.find(ct => ct.container_no === c.container_no);
-      return { container_no: c.container_no, id: full?.id ?? null, size: full?.size ?? '', amount: full?.amount ?? 0 };
+      return { container_no: c.container_no, id: full?.id ?? null, size: full?.size ?? '', amount: full?.amount ?? 0, peso: Number(full?.gross_weight) || 0 };
     });
 });

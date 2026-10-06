@@ -5,7 +5,7 @@
 // IMPORTANTE (Fase B): hoy la comunicación es HTTP contra SiscommateBridge.exe
 // (C#), que corre en el servidor y escribe en las tablas DBF de Visual FoxPro.
 // Ese bridge NO puede modificarse desde aquí, y hoy descarta cuatro campos que
-// el operador sí llena: docking_number, hacienda_tariff, hacienda_client_ss/ivu
+// el operador sí llena: docking_number, hacienda_client_ss/ivu
 // y el detalle de bl_cargo_items. Cuando se resuelva el acceso al esquema DBF,
 // la Fase B reemplaza la implementación de este archivo por escritura directa
 // vía VFPOLEDB — sin tocar las rutas que lo consumen.
