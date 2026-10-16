@@ -8,6 +8,7 @@ const db = require('../db/connection');
 /** @typedef {import('../types').BLRow} BLRow */
 /** @typedef {import('../types').CargoItemRow} CargoItemRow */
 const { generateTxtLine1, generateTxtLine2 } = require('../services/txtGenerator');
+const { moverBl } = require('../services/blMove');
 
 const router = express.Router();
 
@@ -124,20 +125,6 @@ router.put('/api/bl/mover-lote', (req, res) => {
   // mismo lote, para que tampoco choquen entre ellos).
   let siguienteSeq = (db.prepare('SELECT COALESCE(MAX(sort_seq), -1) AS m FROM bills_of_lading WHERE manifest_id=?').get(destinoId).m) + 1;
 
-  const moverUno = db.transaction((bl, seq) => {
-    const origenId = bl.manifest_id;
-    db.prepare('UPDATE bills_of_lading SET manifest_id=?, sort_seq=? WHERE id=?').run(destinoId, seq, bl.id);
-    db.prepare('UPDATE container_bl SET manifest_id=? WHERE bl_no=? AND manifest_id=?')
-      .run(destinoId, bl.bl_no, origenId);
-    db.prepare(`
-      UPDATE containers SET manifest_id=?
-      WHERE manifest_id=?
-        AND container_no IN (SELECT container_no FROM container_bl WHERE bl_no=? AND manifest_id=?)
-        AND container_no NOT IN (SELECT container_no FROM container_bl WHERE manifest_id=?)
-    `).run(destinoId, origenId, bl.bl_no, destinoId, origenId);
-    db.prepare('UPDATE bl_cargo_items SET manifest_id=? WHERE bl_id=?').run(destinoId, bl.id);
-  });
-
   blIds.forEach(id => {
     /** @type {BLRow} */
     const bl = db.prepare('SELECT * FROM bills_of_lading WHERE id=?').get(id);
@@ -148,7 +135,7 @@ router.put('/api/bl/mover-lote', (req, res) => {
       return;
     }
     origenesAfectados.add(bl.manifest_id);
-    moverUno(bl, siguienteSeq++);
+    moverBl(db, bl, destinoId, siguienteSeq++);
     movidos.push({ id: bl.id, bl_no: bl.bl_no });
   });
 
@@ -271,19 +258,7 @@ router.put('/api/bl/:id/mover', (req, res) => {
   // sort_seq de su documento original y aparece intercalado en el destino
   // en vez de al final.
   const nuevoSeq = (db.prepare('SELECT COALESCE(MAX(sort_seq), -1) AS m FROM bills_of_lading WHERE manifest_id=?').get(destinoId).m) + 1;
-  const mover = db.transaction(() => {
-    db.prepare('UPDATE bills_of_lading SET manifest_id=?, sort_seq=? WHERE id=?').run(destinoId, nuevoSeq, bl.id);
-    db.prepare('UPDATE container_bl SET manifest_id=? WHERE bl_no=? AND manifest_id=?')
-      .run(destinoId, bl.bl_no, origenId);
-    db.prepare(`
-      UPDATE containers SET manifest_id=?
-      WHERE manifest_id=?
-        AND container_no IN (SELECT container_no FROM container_bl WHERE bl_no=? AND manifest_id=?)
-        AND container_no NOT IN (SELECT container_no FROM container_bl WHERE manifest_id=?)
-    `).run(destinoId, origenId, bl.bl_no, destinoId, origenId);
-    db.prepare('UPDATE bl_cargo_items SET manifest_id=? WHERE bl_id=?').run(destinoId, bl.id);
-  });
-  mover();
+  moverBl(db, bl, destinoId, nuevoSeq);
 
   const status_anterior = recalcularEstadoManifiesto(origenId);
   const status_nuevo = recalcularEstadoManifiesto(destinoId);

@@ -6,6 +6,7 @@
 
 const db = require('./connection');
 const { VESSELS, PORT_MAPPINGS } = require('./catalogDefaults');
+const { rellenarViajeDeEnvio } = require('../services/siscommateEnvio');
 
 // Agrega una columna solo si no existe todavía
 /**
@@ -93,6 +94,11 @@ function runMigrations({
   // ya existe en MANIFEST — con esta columna, push-siscommate solo manda
   // los B/L que todavía no tienen esta marca, en vez de fallar por completo.
   addColumnIfMissing('bills_of_lading', 'siscommate_sent_at',  'TEXT');
+  // Viaje de SISCOMMATE donde está la copia de este B/L. La fecha de arriba
+  // viaja con el B/L cuando se mueve a otro viaje, pero la copia en SISCOMMATE
+  // se queda donde se envió — sin esta columna el push del viaje nuevo creía
+  // que el B/L ya estaba enviado y lo salteaba (ver services/siscommateEnvio.js).
+  addColumnIfMissing('bills_of_lading', 'siscommate_voyage_no', 'TEXT');
 
   // Cantidad de bultos por item de carga. txtGenerator ya la escribía
   // (src.package_qty || bl.package_qty) desde antes de que existiera esta
@@ -182,6 +188,9 @@ function runMigrations({
     bl_count    INTEGER NOT NULL DEFAULT 0,
     pushed_at   TEXT    NOT NULL DEFAULT (datetime('now'))
   )`);
+  // B/L enviados antes de existir siscommate_voyage_no: se deduce el viaje
+  // real con este historial (por eso va DESPUÉS de crear la tabla).
+  rellenarViajeDeEnvio(db);
 
   // ── Items de carga múltiples por B/L (opcionalmente por contenedor) ────────
   db.exec(`CREATE TABLE IF NOT EXISTS bl_cargo_items (

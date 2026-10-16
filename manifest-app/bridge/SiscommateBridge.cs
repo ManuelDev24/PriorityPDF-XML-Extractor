@@ -202,6 +202,16 @@ class SiscommateBridge
                         string result2 = EliminarManifiesto(voyage2);
                         Send(resp, 200, "{\"ok\":true,\"msg\":\"" + EscJson(result2) + "\"}");
                     }
+                    // Retira UN B/L de un viaje ya guardado (BOL+BOLCONT+BOLITEM de ese
+                    // bolno). Lo usa Node cuando un B/L enviado se movio a otro viaje,
+                    // para que no quede duplicado en SISCOMMATE.
+                    else if (method == "POST" && path == "/eliminar-bl")
+                    {
+                        string bodyEb = new StreamReader(req.InputStream, Encoding.UTF8).ReadToEnd();
+                        var dataEb = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(bodyEb);
+                        string resultEb = EliminarBlDeManifiesto(GetStr(dataEb, "voyage"), GetStr(dataEb, "bl_no"));
+                        Send(resp, 200, "{\"ok\":true,\"msg\":\"" + EscJson(resultEb) + "\"}");
+                    }
                     // Crea un cliente nuevo directo en CUSTOMER.DBF — el catálogo local
                     // `clients` es un caché, CUSTOMER es la fuente real (ver
                     // services/clientSync.js). El nombre es la única clave que
@@ -719,6 +729,46 @@ class SiscommateBridge
             { cmd.Parameters.AddWithValue("manifest", voyageNo); nManifest = cmd.ExecuteNonQuery(); }
 
             return "Eliminado viaje " + voyageNo + ": " + nManifest + " manifest, " +
+                   nBol + " bol, " + nBolitem + " bolitem, " + nBolcont + " bolcont";
+        }
+    }
+
+    /**
+     * Borra UN B/L de un viaje (BOL+BOLCONT+BOLITEM con ese manifest+bolno),
+     * sin tocar el MANIFEST ni el resto de los B/L. Igual que
+     * EliminarManifiesto, VFPOLEDB lo borra de forma logica. Se niega a actuar
+     * si no hay ningun BOL que borrar, para que un numero mal escrito no
+     * parezca un exito.
+     */
+    static string EliminarBlDeManifiesto(string voyageNo, string blNo)
+    {
+        if (string.IsNullOrWhiteSpace(voyageNo)) throw new Exception("Falta el numero de viaje.");
+        if (string.IsNullOrWhiteSpace(blNo))     throw new Exception("Falta el numero de B/L.");
+
+        using (var conn = new OleDbConnection(GetConnectionString()))
+        {
+            conn.Open();
+            int nBol;
+            using (var cmd = new OleDbCommand("SELECT COUNT(*) FROM BOL WHERE manifest = ? AND bolno = ?", conn))
+            {
+                cmd.Parameters.AddWithValue("manifest", voyageNo);
+                cmd.Parameters.AddWithValue("bolno", blNo);
+                nBol = Convert.ToInt32(cmd.ExecuteScalar());
+            }
+            if (nBol == 0)
+                throw new Exception("El B/L " + blNo + " no esta en el viaje " + voyageNo + " de SISCOMMATE.");
+
+            int nBolitem, nBolcont;
+            using (var cmd = new OleDbCommand("DELETE FROM BOLITEM WHERE manifest = ? AND bolno = ?", conn))
+            { cmd.Parameters.AddWithValue("manifest", voyageNo); cmd.Parameters.AddWithValue("bolno", blNo); nBolitem = cmd.ExecuteNonQuery(); }
+
+            using (var cmd = new OleDbCommand("DELETE FROM BOLCONT WHERE manifest = ? AND bolno = ?", conn))
+            { cmd.Parameters.AddWithValue("manifest", voyageNo); cmd.Parameters.AddWithValue("bolno", blNo); nBolcont = cmd.ExecuteNonQuery(); }
+
+            using (var cmd = new OleDbCommand("DELETE FROM BOL WHERE manifest = ? AND bolno = ?", conn))
+            { cmd.Parameters.AddWithValue("manifest", voyageNo); cmd.Parameters.AddWithValue("bolno", blNo); nBol = cmd.ExecuteNonQuery(); }
+
+            return "Retirado B/L " + blNo + " del viaje " + voyageNo + ": " +
                    nBol + " bol, " + nBolitem + " bolitem, " + nBolcont + " bolcont";
         }
     }

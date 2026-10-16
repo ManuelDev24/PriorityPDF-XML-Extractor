@@ -11,8 +11,9 @@ const db = require('../db/connection');
 /** @typedef {import('../types').ContainerBLRow} ContainerBLRow */
 /** @typedef {import('../types').CargoItemRow} CargoItemRow */
 /** @typedef {import('../types').BridgeContainer} BridgeContainer */
-const { getBridgeStatus, getLote, pushManifest, consultarManifiesto } = require('../services/siscommateClient');
+const { getBridgeStatus, getLote, pushManifest, consultarManifiesto, eliminarBlSiscommate } = require('../services/siscommateClient');
 const { validateForSubmission } = require('../services/blValidation');
+const { separarPorEnviar, viajesAnterioresARetirar } = require('../services/siscommateEnvio');
 
 const router = express.Router();
 
@@ -46,10 +47,12 @@ router.post('/api/manifests/:id/push-siscommate', async (req, res) => {
     // Reenvío incremental: el bridge rechaza con error un viaje cuyo MANIFEST
     // ya existe, así que si se valida un B/L nuevo DESPUÉS de un primer push
     // ya no se podía enviar nada sin borrar el viaje completo primero. Ahora
-    // solo se manda lo que todavía no tiene siscommate_sent_at — si ya se
-    // envió todo, ni siquiera se llama al bridge, se avisa y ya.
-    const porEnviar = validBls.filter(bl => !bl.siscommate_sent_at);
-    const yaEnviados = validBls.length - porEnviar.length;
+    // solo se manda lo que todavía no está en ESTE viaje de SISCOMMATE — si ya
+    // se envió todo, ni siquiera se llama al bridge, se avisa y ya. "Ya está"
+    // significa enviado a este viaje, no solo "tiene fecha de envío": un B/L
+    // que se envió dentro de otro viaje y luego se movió aquí sigue pendiente
+    // (ver services/siscommateEnvio.js).
+    const { porEnviar, yaEnviados } = separarPorEnviar(validBls, manifest.voyage_no);
     if (!porEnviar.length) {
       return res.json({
         ok: true,
@@ -117,10 +120,42 @@ router.post('/api/manifests/:id/push-siscommate', async (req, res) => {
 
     // Marcar SOLO los B/L que de verdad se acaban de enviar — así un push
     // posterior sabe cuáles quedan pendientes sin volver a preguntarle a
-    // SISCOMMATE.
-    const marcarEnviado = db.prepare(`UPDATE bills_of_lading SET siscommate_sent_at=datetime('now') WHERE id=?`);
-    const marcarTodos = db.transaction(() => { porEnviar.forEach(bl => marcarEnviado.run(bl.id)); });
+    // SISCOMMATE. Se anota también EN QUÉ viaje quedó cada uno, para que un
+    // movimiento posterior a otro viaje no lo haga pasar por ya enviado allá.
+    const marcarEnviado = db.prepare(`UPDATE bills_of_lading SET siscommate_sent_at=datetime('now'), siscommate_voyage_no=? WHERE id=?`);
+    const marcarTodos = db.transaction(() => { porEnviar.forEach(bl => marcarEnviado.run(manifest.voyage_no, bl.id)); });
     marcarTodos();
+
+    // B/L que se enviaron antes dentro de OTRO viaje y luego se movieron a este:
+    // su copia vieja sigue en SISCOMMATE y dejaría el B/L duplicado. Se retira
+    // solo DESPUÉS de que el envío nuevo salió bien, así un fallo aquí nunca
+    // deja el B/L sin ninguna copia. Un fallo se avisa, no bloquea el envío.
+    const retirados = [];
+    const retiradosConFallo = [];
+    const retirar = viajesAnterioresARetirar(porEnviar, manifest.voyage_no);
+    for (const { bl, voyage_no: viajeViejo } of retirar) {
+      // Si otro B/L local con el mismo número sigue legítimamente en ese
+      // viaje, la copia de allá es suya — no se toca.
+      const reclamado = db.prepare(`
+        SELECT 1 FROM bills_of_lading o JOIN manifests m ON m.id = o.manifest_id
+        WHERE o.bl_no=? AND o.id<>? AND m.voyage_no=?
+      `).get(bl.bl_no, bl.id, viajeViejo);
+      if (reclamado) continue;
+      try {
+        await eliminarBlSiscommate(viajeViejo, bl.bl_no);
+        retirados.push({ bl_no: bl.bl_no, viaje: viajeViejo });
+      } catch (err) {
+        retiradosConFallo.push({ bl_no: bl.bl_no, viaje: viajeViejo, error: err.message });
+      }
+    }
+    if (retiradosConFallo.length) {
+      warnings.push(
+        `${retiradosConFallo.length === 1 ? '1 B/L se envió' : `${retiradosConFallo.length} B/L se enviaron`} a este viaje pero su copia anterior NO se pudo retirar de SISCOMMATE ` +
+        `(${retiradosConFallo.map(r => `${r.bl_no} en ${r.viaje}`).join(', ')}). ` +
+        `${retiradosConFallo.length === 1 ? 'Quedó duplicado — bórralo' : 'Quedaron duplicados — bórralos'} a mano del viaje anterior` +
+        (retiradosConFallo.some(r => /404|rutas|no existe/i.test(r.error)) ? ', o actualiza SiscommateBridge.exe en el servidor para que lo haga solo.' : '.')
+      );
+    }
 
     // Historial: el lote es lo único que permite ubicar este envío en la base
     // real de SISCOMMATE después, y antes no se guardaba en ningún lado.
@@ -141,6 +176,7 @@ router.post('/api/manifests/:id/push-siscommate', async (req, res) => {
       bls: result.bls,
       enviados: porEnviar.length,
       ya_enviados: yaEnviados,
+      retirados_de_viaje_anterior: retirados,
       warnings,
     });
   } catch (err) {

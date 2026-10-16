@@ -287,6 +287,19 @@ function actualizarClienteSiscommate(nombreOriginal, datos) {
 }
 
 /**
+ * Retira UN B/L de un viaje de SISCOMMATE (BOL + BOLCONT + BOLITEM de ese
+ * bolno), dejando el resto del viaje intacto. Lo usa el push cuando un B/L ya
+ * enviado se movió a otro viaje: sin esto quedaría duplicado. Requiere la
+ * versión del bridge con /eliminar-bl — una vieja contesta 404 y esto rechaza.
+ * @param {string} voyageNo Viaje donde está la copia a retirar
+ * @param {string} blNo
+ * @returns {Promise<{ok: true, msg: string}>}
+ */
+function eliminarBlSiscommate(voyageNo, blNo) {
+  return bridgeRequest('POST', '/eliminar-bl', { voyage: voyageNo, bl_no: blNo });
+}
+
+/**
  * Elimina un cliente de CUSTOMER.DBF por nombre exacto. Igual que
  * actualizarClienteSiscommate, filas_afectadas dice cuántas filas reales se
  * tocaron (0 = no se encontró, más de 1 = el nombre no era único).
@@ -397,7 +410,7 @@ module.exports = {
   getBridgeConfig, bridgeRequest,
   getBridgeStatus, getLote, pushManifest, consultarManifiesto, buscarClientesSiscommate,
   analizarItemClienteTodos, analizarItemExportadorTodos, limpiarTextoLibre, calcularPackageUnitCode,
-  obtenerMuestra, crearClienteSiscommate, actualizarClienteSiscommate, eliminarClienteSiscommate,
+  obtenerMuestra, crearClienteSiscommate, actualizarClienteSiscommate, eliminarClienteSiscommate, eliminarBlSiscommate,
   obtenerTablaCompleta, actualizarBolSiscommate, actualizarBolcontSiscommate, actualizarBolitemSiscommate,
   obtenerExportadoresSiscommate,
   BRIDGE_TIMEOUT_MS,

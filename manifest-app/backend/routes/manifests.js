@@ -17,6 +17,7 @@ const { toSiscommatePort, generateFullTxt, contenedoresSinTamano, pesoMaximoPorL
 const { verificarTxt, pesosFueraDeRango } = require('../services/txtVerifier');
 const { validateForSubmission } = require('../services/blValidation');
 const { recalcularEstadoManifiesto } = require('./bl');
+const { moverBl } = require('../services/blMove');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -245,19 +246,6 @@ router.post('/api/manifests/upload', upload.single('xml'), async (req, res) => {
     const movidos = [];
     const omitidos = [];
     if (moverIds.length) {
-      const moverUno = db.transaction((bl, seq) => {
-        const origenId = bl.manifest_id;
-        db.prepare('UPDATE bills_of_lading SET manifest_id=?, sort_seq=? WHERE id=?').run(manifestId, seq, bl.id);
-        db.prepare('UPDATE container_bl SET manifest_id=? WHERE bl_no=? AND manifest_id=?')
-          .run(manifestId, bl.bl_no, origenId);
-        db.prepare(`
-          UPDATE containers SET manifest_id=?
-          WHERE manifest_id=?
-            AND container_no IN (SELECT container_no FROM container_bl WHERE bl_no=? AND manifest_id=?)
-            AND container_no NOT IN (SELECT container_no FROM container_bl WHERE manifest_id=?)
-        `).run(manifestId, origenId, bl.bl_no, manifestId, origenId);
-        db.prepare('UPDATE bl_cargo_items SET manifest_id=? WHERE bl_id=?').run(manifestId, bl.id);
-      });
       moverIds.forEach(id => {
         const bl = db.prepare('SELECT * FROM bills_of_lading WHERE id=?').get(id);
         if (!bl) { omitidos.push({ id, motivo: 'No encontrado' }); return; }
@@ -266,7 +254,7 @@ router.post('/api/manifests/upload', upload.single('xml'), async (req, res) => {
           omitidos.push({ id, bl_no: bl.bl_no, motivo: `Ya existe un B/L "${bl.bl_no}" en este viaje` });
           return;
         }
-        moverUno(bl, origIndex.get(bl.bl_no) ?? null);
+        moverBl(db, bl, manifestId, origIndex.get(bl.bl_no) ?? null);
         movidos.push({ id: bl.id, bl_no: bl.bl_no });
       });
     }
