@@ -8,7 +8,7 @@ import {
   datosManifiesto, blActual, stats, estado, estadoDerecha, toastMsg, toastTipo,
   cargarCatalogos, cargarManifiestos, seleccionarManifiesto, cargarStats,
   guardarPendientes, toast, setEstado, restaurarSeleccion,
-  manifiestosEliminadosSiscommate, sinTamanoEnValidados,
+  manifiestosEliminadosSiscommate, sinTamanoEnValidados, sincronizarEstadoManifiesto,
 } from '../editor/store';
 import Sidebar from './Sidebar.vue';
 import EditorPanel from './EditorPanel.vue';
@@ -16,7 +16,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { Upload, Settings, Ship, Eye, FileOutput, DatabaseZap, Database, Loader2, FileUp, X, PanelLeftClose, PanelLeftOpen, Check, RefreshCw } from '@lucide/vue';
+import { Upload, Settings, Ship, Eye, FileOutput, DatabaseZap, Database, Loader2, FileUp, X, PanelLeftClose, PanelLeftOpen, Check, CheckCheck, RefreshCw } from '@lucide/vue';
 
 const bridgeOnline = ref(false);
 const archivoInput = ref<HTMLInputElement | null>(null);
@@ -432,6 +432,66 @@ async function pushSiscommate() {
   enviando.value = false;
 }
 
+// ── Validar todos los B/L del viaje ──
+// Valida solo los completos (misma regla que el export y que el punto rojo del
+// sidebar, decidida en el servidor); los incompletos se quedan pendientes y
+// se listan con su motivo. Los B/L que se movieron aquí entran como cualquier
+// otro: mover conserva el estado de cada B/L.
+const validandoTodos = ref(false);
+const blsPendientes = computed(() => (datosManifiesto.value?.bls ?? []).filter(b => b.status !== 'validado').length);
+// Los números de B/L vienen de archivos del transportista y el modal pinta HTML.
+const escapar = (t: unknown) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+function validarTodosLosBL() {
+  const m = datosManifiesto.value?.manifest;
+  if (!m) { toast('Selecciona un manifiesto', 'err'); return; }
+  const n = blsPendientes.value;
+  modal.value = { titulo: 'Validar todos los B/L', cuerpo:
+    `Se van a revisar los ${n} B/L pendientes del viaje ${escapar(m.voyage_no)}. Los que estén completos `
+    + '(código arancelario, SS/EIN del consignatario y tamaño de cada contenedor) quedan validados. '
+    + 'Los que tengan algo pendiente NO se tocan, y te digo cuáles son y por qué.',
+    botones: [
+      { label: 'Cancelar', variant: 'outline', accion: cerrarModal },
+      { label: 'Validar', variant: 'default', accion: () => { cerrarModal(); ejecutarValidarTodos(m.id); } },
+    ] };
+}
+async function ejecutarValidarTodos(manifestId: number) {
+  validandoTodos.value = true;
+  setEstado('Validando B/L...');
+  try {
+    // Lo que se está editando en el B/L abierto tiene que estar guardado antes,
+    // o se validaría con datos viejos.
+    await guardarPendientes();
+    const r = await api.validarTodos(manifestId);
+    const d = datosManifiesto.value;
+    if (d && d.manifest.id === manifestId) {
+      const ids = new Set(r.validados.map(b => b.id));
+      d.bls.forEach(b => { if (ids.has(b.id)) b.status = 'validado'; });
+      if (blActual.value && ids.has(blActual.value.id)) blActual.value.status = 'validado';
+    }
+    sincronizarEstadoManifiesto(manifestId, r.manifest_status);
+    await cargarManifiestos();
+    cargarStats();
+    const resumen = `${r.validados.length} B/L validados` + (r.omitidos.length ? `, ${r.omitidos.length} con pendientes` : '');
+    setEstado(resumen);
+    if (r.omitidos.length) {
+      toast(resumen);
+      avisar(`${r.validados.length} validados — ${r.omitidos.length} quedaron pendientes`,
+        'Estos B/L no se validaron porque les falta algo. Corrígelos y vuelve a validar:'
+        + `<ul class="mt-2 ml-4 list-disc text-sm">${r.omitidos.map(o => `<li><b>${escapar(o.bl_no)}</b>: ${o.motivos.map(escapar).join('; ')}</li>`).join('')}</ul>`);
+    } else if (r.validados.length) {
+      toast(`${r.validados.length} B/L validados`);
+    } else {
+      toast('No había B/L pendientes por validar');
+    }
+  } catch (e) {
+    let msg = (e as Error).message;
+    try { msg = JSON.parse(msg).error || msg; } catch { /* texto plano */ }
+    avisar('No se pudo validar', escapar(msg));
+    setEstado('Error al validar B/L');
+  }
+  validandoTodos.value = false;
+}
+
 const sincronizando = ref(false);
 async function sincronizarDesdeSiscommate() {
   const m = datosManifiesto.value?.manifest;
@@ -598,6 +658,13 @@ onMounted(async () => {
           <span class="text-xs text-ink-faint">{{ datosManifiesto.manifest.vessel_name || '' }}</span>
           <div class="flex-1"></div>
           <Button variant="outline" size="sm" :disabled="!blActual" @click="blActual && verTxt(blActual.id)"><Eye class="size-3.5" />Ver TXT</Button>
+          <Button variant="outline" size="sm" :disabled="validandoTodos || !blsPendientes"
+            :title="blsPendientes ? `Valida los B/L completos de este viaje; los incompletos quedan pendientes (${blsPendientes} pendientes)` : 'Todos los B/L de este viaje ya están validados'"
+            @click="validarTodosLosBL">
+            <Loader2 v-if="validandoTodos" class="size-3.5 animate-spin" /><CheckCheck v-else class="size-3.5" />
+            {{ validandoTodos ? 'Validando...' : 'Validar todos' }}
+            <span v-if="blsPendientes && !validandoTodos" class="ml-1 rounded-full bg-accent-soft px-1.5 text-[11px] text-accent">{{ blsPendientes }}</span>
+          </Button>
           <Button size="sm" :variant="sinTamanoEnValidados ? 'destructive' : 'default'"
             :title="sinTamanoEnValidados ? `Faltan ${sinTamanoEnValidados} tamaño(s) de contenedor en B/L validados; el export se bloqueará` : ''"
             @click="exportarTxt">

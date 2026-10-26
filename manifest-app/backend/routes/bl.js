@@ -9,6 +9,7 @@ const db = require('../db/connection');
 /** @typedef {import('../types').CargoItemRow} CargoItemRow */
 const { generateTxtLine1, generateTxtLine2 } = require('../services/txtGenerator');
 const { moverBl } = require('../services/blMove');
+const { validarLote } = require('../services/blValidarLote');
 
 const router = express.Router();
 
@@ -166,6 +167,20 @@ router.put('/api/bl/:id', (req, res) => {
     if (bl) manifest_status = recalcularEstadoManifiesto(bl.manifest_id);
   }
   res.json({ ok: true, manifest_status });
+});
+
+// ── VALIDAR TODOS LOS B/L DE UN VIAJE ─────────────────────────────────────────
+// Valida solo los B/L completos (la misma regla que bloquea el export y pinta
+// el punto rojo del sidebar — ver services/blValidarLote.js) y deja los
+// incompletos como están, diciendo por qué. El estado del viaje se recalcula
+// UNA vez al final, con la misma función que usan mover/crear/borrar un B/L,
+// así que un viaje ya enviado a SISCOMMATE sigue sin recalcularse.
+router.put('/api/manifests/:id/validar-todos', (req, res) => {
+  const manifestId = Number(req.params.id);
+  const r = Number.isInteger(manifestId) ? validarLote(db, manifestId) : null;
+  if (!r) return res.status(404).json({ error: 'Manifiesto no encontrado' });
+  const manifest_status = recalcularEstadoManifiesto(manifestId);
+  res.json({ ok: true, ...r, manifest_status });
 });
 
 // ── ELIMINAR VARIOS B/L A LA VEZ (LOTE) ───────────────────────────────────────

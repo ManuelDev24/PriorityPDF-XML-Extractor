@@ -36,6 +36,55 @@ const DESC_MAX = 121;
  */
 
 /**
+ * Código arancelario ausente, vacío o solo ceros.
+ * @param {BLRow} bl
+ * @returns {boolean}
+ */
+function faltaCodigo(bl) {
+  return !bl.hacienda_item_code ||
+    bl.hacienda_item_code.trim() === '' ||
+    /^0+$/.test(bl.hacienda_item_code.trim());
+}
+
+/**
+ * Falta el SS/EIN (o documento) del consignatario. Viajes AU/CF van a islas
+ * (STX/STT — US Virgin Islands, etc.), no a Puerto Rico directo — sus
+ * consignatarios reales (residentes/negocios de la isla) casi nunca tienen
+ * seguro social ni EIN de EE.UU., a diferencia de un consignatario en PR.
+ * Antes esto bloqueaba la validación del B/L por completo; el operador
+ * terminaba escribiendo un SS inventado a mano (ej. "999002030") solo para
+ * poder pasar el chequeo. El campo ya queda en blanco sin problema en el TXT
+ * (sanitizeSS en txtGenerator.js), así que no hay razón real para exigirlo
+ * aquí en estos viajes.
+ * @param {{voyage_no?: string|null}} manifest
+ * @param {BLRow} bl
+ * @returns {boolean}
+ */
+function faltaSS(manifest, bl) {
+  const esViajeSinSS = /^(AU|CF)/i.test(String(manifest.voyage_no || '').trim());
+  return !esViajeSinSS && !bl.hacienda_client_ss && !bl.consignee_document_no;
+}
+
+/**
+ * ¿Este B/L está listo para validarse? Es la misma regla que bloquea el
+ * export y el push, y que pinta en rojo el punto del sidebar: código
+ * arancelario, SS/EIN del consignatario y tamaño de cada contenedor. Una sola
+ * fuente para que "Validar todos", el export y la pantalla no se contradigan.
+ * @param {{voyage_no?: string|null}} manifest
+ * @param {BLRow} bl
+ * @param {string[]} [contenedoresSinTamano] Números de contenedor sin tamaño
+ *   (los calcula quien tiene los datos de containers, ver txtGenerator)
+ * @returns {{completo: boolean, motivos: string[]}}
+ */
+function evaluarCompletitud(manifest, bl, contenedoresSinTamano = []) {
+  const motivos = [];
+  if (faltaCodigo(bl)) motivos.push('sin código arancelario');
+  if (faltaSS(manifest, bl)) motivos.push('sin SS/EIN del consignatario');
+  if (contenedoresSinTamano.length) motivos.push(`contenedor sin tamaño: ${contenedoresSinTamano.join(', ')}`);
+  return { completo: motivos.length === 0, motivos };
+}
+
+/**
  * Decide si un manifiesto se puede entregar, y con qué B/L.
  *
  * La usan tanto la exportación del TXT de Hacienda como el push a SISCOMMATE,
@@ -61,21 +110,8 @@ function validateForSubmission(manifest, allBls) {
     errors.push('El Docking Number es obligatorio y debe ser numérico.');
   }
 
-  const sinCodigo = validBls.filter(bl =>
-    !bl.hacienda_item_code ||
-    bl.hacienda_item_code.trim() === '' ||
-    /^0+$/.test(bl.hacienda_item_code.trim())
-  );
-  // Viajes AU/CF van a islas (STX/STT — US Virgin Islands, etc.), no a
-  // Puerto Rico directo — sus consignatarios reales (residentes/negocios de
-  // la isla) casi nunca tienen seguro social ni EIN de EE.UU., a diferencia
-  // de un consignatario en PR. Antes esto bloqueaba la validación del B/L
-  // por completo; el operador terminaba escribiendo un SS inventado a mano
-  // (ej. "999002030") solo para poder pasar el chequeo. El campo ya queda
-  // en blanco sin problema en el TXT (sanitizeSS en txtGenerator.js), así
-  // que no hay razón real para exigirlo aquí en estos viajes.
-  const esViajeSinSS = /^(AU|CF)/i.test(String(manifest.voyage_no || '').trim());
-  const sinSS     = esViajeSinSS ? [] : validBls.filter(bl => !bl.hacienda_client_ss && !bl.consignee_document_no);
+  const sinCodigo = validBls.filter(faltaCodigo);
+  const sinSS     = validBls.filter(bl => faltaSS(manifest, bl));
   const descLarga = validBls.filter(bl =>
     (bl.goods_name || '').replace(/[\r\n]+/g, ' ').length > DESC_MAX
   );
@@ -90,4 +126,4 @@ function validateForSubmission(manifest, allBls) {
   return { validBls, errors, warnings };
 }
 
-module.exports = { validateForSubmission, DESC_MAX };
+module.exports = { validateForSubmission, evaluarCompletitud, DESC_MAX };

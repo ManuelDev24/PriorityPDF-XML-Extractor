@@ -257,6 +257,15 @@ export const api = {
       manifest_id_destino: number; status_nuevo?: string;
       estados_origen: Record<string, string>;
     }>('/api/bl/mover-lote', cuerpo('PUT', { bl_ids: blIds, manifest_id: manifestId })),
+  /** Valida los B/L completos del viaje; los incompletos quedan pendientes, con su motivo. */
+  validarTodos: (manifestId: number) =>
+    pedir<{
+      ok: true;
+      validados: Array<{ id: number; bl_no: string }>;
+      omitidos: Array<{ id: number; bl_no: string; motivos: string[] }>;
+      ya_validados: number;
+      manifest_status?: string;
+    }>(`/api/manifests/${manifestId}/validar-todos`, { method: 'PUT' }),
   vistaPreviaTxt: (id: number) => pedir<VistaPreviaTxt>(`/api/bl/${id}/txt-preview`),
 
   // Contenedores
