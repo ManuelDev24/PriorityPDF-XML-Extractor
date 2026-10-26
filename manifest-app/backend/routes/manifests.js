@@ -12,9 +12,12 @@ const db = require('../db/connection');
 /** @typedef {import('../types').ParsedManifest} ParsedManifest */
 
 const { parseXmlManifest } = require('../services/xmlParser');
-const { parsePdfManifest } = require('../services/pdfParser');
-const { toSiscommatePort, generateFullTxt } = require('../services/txtGenerator');
+const { parsePdfManifest, advertirContenedoresEnVariosBl } = require('../services/pdfParser');
+const { toSiscommatePort, generateFullTxt, contenedoresSinTamano, pesoMaximoPorLinea } = require('../services/txtGenerator');
+const { verificarTxt, pesosFueraDeRango } = require('../services/txtVerifier');
 const { validateForSubmission } = require('../services/blValidation');
+const { recalcularEstadoManifiesto } = require('./bl');
+const { moverBl } = require('../services/blMove');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -31,10 +34,10 @@ function clasificarBLs(voyageNo, bls) {
   const manifiesto = db.prepare('SELECT id FROM manifests WHERE voyage_no=?').get(voyageNo);
   const manifestId = manifiesto ? manifiesto.id : null;
 
-  // bl_no -> { manifest_id, voyage_no } en TODA la base, de un tirón
+  // bl_no -> { id, manifest_id, voyage_no } en TODA la base, de un tirón
   const ubicaciones = new Map();
   db.prepare(`
-    SELECT b.bl_no, b.manifest_id, m.voyage_no
+    SELECT b.id, b.bl_no, b.manifest_id, m.voyage_no
     FROM bills_of_lading b JOIN manifests m ON m.id = b.manifest_id
   `).all().forEach(r => ubicaciones.set(r.bl_no, r));
 
@@ -43,7 +46,9 @@ function clasificarBLs(voyageNo, bls) {
     const u = ubicaciones.get(bl.bl_no);
     if (!u) { nuevos.push(bl.bl_no); return; }
     if (manifestId && u.manifest_id === manifestId) yaEnEsteViaje.push(bl.bl_no);
-    else enOtroViaje.push({ bl_no: bl.bl_no, voyage_no: u.voyage_no });
+    // id incluido para que, si el usuario decide moverlos, el frontend pueda
+    // llamar a /api/bl/mover-lote sin tener que volver a consultarlo.
+    else enOtroViaje.push({ id: u.id, bl_no: bl.bl_no, voyage_no: u.voyage_no });
   });
   return { manifestId, nuevos, yaEnEsteViaje, enOtroViaje };
 }
@@ -82,6 +87,12 @@ router.post('/api/manifests/upload/preview', upload.single('xml'), async (req, r
       nuevos_count: nuevos.length,
       ya_en_este_viaje_count: yaEnEsteViaje.length,
       en_otro_viaje: enOtroViaje,
+      // Advertencias de consistencia del parser (peso que no cuadra,
+      // contenedores reconectados a mano, B/L sin contenedor) — solo el
+      // parser de PDF 1302 las genera hoy; el resto de formatos manda [].
+      // + la de contenedor repetido en varios B/L, aplicada acá para
+      // cualquier formato (ver advertirContenedoresEnVariosBl arriba).
+      warnings: [...(parsed.warnings || []), ...advertirContenedoresEnVariosBl(parsed.containerBLs)],
     });
   } catch (err) {
     console.error(err);
@@ -100,13 +111,37 @@ router.post('/api/manifests/upload', upload.single('xml'), async (req, res) => {
       ? await parsePdfManifest(req.file.buffer)
       : await parseXmlManifest(req.file.buffer.toString('utf8'));
 
+    // Dos archivos distintos pueden traer el MISMO VoyageNo en su propio
+    // encabezado (caso real: dos XML de la DGA para "CF371" y "CF371TB" —
+    // mismo buque/viaje físico, pero booking/manifiesto distinto) sin que
+    // eso signifique que deban unificarse en un solo viaje acá. Antes no
+    // había forma de evitarlo: cualquier archivo con un VoyageNo ya
+    // existente se sumaba SIEMPRE al manifiesto de ese viaje. Con
+    // voyage_no_override el operador puede pedir explícitamente que este
+    // archivo se cargue como un viaje NUEVO y separado, con el nombre que
+    // el elija — no hay forma de adivinarlo del XML/PDF solo.
+    const voyageNoOverride = String(req.body?.voyage_no_override || '').trim();
+    if (voyageNoOverride && db.prepare('SELECT 1 FROM manifests WHERE voyage_no=?').get(voyageNoOverride)) {
+      return res.status(409).json({ error: `Ya existe un viaje "${voyageNoOverride}" — elige otro nombre.` });
+    }
+    if (voyageNoOverride) parsed.header.voyage_no = voyageNoOverride;
+
     // Reimportar el mismo viaje (p.ej. el transportista manda un PDF
     // actualizado con B/L nuevos) no debe crear un manifiesto duplicado ni
     // tocar los B/L que ya se trabajaron: se suman solo los B/L realmente
     // nuevos. Un B/L que ya existe en OTRO viaje (porque el usuario lo movió
-    // ahí con "mover B/L") tampoco se reimporta — se deja donde está.
+    // ahí con "mover B/L") tampoco se reimporta — se deja donde está, salvo
+    // que el operador haya pedido moverlo también (mover_ids más abajo).
     const { manifestId: manifestIdExistente, nuevos: nuevosBlNoArr } = clasificarBLs(parsed.header.voyage_no, parsed.bls);
     const nuevosBlNo = new Set(nuevosBlNoArr);
+
+    // Posición de cada B/L en el documento ORIGINAL (antes de filtrar) — se
+    // usa como sort_seq tanto para los que se insertan de cero como para los
+    // que se mueven desde otro viaje, así ambos quedan en su lugar real
+    // dentro de la lista sin importar cuál de los dos caminos siguieron.
+    const origIndex = new Map();
+    parsed.bls.forEach((bl, i) => { if (!origIndex.has(bl.bl_no)) origIndex.set(bl.bl_no, i); });
+
     parsed.bls = parsed.bls.filter(bl => nuevosBlNo.has(bl.bl_no));
 
     let manifestId;
@@ -179,8 +214,8 @@ router.post('/api/manifests/upload', upload.single('xml'), async (req, res) => {
          consignee_street,consignee_city,consignee_zip,
          notify_name,notify_code,notify_document_type,notify_document_no,
          notify_country_code,notify_tel,notify_email,notify_street,notify_city,notify_zip,
-         hacienda_container_no,hacienda_client_ss,hacienda_client_ivu)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         hacienda_container_no,hacienda_client_ss,hacienda_client_ivu,sort_seq)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
     db.transaction(bls => bls.forEach(bl => insBL.run(
       manifestId, bl.bl_no, bl.bl_type, bl.transit_type, bl.unloading_port_code,
@@ -194,8 +229,35 @@ router.post('/api/manifests/upload', upload.single('xml'), async (req, res) => {
       bl.notify_name, bl.notify_code, bl.notify_document_type, bl.notify_document_no,
       bl.notify_country_code, bl.notify_tel, bl.notify_email, bl.notify_street,
       bl.notify_city, bl.notify_zip,
-      bl.hacienda_container_no || '', bl.hacienda_client_ss || '', bl.hacienda_client_ivu || ''
+      bl.hacienda_container_no || '', bl.hacienda_client_ss || '', bl.hacienda_client_ivu || '',
+      origIndex.get(bl.bl_no) ?? null
     )))(parsed.bls);
+
+    // ── Mover en el mismo paso los B/L que ya estaban en OTRO viaje ──────────
+    // El operador puede pedir esto desde el modal "Confirmar carga" cuando el
+    // PDF trae B/L que el sistema ya tenía en otro viaje. Se hace AQUÍ, en la
+    // misma carga, y no como una llamada aparte después — así el sort_seq
+    // (posición real dentro de ESTE documento) queda igual de bien calculado
+    // que el de los B/L insertados de cero, en vez de conservar el id viejo
+    // de cuando se insertaron por primera vez (eso los mandaba siempre al
+    // principio de la lista sin importar dónde aparecieran en el PDF).
+    const moverIdsRaw = (() => { try { return JSON.parse(req.body?.mover_ids || '[]'); } catch { return []; } })();
+    const moverIds = Array.isArray(moverIdsRaw) ? moverIdsRaw.map(Number).filter(Number.isInteger) : [];
+    const movidos = [];
+    const omitidos = [];
+    if (moverIds.length) {
+      moverIds.forEach(id => {
+        const bl = db.prepare('SELECT * FROM bills_of_lading WHERE id=?').get(id);
+        if (!bl) { omitidos.push({ id, motivo: 'No encontrado' }); return; }
+        if (bl.manifest_id === manifestId) { omitidos.push({ id, bl_no: bl.bl_no, motivo: 'Ya está en este viaje' }); return; }
+        if (db.prepare('SELECT 1 FROM bills_of_lading WHERE manifest_id=? AND bl_no=?').get(manifestId, bl.bl_no)) {
+          omitidos.push({ id, bl_no: bl.bl_no, motivo: `Ya existe un B/L "${bl.bl_no}" en este viaje` });
+          return;
+        }
+        moverBl(db, bl, manifestId, origIndex.get(bl.bl_no) ?? null);
+        movidos.push({ id: bl.id, bl_no: bl.bl_no });
+      });
+    }
 
     // Items de carga individuales (soporta multi-ítem y vehículos)
     if (parsed.cargoItems && parsed.cargoItems.length) {
@@ -250,8 +312,22 @@ router.post('/api/manifests/upload', upload.single('xml'), async (req, res) => {
       const insCBL = db.prepare(`INSERT INTO container_bl (container_no,bl_no,manifest_id) VALUES (?,?,?)`);
       parsed.containerBLs.forEach(cb => insCBL.run(cb.container_no, cb.bl_no, manifestId));
     }
+    // Todo contenedor vinculado a un B/L necesita su fila en containers (donde
+    // vive el tamaño); si el parser lo vinculó sin listarlo, se crea vacío para
+    // que el editor lo marque en rojo y se le pueda dar tamaño.
+    db.prepare(`
+      INSERT INTO containers (manifest_id, container_no, size)
+      SELECT DISTINCT cb.manifest_id, cb.container_no, ''
+      FROM container_bl cb
+      WHERE cb.manifest_id=? AND cb.container_no<>''
+        AND NOT EXISTS (SELECT 1 FROM containers c WHERE c.manifest_id=cb.manifest_id AND c.container_no=cb.container_no)
+    `).run(manifestId);
 
-    res.json({ ok: true, manifest_id: manifestId, bl_count: parsed.bls.length, merged: !!manifestIdExistente });
+    if (movidos.length) recalcularEstadoManifiesto(manifestId);
+    res.json({
+      ok: true, manifest_id: manifestId, bl_count: parsed.bls.length, merged: !!manifestIdExistente,
+      movidos, omitidos,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
@@ -274,13 +350,17 @@ router.get('/api/manifests/:id', (req, res) => {
   if (!manifest) return res.status(404).json({ error: 'No encontrado' });
   res.json({
     manifest,
-    // Mismo orden en que aparecen en el PDF, uno detrás de otro — se ordena
-    // por id (orden real de inserción, que sigue el orden de extracción del
-    // PDF/XML) y no por bl_no ni por status. Pedido explícito: no priorizar
-    // los validados arriba, respetar la posición original del documento.
+    // Mismo orden en que aparecen en el PDF, uno detrás de otro — no por
+    // bl_no ni por status (pedido explícito: no priorizar los validados
+    // arriba, respetar la posición original del documento). sort_seq guarda
+    // esa posición real y se asigna tanto al insertar un B/L nuevo como al
+    // mover uno desde otro viaje (ver /api/manifests/upload) — con id solo,
+    // un B/L movido conservaba su id viejo y saltaba al principio de la
+    // lista en vez de quedar en su lugar real. COALESCE cubre filas de
+    // antes de que existiera esta columna (quedan en su orden de siempre).
     bls:          db.prepare(`
       SELECT * FROM bills_of_lading WHERE manifest_id=?
-      ORDER BY id
+      ORDER BY COALESCE(sort_seq, id)
     `).all(req.params.id),
     containers:   db.prepare('SELECT * FROM containers WHERE manifest_id=?').all(req.params.id),
     container_bl: db.prepare('SELECT * FROM container_bl WHERE manifest_id=?').all(req.params.id),
@@ -299,6 +379,12 @@ const CAMPOS_EDITABLES_MANIFEST = [
 ];
 
 router.put('/api/manifests/:id', (req, res) => {
+  if (req.body.voyage_no !== undefined) {
+    const nuevoVoyageNo = String(req.body.voyage_no).trim();
+    if (!nuevoVoyageNo) return res.status(400).json({ error: 'El número de viaje no puede quedar vacío.' });
+    const otro = db.prepare('SELECT id FROM manifests WHERE voyage_no=? AND id!=?').get(nuevoVoyageNo, req.params.id);
+    if (otro) return res.status(409).json({ error: `Ya existe otro viaje "${nuevoVoyageNo}" — elige otro nombre.` });
+  }
   const sets = []; const vals = [];
   CAMPOS_EDITABLES_MANIFEST.forEach(f => {
     if (req.body[f] !== undefined) { sets.push(`${f}=?`); vals.push(req.body[f]); }
@@ -349,15 +435,38 @@ router.get('/api/manifests/:id/export-txt', (req, res) => {
   db.prepare('SELECT * FROM bl_cargo_items WHERE manifest_id=? ORDER BY seq').all(req.params.id).forEach(ci => {
     (cargoItemsByBl[ci.bl_id] = cargoItemsByBl[ci.bl_id] || []).push(ci);
   });
+  /** @type {Record<string, string>} */
+  const sizeByContainer = {};
+  /** @type {Record<string, number>} */
+  const weightByContainer = {};
+  db.prepare('SELECT container_no, size, gross_weight FROM containers WHERE manifest_id=?').all(req.params.id).forEach(c => {
+    sizeByContainer[c.container_no] = c.size;
+    weightByContainer[c.container_no] = c.gross_weight;
+  });
   bls.forEach(bl => {
     bl.containers = containersByBl[bl.bl_no] && containersByBl[bl.bl_no].length
       ? containersByBl[bl.bl_no]
       : [bl.hacienda_container_no || ''];
     if (!bl.hacienda_container_no) bl.hacienda_container_no = bl.containers[0] || '';
     bl.cargoItems = cargoItemsByBl[bl.id] || null;
+    bl.containerSizes = sizeByContainer;
+    bl.containerWeights = weightByContainer;
   });
 
+  // Hacienda rechaza el registro si el tamaño del contenedor va en blanco.
+  const sinTamano = bls.flatMap(bl => contenedoresSinTamano(bl).map(c => `${c} (B/L ${bl.bl_no})`));
+  if (sinTamano.length) {
+    return res.status(400).json({
+      error: `Falta el tamaño (20, 40, 45, 48, 53) de ${sinTamano.length} contenedor(es): ${sinTamano.join(', ')}. Corrígelos en el editor antes de exportar.`
+    });
+  }
+
   const txt = generateFullTxt(manifest, bls);
+
+  // Revisión final con las mismas reglas que aplica la web de Hacienda: si el
+  // TXT va a salir rechazado, mejor decirlo aquí con la línea exacta.
+  const problemas = [...pesosFueraDeRango(bls, pesoMaximoPorLinea), ...verificarTxt(txt)];
+  if (problemas.length) return res.status(400).json({ error: problemas.join(' | ') });
   // Antes el nombre era siempre igual (voyage_no fijo) — reexportar el mismo
   // manifiesto (p.ej. después de corregir un B/L) sobrescribía el TXT
   // anterior en la carpeta de descargas sin avisar. La marca de tiempo hace

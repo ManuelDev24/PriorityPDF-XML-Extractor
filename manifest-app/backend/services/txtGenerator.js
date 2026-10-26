@@ -22,8 +22,7 @@ function setting(key, fallback) {
 }
 
 /**
- * Manifiesto tal como llega desde la tabla `manifests`, más `carrier_ivu` que
- * la ruta de exportación adjunta desde el catálogo de carriers.
+ * Manifiesto tal como llega desde la tabla `manifests`.
  * @typedef {object} Manifest
  * @property {string} [carrier_code]    Código del carrier (por defecto MPRIORO)
  * @property {string} [manifest_no]     No. de manifiesto de Hacienda
@@ -35,7 +34,6 @@ function setting(key, fallback) {
  * @property {string|number} [docking_number] Número de atraque, obligatorio
  * @property {string} [loading_port]
  * @property {string} [unloading_port]
- * @property {string} [carrier_ivu]     Respaldo del IVU si el consignatario no tiene
  */
 
 /**
@@ -211,7 +209,14 @@ function quitarAcentos(texto) {
   const conMapa = String(texto || '').replace(/[áéíóúüñÁÉÍÓÚÜÑ“”‘’–—…]/g, c => MAPA_ACENTOS[c]);
   // Red de seguridad: cualquier carácter fuera de ASCII que no esté en el
   // mapa (símbolo raro, artefacto de OCR/PDF que no anticipamos) se quita.
-  return conMapa.replace(/[^\x00-\x7F]/g, '');
+  const sinNoAscii = conMapa.replace(/[^\x00-\x7F]/g, '');
+  // ? > ; ' - _ : / % [ ] * nunca aparecen en un TXT real ya aceptado por
+  // SISCOMMATE (confirmado carácter por carácter contra 3309832.TXT /
+  // K1339, aislado a las columnas de consignatario/consignador/
+  // descripción) — se quitan igual que ya se hace con acentos. Coma,
+  // punto, paréntesis, "&" y "+" SÍ se toleran ahí (el archivo real los
+  // trae) y se conservan tal cual.
+  return sinNoAscii.replace(/[?>;'\-_:\/%[\]*]/g, '');
 }
 
 // Puerto XML/DGA → código SISCOMMATE (fuente: ports.dbf de SISCOMMATE)
@@ -272,6 +277,32 @@ function toSiscommatePort(code) {
   const fallback = PORT_MAPPINGS.find(([dga]) => dga === normalized);
   return (fallback ? fallback[1] : fallbackMap[normalized] ||
     (code || 'XSJ').toUpperCase().substring(0, 3));
+}
+
+/**
+ * Origen, descarga y destino ya traducidos a SISCOMMATE — única fuente para
+ * el TXT y el push (services/siscommateClient.js#calcularPuertos delega
+ * acá), para que nunca diverjan.
+ *
+ * "Descarga" y "destino" NO son lo mismo para carga en tránsito: descarga es
+ * el puerto donde el barco realmente desembarca la carga (ej. XSJ — San
+ * Juan), destino es a dónde va realmente esa carga, que puede seguir camino
+ * fuera de Puerto Rico (ej. JAX — Jacksonville, por camión/otro transportista
+ * después de desembarcar en San Juan). manifest.discharge_port es el campo
+ * opcional para ese caso — antes se guardaba pero nunca se usaba: discport y
+ * destport siempre salían iguales (el valor de unloading_port), perdiendo la
+ * distinción para cualquier viaje con tránsito real.
+ *
+ * Sin discharge_port (caso normal, sin tránsito) discport y destport quedan
+ * iguales, igual que siempre.
+ * @param {{loading_port?: string, unloading_port?: string, discharge_port?: string}} manifest
+ * @returns {{origport: string, discport: string, destport: string}}
+ */
+function calcularPuertosDbf(manifest) {
+  const origport = toSiscommatePort(manifest.loading_port || setting('default_loading_port', 'DRP'));
+  const destport = toSiscommatePort(manifest.unloading_port || setting('default_unloading_port', 'SJU'));
+  const discport = manifest.discharge_port ? toSiscommatePort(manifest.discharge_port) : destport;
+  return { origport, discport, destport };
 }
 
 // ── LÍNEA 0 — Encabezado del manifiesto (205 chars) ──────────────────────────
@@ -358,13 +389,87 @@ function generateTxtLine0(manifest, blCount) {
 //  [163:175] 12 espacios
 //  [175]     'V'
 //  [176:186] 10 ceros
-//  [186:190] tariff+'R' (4) o 4 espacios si libre arancel
+//  [186:190] tamaño del contenedor (3, ceros a la izquierda)+'R' (4)
 //  [190:201] IVU/No. comerciante del CONSIGNATARIO (11) — verificado contra
 //            archivos reales SISCOMMATE: este campo varía por B/L según el
 //            IVU del consignatario, NO es el código arancelario. Si el
 //            consignatario no tiene IVU registrado, SISCOMMATE usa el IVU
 //            del carrier como respaldo (visto en los TXT reales).
 //  [201:205] 4 espacios
+
+/**
+ * Tamaño de contenedor en el formato de SISCOMMATE (misma regla que
+ * NormalizarSize del bridge): solo dígitos, 3 de ancho ('53'→'053',
+ * '40HC'→'040'). Vacío si no hay ningún dígito (RORO, sin dato).
+ * @param {string|number|null|undefined} raw
+ * @returns {string}
+ */
+function normalizarTamano(raw) {
+  const digitos = String(raw == null ? '' : raw).replace(/[^0-9]/g, '');
+  if (!digitos) return '';
+  return digitos.length > 3 ? digitos.substring(0, 3) : digitos.padStart(3, '0');
+}
+
+/**
+ * Tamaño del contenedor de una línea, tomado de `bl.containerSizes`
+ * ({container_no: size}) que arman las rutas desde la tabla containers.
+ * @param {BL} bl
+ * @param {string} [containerNo]
+ * @returns {string} '' si se desconoce
+ */
+function tamanoDelContenedor(bl, containerNo) {
+  const sizes = /** @type {any} */ (bl).containerSizes;
+  const no = String(containerNo !== undefined ? containerNo : bl.hacienda_container_no || '').trim();
+  return no && sizes ? normalizarTamano(sizes[no]) : '';
+}
+
+/**
+ * Suma de los pesos de los contenedores de un B/L, desde `bl.containerWeights`
+ * ({container_no: gross_weight}). null si el B/L no tiene contenedores o a
+ * alguno le falta el peso — en ese caso no hay una suma confiable.
+ * @param {BL} bl
+ * @returns {number|null}
+ */
+function pesoSumadoDeContenedores(bl) {
+  const pesos = /** @type {any} */ (bl).containerWeights;
+  const nos = [...new Set((/** @type {any} */ (bl).containers || [])
+    .map((/** @type {string} */ c) => String(c || '').trim()).filter(Boolean))];
+  if (!pesos || !nos.length) return null;
+  let total = 0;
+  for (const no of nos) {
+    const w = toNum(pesos[no]);
+    if (w <= 0) return null;
+    total += w;
+  }
+  return total;
+}
+
+/**
+ * Mayor peso (kg) que generateFullTxt escribirá en una línea de carga del B/L:
+ * el de su ítem más pesado, o el peso repartido entre contenedores.
+ * @param {BL} bl
+ * @returns {number}
+ */
+function pesoMaximoPorLinea(bl) {
+  const items = /** @type {any} */ (bl).cargoItems;
+  if (items && items.length) return Math.max(...items.map((/** @type {any} */ i) => toNum(i.gross_weight)));
+  const n = Math.max(1, ((/** @type {any} */ (bl).containers || []).length) || 1);
+  const total = n > 1 ? (pesoSumadoDeContenedores(bl) ?? toNum(bl.gross_weight)) : toNum(bl.gross_weight);
+  return total / n;
+}
+
+/**
+ * Contenedores de un B/L (con número) a los que les falta el tamaño. El TXT
+ * los escribiría en blanco y Hacienda rechaza el registro.
+ * @param {BL} bl
+ * @returns {string[]}
+ */
+function contenedoresSinTamano(bl) {
+  const nos = (/** @type {any} */ (bl).containers || [bl.hacienda_container_no || ''])
+    .map((/** @type {string} */ c) => String(c || '').trim()).filter(Boolean);
+  return nos.filter(no => !tamanoDelContenedor(bl, no));
+}
+
 /**
  * Línea 1 — datos del B/L y del consignatario.
  * @param {BL} bl
@@ -373,16 +478,22 @@ function generateTxtLine0(manifest, blCount) {
  * @returns {string} Exactamente 205 caracteres
  */
 function generateTxtLine1(bl, manifest, containerNo) {
-  const ss9      = sanitizeSS(bl.hacienda_client_ss || bl.consignee_document_no);
-  const loadPort = toSiscommatePort(manifest.loading_port || setting('default_loading_port', 'DRP'));
-  const discPort = toSiscommatePort(manifest.unloading_port || setting('default_unloading_port', 'SJU'));
-  const tariff   = bl.hacienda_tariff;
-  // Libre arancel (040): SISCOMMATE requiere valor FOB = 0
-  const fobValue = (tariff === '040') ? 0 : toNum(bl.value);
-  const valCents = padZ(Math.round(fobValue * 100), 9);
-  // tariff+R: '040R', '045R', o 4 espacios si es libre arancel / tránsito
-  const tariffR  = tariff ? `${pad(tariff, 3)}R` : '    ';
-  const ivu11    = sanitizeIdentificador(bl.hacienda_client_ivu || manifest.carrier_ivu);
+  const ss9 = sanitizeSS(bl.hacienda_client_ss || bl.consignee_document_no);
+  const { origport: loadPort, discport: discPort, destport: destPort } = calcularPuertosDbf(manifest);
+  // El FOB siempre es el valor del B/L. La regla vieja "tarifa 040 → FOB 0"
+  // dependía de hacienda_tariff, un campo que ya no se edita ni llega al TXT.
+  const valCents = padZ(Math.round(toNum(bl.value) * 100), 9);
+  // [186:190] es BOLCONT.size + 'R': el tamaño del CONTENEDOR de esta línea
+  // ('053R', '040R'...), no la tarifa del B/L. Sin tamaño conocido queda en
+  // blanco y la web de Hacienda lo rechaza (CONTAINER TYPE INVALID).
+  const tamano   = tamanoDelContenedor(bl, containerNo);
+  const tariffR  = tamano ? `${tamano}R` : '    ';
+  // Antes caía al IVU del carrier cuando el consignatario no tenía uno
+  // propio — comparado contra un TXT real ya aceptado por SISCOMMATE
+  // (3309832.TXT / K1339), esa fila JAMÁS mete el IVU del carrier ahí: o
+  // trae el IVU real del cliente, o queda en blanco. El respaldo mandaba un
+  // número que no le correspondía a ese consignatario.
+  const ivu11    = sanitizeIdentificador(bl.hacienda_client_ivu || '');
   return (
     '1' +
     pad(sanitizeIdentificador(bl.bl_no), 16) + // [1:17]
@@ -394,7 +505,7 @@ function generateTxtLine1(bl, manifest, containerNo) {
     pad(quitarAcentos(bl.consignor_name), 60) +  // [83:143]
     pad(loadPort, 3) +            // [143:146]
     pad(discPort, 3) +            // [146:149]
-    pad(discPort, 3) +            // [149:152]
+    pad(destPort, 3) +            // [149:152]
     'C' +                         // [152]
     valCents +                    // [153:162]
     'C' +                         // [162]
@@ -414,7 +525,7 @@ function generateTxtLine1(bl, manifest, containerNo) {
 //  [17:22]   qty (5)
 //  [22:28]   unit_type (6) — 'BOX   ' si tiene contenedor, 'LSE   ' si no
 //  [28:35]   weight (7) = gross_weight_kg × 100
-//  [35:38]   tariff (3)
+//  [35:38]   tamaño del contenedor (3)
 //  [38:159]  goods_description (121)
 //  [159:164] qty_repeat (5)
 //  [164:179] hacienda_item_code (15) zero-padded izquierda
@@ -435,9 +546,15 @@ function generateTxtLine1(bl, manifest, containerNo) {
  */
 function generateTxtLine2(bl, containerNo, containerCount, item) {
   const src       = item || bl;
-  const tariff    = pad(src.hacienda_tariff || bl.hacienda_tariff || '   ', 3);
-  const totalWeight = toNum(src.gross_weight);
-  const weightPerCont = (!item && containerCount > 1) ? totalWeight / containerCount : totalWeight;
+  // [35:38] es BOLITEM.volume: el mismo tamaño del contenedor en pies ('053').
+  const tariff    = pad(tamanoDelContenedor(bl, containerNo), 3);
+  // Con varios contenedores el peso del B/L suele ser el de UNO solo (el XML/PDF
+  // lo trae así en 137 de 175 casos reales); el TXT correcto reparte la SUMA de
+  // los contenedores en partes iguales. Sin pesos de contenedor confiables se
+  // cae al peso del B/L.
+  const repartir = !item && containerCount > 1;
+  const totalWeight = repartir ? (pesoSumadoDeContenedores(bl) ?? toNum(src.gross_weight)) : toNum(src.gross_weight);
+  const weightPerCont = repartir ? totalWeight / containerCount : totalWeight;
   const weightG   = padZ(Math.round(weightPerCont * 100), 7);
   const goodsDesc = pad(quitarAcentos((src.goods_name || '').replace(/[\r\n]+/g, ' ')), 121);
   const qty       = padZ(src.package_qty || bl.package_qty || 0, 5);
@@ -504,7 +621,10 @@ function generateFullTxt(manifest, bls) {
 module.exports = {
   pad, padL, padZ,
   sanitizeSS,
-  toSiscommatePort,
+  toSiscommatePort, calcularPuertosDbf,
   generateTxtLine0, generateTxtLine1, generateTxtLine2,
   generateFullTxt,
+  quitarAcentos, sanitizeIdentificador, normalizarEmpaque,
+  normalizarTamano, tamanoDelContenedor, contenedoresSinTamano, pesoSumadoDeContenedores, pesoMaximoPorLinea,
+  setting,
 };

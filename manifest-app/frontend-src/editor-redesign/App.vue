@@ -8,6 +8,7 @@ import {
   datosManifiesto, blActual, stats, estado, estadoDerecha, toastMsg, toastTipo,
   cargarCatalogos, cargarManifiestos, seleccionarManifiesto, cargarStats,
   guardarPendientes, toast, setEstado, restaurarSeleccion,
+  manifiestosEliminadosSiscommate, sinTamanoEnValidados, sincronizarEstadoManifiesto,
 } from '../editor/store';
 import Sidebar from './Sidebar.vue';
 import EditorPanel from './EditorPanel.vue';
@@ -15,7 +16,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { Upload, Settings, Ship, Eye, FileOutput, DatabaseZap, Database, Loader2, FileUp, X, PanelLeftClose, PanelLeftOpen, Check } from '@lucide/vue';
+import { Upload, Settings, Ship, Eye, FileOutput, DatabaseZap, Database, Loader2, FileUp, X, PanelLeftClose, PanelLeftOpen, Check, CheckCheck, RefreshCw } from '@lucide/vue';
 
 const bridgeOnline = ref(false);
 const archivoInput = ref<HTMLInputElement | null>(null);
@@ -30,7 +31,40 @@ function alternarSidebar() {
   localStorage.setItem(SIDEBAR_KEY, sidebarAbierto.value ? '1' : '0');
 }
 
-const modal = ref<{ titulo: string; cuerpo: string; botones: Array<{ label: string; variant: string; accion: () => void }> } | null>(null);
+const modal = ref<{
+  titulo: string; cuerpo: string; botones: Array<{ label: string; variant: string; accion: () => void }>;
+  // Solo lo usa el modal "Confirmar carga" cuando hay B/L en otro viaje —
+  // ver subir(). No se mete en el sistema genérico de modales para todo lo
+  // demás, que no necesita esto.
+  enOtroViaje?: Array<{ id: number; bl_no: string; voyage_no: string }>;
+  // Solo lo usa el modal "Cargar como viaje nuevo" — ver pedirVoyageNuevo().
+  pedirTexto?: boolean;
+  // El modal de confirmar carga de VARIOS archivos lista uno por línea — con
+  // 5+ archivos (caso real: un manifiesto de islas partido en varios PDF) el
+  // modal angosto de siempre quedaba altísimo. Este ensancha ESE modal en
+  // particular sin afectar los demás (mensajes de una o dos líneas, que se
+  // ven mejor angostos).
+  ancho?: boolean;
+  // Solo lo usa el modal de confirmar carga de VARIOS archivos cuando dos o
+  // más comparten el mismo VoyageNo (entre ellos o con un viaje ya existente)
+  // — ver subirVarios(). Cada fila es un input real con v-model propio (no el
+  // texto estático de `cuerpo`), porque cada archivo en conflicto necesita
+  // poder resolverse con un nombre distinto de forma independiente. Objeto
+  // plano (no ref individual): `modal` ya es reactivo en profundidad, así que
+  // mutar `item.nombre` alcanza sin envolver cada campo aparte.
+  archivosConflicto?: Array<{ archivo: File; nombre: string }>;
+} | null>(null);
+// Nombre que el operador escribe para el viaje nuevo cuando el archivo trae
+// un VoyageNo que ya existe pero, a diferencia del caso normal (mismo viaje,
+// B/L nuevos), en realidad es un manifiesto operativamente distinto — caso
+// real: dos XML de la DGA para "CF371" y "CF371TB", mismo viaje físico pero
+// booking distinto, que antes se unificaban sin poder evitarlo.
+const nuevoVoyageNo = ref('');
+// true por defecto: es lo que se pidió — que esos B/L se puedan mover al
+// viaje nuevo en el mismo paso de carga, en vez de tener que hacerlo a mano
+// después. El operador puede destildarlo si de verdad quiere dejarlos donde
+// están (por ejemplo, si de verdad pertenecen a ese otro viaje).
+const moverEnOtroViaje = ref(true);
 function cerrarModal() { modal.value = null; }
 function confirmar(titulo: string, cuerpo: string, accion: () => void) {
   modal.value = { titulo, cuerpo, botones: [
@@ -129,21 +163,72 @@ async function subir(archivo: File | undefined) {
     }
     if (preview.en_otro_viaje?.length) {
       const lista = preview.en_otro_viaje.map((m: { bl_no: string; voyage_no: string }) => `${m.bl_no} → ${m.voyage_no}`).join(', ');
-      partes.push(`<span class="text-status-pending">${preview.en_otro_viaje.length} B/L de este archivo ya están en otro viaje y no se van a mover: ${lista}.</span>`);
+      partes.push(`<span class="text-status-pending">${preview.en_otro_viaje.length} B/L de este archivo ya están en otro viaje: ${lista}. Podés elegir moverlos aquí abajo.</span>`);
+    }
+    // Advertencias del parser (peso que no cuadra, contenedores reconectados
+    // a mano por celda fusionada, B/L sin contenedor) — se muestran ANTES de
+    // cargar para que se puedan revisar a mano si algo se ve raro, en vez de
+    // notarlo días después como pasó con CF365.
+    if (preview.warnings?.length) {
+      const avisos = preview.warnings.map((w: string) => `<li>${w}</li>`).join('');
+      partes.push(`<div class="mt-2 rounded border border-status-pending/40 bg-status-pending/10 p-2 text-status-pending"><strong>Revisar antes de continuar:</strong><ul class="ml-4 list-disc">${avisos}</ul></div>`);
     }
 
-    const ejecutarCarga = async () => {
+    const cargarConFormData = async (mensajeExito: (data: any) => string) => {
       cerrarModal();
       setEstado('Cargando manifiesto...');
       try {
         const r = await fetch('/api/manifests/upload', { method: 'POST', body: fd });
         const data = await r.json();
         if (!data.ok) throw new Error(data.error);
-        toast(data.mensaje || `Manifiesto cargado: ${data.bl_count} B/L`);
+        toast(mensajeExito(data));
         await cargarManifiestos();
         await seleccionarManifiesto(data.manifest_id);
       } catch (e) { toast('Error: ' + (e as Error).message, 'err'); setEstado('Error cargando manifiesto'); }
       if (archivoInput.value) archivoInput.value.value = '';
+    };
+
+    const ejecutarCarga = () => {
+      const moverEstos = moverEnOtroViaje.value ? (modal.value?.enOtroViaje ?? []) : [];
+      // El mover va en la MISMA petición de carga (mover_ids), no en una
+      // llamada aparte después — así el backend calcula su posición real
+      // dentro de este documento (sort_seq) igual que a los B/L insertados
+      // de cero. Antes, moverlos con una llamada separada conservaba su id
+      // viejo (de cuando se insertaron por primera vez, casi siempre mucho
+      // más bajo) y por eso siempre saltaban al principio de la lista en
+      // vez de quedar en su posición real del PDF.
+      if (moverEstos.length) fd.set('mover_ids', JSON.stringify(moverEstos.map(m => m.id)));
+      return cargarConFormData(data => {
+        let mensaje = data.mensaje || `Manifiesto cargado: ${data.bl_count} B/L`;
+        if (data.movidos?.length) mensaje += ` · ${data.movidos.length} B/L movidos aquí desde su viaje anterior`;
+        if (data.omitidos?.length) mensaje += ` · ${data.omitidos.length} no se pudieron mover: ${data.omitidos.map((o: { motivo: string }) => o.motivo).join('; ')}`;
+        return mensaje;
+      });
+    };
+
+    // Dos archivos distintos (típicamente dos XML de la DGA) pueden traer el
+    // MISMO VoyageNo en su propio encabezado sin ser, operativamente, el
+    // mismo manifiesto — ej. "CF371" y "CF371TB" para el mismo buque/viaje
+    // físico pero booking distinto. Antes no había forma de evitar que se
+    // unificaran bajo un solo viaje; acá el operador puede pedir que este
+    // archivo se cargue como un viaje separado, con el nombre que él elija.
+    const pedirVoyageNuevo = () => {
+      nuevoVoyageNo.value = '';
+      modal.value = {
+        titulo: 'Cargar como viaje nuevo',
+        cuerpo: `Este archivo trae el viaje <strong>${preview.voyage_no}</strong>, que ya existe. ` +
+          `Escribe un nombre distinto para cargarlo como un viaje aparte (sus B/L no se van a mezclar con el viaje <strong>${preview.voyage_no}</strong> existente).`,
+        pedirTexto: true,
+        botones: [
+          { label: 'Cancelar', variant: 'outline', accion: () => { cerrarModal(); if (archivoInput.value) archivoInput.value.value = ''; } },
+          { label: 'Crear viaje', variant: 'default', accion: () => {
+            const nombre = nuevoVoyageNo.value.trim();
+            if (!nombre) { toast('Escribe un nombre para el viaje nuevo', 'err'); return; }
+            fd.set('voyage_no_override', nombre);
+            cargarConFormData(data => data.mensaje || `Viaje "${nombre}" creado con ${data.bl_count} B/L`);
+          } },
+        ],
+      };
     };
 
     if (!preview.nuevos_count) {
@@ -154,18 +239,128 @@ async function subir(archivo: File | undefined) {
       setEstado('Listo');
       return;
     }
-    modal.value = { titulo: 'Confirmar carga', cuerpo: partes.join(' '), botones: [
-      { label: 'Cancelar', variant: 'outline', accion: () => { cerrarModal(); if (archivoInput.value) archivoInput.value.value = ''; } },
-      { label: `Cargar ${preview.nuevos_count} B/L`, variant: 'default', accion: ejecutarCarga },
-    ] };
+    moverEnOtroViaje.value = true;
+    modal.value = {
+      titulo: 'Confirmar carga', cuerpo: partes.join(' '),
+      enOtroViaje: preview.en_otro_viaje,
+      botones: [
+        { label: 'Cancelar', variant: 'outline', accion: () => { cerrarModal(); if (archivoInput.value) archivoInput.value.value = ''; } },
+        ...(preview.existe_viaje ? [{ label: 'Cargar como viaje nuevo', variant: 'outline', accion: pedirVoyageNuevo }] : []),
+        { label: `Cargar ${preview.nuevos_count} B/L`, variant: 'default', accion: ejecutarCarga },
+      ],
+    };
     setEstado('Listo');
   } catch (e) { toast('Error: ' + (e as Error).message, 'err'); setEstado('Error cargando manifiesto'); if (archivoInput.value) archivoInput.value.value = ''; }
 }
+
+// Caso real: un manifiesto de un viaje a islas (AU/CF) puede venir partido
+// en varios PDF (el sistema de origen no genera uno solo) — todos con el
+// MISMO VoyageNo, así que el flujo normal de "reimportar el mismo viaje, se
+// suman los B/L nuevos" (ver subir()) ya los mezcla bien uno por uno. Esto
+// solo evita tener que confirmar el modal 5 veces: junta la vista previa de
+// TODOS los archivos en un solo resumen y, al confirmar, los sube uno por
+// uno en orden (no en paralelo — el segundo archivo necesita ver en la base
+// el viaje que creó el primero para sumarse ahí en vez de crear uno nuevo).
+// A propósito NO ofrece "mover B/L de otro viaje" acá: es una decisión para
+// un archivo a la vez, y agruparla para N archivos heterogéneos complicaría
+// el resumen sin un caso real que lo pida todavía.
+async function subirVarios(archivos: File[]) {
+  if (!archivos.length) return;
+  if (archivos.length === 1) { await subir(archivos[0]); return; }
+
+  setEstado(`Revisando ${archivos.length} archivos...`);
+  const previos = await Promise.all(archivos.map(async archivo => {
+    try {
+      const fd = new FormData(); fd.append('xml', archivo);
+      const rp = await fetch('/api/manifests/upload/preview', { method: 'POST', body: fd });
+      const preview = await rp.json();
+      if (!rp.ok) throw new Error(preview.error);
+      return { archivo, preview, error: undefined as string | undefined };
+    } catch (e) { return { archivo, preview: undefined as any, error: (e as Error).message }; }
+  }));
+
+  const validos = previos.filter(p => p.preview);
+
+  // Dos (o más) archivos de este MISMO lote pueden traer el mismo VoyageNo en
+  // su encabezado sin ser, operativamente, el mismo manifiesto — ej. "CF372"
+  // y "CF372TB" (mismo buque/viaje físico, booking distinto). Como la vista
+  // previa de cada archivo se pide en paralelo, ninguno ve todavía el viaje
+  // que crearía OTRO archivo del mismo lote — sin esto, el segundo se suma
+  // calladamente al viaje que el primero acaba de crear. Se detecta tanto la
+  // colisión ENTRE archivos de este lote como contra un viaje que ya existía
+  // antes de subir nada (preview.existe_viaje).
+  const conteoPorViaje = new Map<string, number>();
+  validos.forEach(p => conteoPorViaje.set(p.preview.voyage_no, (conteoPorViaje.get(p.preview.voyage_no) || 0) + 1));
+  const enConflicto = validos.filter(p => p.preview.existe_viaje || (conteoPorViaje.get(p.preview.voyage_no) || 0) > 1);
+  // Se precarga con el MISMO VoyageNo original: si el operador no toca nada,
+  // el comportamiento es idéntico al de siempre (se combinan) — el caso real
+  // de un manifiesto de islas partido en varios PDF SÍ debe combinarse. Solo
+  // si escribe un nombre distinto ese archivo se separa.
+  const nombresConflicto = new Map(enConflicto.map(p => [p.archivo, { archivo: p.archivo, nombre: p.preview.voyage_no }]));
+
+  // Grilla de 2 columnas en vez de una lista vertical: con 5+ archivos (caso
+  // real: un manifiesto de islas partido en varios PDF) una lista de una
+  // sola columna se volvía altísima. Acompañado del modal más ancho
+  // (ver "ancho" en el tipo de `modal`), esto reparte los archivos en ancho
+  // en vez de en alto.
+  const filas = previos.map(p => p.error
+    ? `<div class="rounded border border-border bg-paper-sunken px-2 py-1.5"><strong class="block truncate">${p.archivo.name}</strong><span class="text-danger">${p.error}</span></div>`
+    : `<div class="rounded border border-border bg-paper-sunken px-2 py-1.5"><strong class="block truncate">${p.archivo.name}</strong>${p.preview.existe_viaje
+        ? `${p.preview.nuevos_count} B/L nuevos al viaje <strong>${p.preview.voyage_no}</strong>`
+        : `crea el viaje <strong>${p.preview.voyage_no}</strong> con ${p.preview.nuevos_count} B/L`}</div>`
+  ).join('');
+  const avisos = previos.flatMap(p => p.preview?.warnings || []);
+  const cuerpo = `<div class="grid grid-cols-1 gap-1.5 sm:grid-cols-2">${filas}</div>` + (avisos.length
+    ? `<div class="mt-2 rounded border border-status-pending/40 bg-status-pending/10 p-2 text-status-pending"><strong>Revisar antes de continuar:</strong><ul class="ml-4 list-disc">${avisos.map(w => `<li>${w}</li>`).join('')}</ul></div>`
+    : '');
+
+  if (!validos.length) {
+    modal.value = { titulo: 'No se pudo leer ningún archivo', cuerpo, ancho: true,
+      botones: [{ label: 'Entendido', variant: 'default', accion: () => { cerrarModal(); if (archivoInput.value) archivoInput.value.value = ''; } }] };
+    setEstado('Error');
+    return;
+  }
+
+  modal.value = {
+    titulo: `Confirmar carga de ${validos.length} archivo${validos.length > 1 ? 's' : ''}` +
+      (validos.length < previos.length ? ` (${previos.length - validos.length} con error, se omiten)` : ''),
+    cuerpo, ancho: true,
+    archivosConflicto: enConflicto.length ? enConflicto.map(p => nombresConflicto.get(p.archivo)!) : undefined,
+    botones: [
+      { label: 'Cancelar', variant: 'outline', accion: () => { cerrarModal(); if (archivoInput.value) archivoInput.value.value = ''; } },
+      { label: `Cargar ${validos.length} archivo${validos.length > 1 ? 's' : ''}`, variant: 'default', accion: async () => {
+        cerrarModal();
+        let ultimoManifestId: number | null = null;
+        const resultados: string[] = [];
+        for (const { archivo, preview } of validos) {
+          setEstado(`Cargando ${archivo.name}...`);
+          try {
+            const fd = new FormData(); fd.append('xml', archivo);
+            const nombreFinal = nombresConflicto.get(archivo)?.nombre.trim();
+            if (nombreFinal && nombreFinal !== preview.voyage_no) fd.set('voyage_no_override', nombreFinal);
+            const r = await fetch('/api/manifests/upload', { method: 'POST', body: fd });
+            const data = await r.json();
+            if (!data.ok) throw new Error(data.error);
+            resultados.push(`${archivo.name}: ${data.mensaje || `${data.bl_count} B/L`}`);
+            ultimoManifestId = data.manifest_id ?? ultimoManifestId;
+          } catch (e) { resultados.push(`${archivo.name}: ERROR — ${(e as Error).message}`); }
+        }
+        toast(resultados.join(' · '));
+        await cargarManifiestos();
+        if (ultimoManifestId) await seleccionarManifiesto(ultimoManifestId);
+        setEstado('Listo');
+        if (archivoInput.value) archivoInput.value.value = '';
+      } },
+    ],
+  };
+  setEstado('Listo');
+}
+
 function soltar(e: DragEvent) {
   arrastrando.value = false;
-  const f = e.dataTransfer?.files[0];
-  if (!f || !/\.(xml|pdf)$/i.test(f.name)) { toast('Selecciona un archivo .xml o .pdf', 'err'); return; }
-  subir(f);
+  const archivos = Array.from(e.dataTransfer?.files || []).filter(f => /\.(xml|pdf)$/i.test(f.name));
+  if (!archivos.length) { toast('Selecciona un archivo .xml o .pdf', 'err'); return; }
+  subirVarios(archivos);
 }
 
 async function exportarTxt() {
@@ -237,8 +432,147 @@ async function pushSiscommate() {
   enviando.value = false;
 }
 
+// ── Validar todos los B/L del viaje ──
+// Valida solo los completos (misma regla que el export y que el punto rojo del
+// sidebar, decidida en el servidor); los incompletos se quedan pendientes y
+// se listan con su motivo. Los B/L que se movieron aquí entran como cualquier
+// otro: mover conserva el estado de cada B/L.
+const validandoTodos = ref(false);
+const blsPendientes = computed(() => (datosManifiesto.value?.bls ?? []).filter(b => b.status !== 'validado').length);
+// Los números de B/L vienen de archivos del transportista y el modal pinta HTML.
+const escapar = (t: unknown) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+function validarTodosLosBL() {
+  const m = datosManifiesto.value?.manifest;
+  if (!m) { toast('Selecciona un manifiesto', 'err'); return; }
+  const n = blsPendientes.value;
+  modal.value = { titulo: 'Validar todos los B/L', cuerpo:
+    `Se van a revisar los ${n} B/L pendientes del viaje ${escapar(m.voyage_no)}. Los que estén completos `
+    + '(código arancelario, SS/EIN del consignatario y tamaño de cada contenedor) quedan validados. '
+    + 'Los que tengan algo pendiente NO se tocan, y te digo cuáles son y por qué.',
+    botones: [
+      { label: 'Cancelar', variant: 'outline', accion: cerrarModal },
+      { label: 'Validar', variant: 'default', accion: () => { cerrarModal(); ejecutarValidarTodos(m.id); } },
+    ] };
+}
+async function ejecutarValidarTodos(manifestId: number) {
+  validandoTodos.value = true;
+  setEstado('Validando B/L...');
+  try {
+    // Lo que se está editando en el B/L abierto tiene que estar guardado antes,
+    // o se validaría con datos viejos.
+    await guardarPendientes();
+    const r = await api.validarTodos(manifestId);
+    const d = datosManifiesto.value;
+    if (d && d.manifest.id === manifestId) {
+      const ids = new Set(r.validados.map(b => b.id));
+      d.bls.forEach(b => { if (ids.has(b.id)) b.status = 'validado'; });
+      if (blActual.value && ids.has(blActual.value.id)) blActual.value.status = 'validado';
+    }
+    sincronizarEstadoManifiesto(manifestId, r.manifest_status);
+    await cargarManifiestos();
+    cargarStats();
+    const resumen = `${r.validados.length} B/L validados` + (r.omitidos.length ? `, ${r.omitidos.length} con pendientes` : '');
+    setEstado(resumen);
+    if (r.omitidos.length) {
+      toast(resumen);
+      avisar(`${r.validados.length} validados — ${r.omitidos.length} quedaron pendientes`,
+        'Estos B/L no se validaron porque les falta algo. Corrígelos y vuelve a validar:'
+        + `<ul class="mt-2 ml-4 list-disc text-sm">${r.omitidos.map(o => `<li><b>${escapar(o.bl_no)}</b>: ${o.motivos.map(escapar).join('; ')}</li>`).join('')}</ul>`);
+    } else if (r.validados.length) {
+      toast(`${r.validados.length} B/L validados`);
+    } else {
+      toast('No había B/L pendientes por validar');
+    }
+  } catch (e) {
+    let msg = (e as Error).message;
+    try { msg = JSON.parse(msg).error || msg; } catch { /* texto plano */ }
+    avisar('No se pudo validar', escapar(msg));
+    setEstado('Error al validar B/L');
+  }
+  validandoTodos.value = false;
+}
+
+const sincronizando = ref(false);
+async function sincronizarDesdeSiscommate() {
+  const m = datosManifiesto.value?.manifest;
+  if (!m) { toast('Selecciona un manifiesto', 'err'); return; }
+  modal.value = { titulo: 'Sincronizar desde SISCOMMATE', cuerpo:
+    `Se va a traer lo que haya en SISCOMMATE ahora mismo para el viaje ${m.voyage_no} y va a `
+    + 'SOBREESCRIBIR nombre, código arancelario, descripción, peso, cantidad, valor y contenedor '
+    + 'de cada B/L que encuentre allá — sin mostrar qué cambió antes de aplicarlo. Cada B/L '
+    + 'encontrado en SISCOMMATE queda marcado como validado. ¿Continuar?',
+    botones: [
+      { label: 'Cancelar', variant: 'outline', accion: cerrarModal },
+      { label: 'Sincronizar', variant: 'default', accion: () => { cerrarModal(); ejecutarSincronizacion(m.id); } },
+    ] };
+}
+async function ejecutarSincronizacion(manifestId: number) {
+  sincronizando.value = true;
+  setEstado('Sincronizando desde SISCOMMATE...');
+  try {
+    const r = await api.sincronizarDesdeSiscommate(manifestId);
+    if (r.actualizados > 0) {
+      mostrarEnvioExitoso();
+      toast(`${r.actualizados} B/L actualizados y validados desde SISCOMMATE`);
+      setEstado(`Sincronizado: ${r.actualizados} de ${r.total_en_siscommate} B/L en SISCOMMATE aplicados localmente.`);
+    } else {
+      toast(r.mensaje || 'No se encontró nada que sincronizar');
+      setEstado(r.mensaje || 'No se encontró nada que sincronizar');
+    }
+    await cargarManifiestos();
+    await seleccionarManifiesto(manifestId);
+  } catch (e) {
+    let msg = (e as Error).message;
+    try { msg = JSON.parse(msg).error || msg; } catch { /* texto plano */ }
+    avisar('No se pudo sincronizar desde SISCOMMATE', msg);
+    setEstado('Error al sincronizar desde SISCOMMATE');
+  }
+  sincronizando.value = false;
+}
+
 const viendoVivo = ref(false);
 const vivo = ref<DatosSiscommateVivo | null>(null);
+
+// ── Detectar un viaje eliminado en SISCOMMATE desde su app nativa ──────────
+// Caso real: ella borra un viaje en SISCOMMATE directamente (no desde
+// acá) — la webapp nunca se entera sola, sigue mostrándolo como "ya
+// enviado" para siempre (ver comentario en la ruta /reabrir-siscommate).
+// manifiestosEliminadosSiscommate (store.ts) ya revisa TODO el sidebar en
+// segundo plano al cargar la lista de viajes — este computed solo lee ese
+// resultado para el viaje que está abierto ahora mismo. El watch de abajo
+// vuelve a revisar puntualmente al abrir un viaje, por si el chequeo masivo
+// todavía no había corrido o el bridge estaba caído en ese momento.
+const siscommateEliminado = computed(() => {
+  const id = datosManifiesto.value?.manifest.id;
+  return id != null && manifiestosEliminadosSiscommate.has(id);
+});
+const reabriendo = ref(false);
+watch(() => datosManifiesto.value?.manifest.id, async (id) => {
+  const m = datosManifiesto.value?.manifest;
+  if (!id || !m || m.status !== 'siscommate') return;
+  try {
+    const datos = await api.siscommateVivo(id);
+    if (datos.encontrado) manifiestosEliminadosSiscommate.delete(id);
+    else manifiestosEliminadosSiscommate.add(id);
+  } catch { /* bridge caído u offline — no se avisa nada a ciegas */ }
+});
+async function reabrirSiscommate() {
+  const m = datosManifiesto.value?.manifest;
+  if (!m) return;
+  reabriendo.value = true;
+  try {
+    const r = await api.reabrirSiscommate(m.id);
+    toast(`Viaje reabierto — ${r.bls_reabiertos} B/L quedaron listos para reenviarse a SISCOMMATE`);
+    manifiestosEliminadosSiscommate.delete(m.id);
+    await cargarManifiestos();
+    await seleccionarManifiesto(m.id);
+  } catch (e) {
+    let msg = (e as Error).message;
+    try { msg = JSON.parse(msg).error || msg; } catch { /* texto plano */ }
+    avisar('No se pudo reabrir el viaje', msg);
+  }
+  reabriendo.value = false;
+}
 
 // Columnas que el bridge SIEMPRE escribe con el mismo valor fijo (ver
 // SiscommateBridge.cs, INSERT INTO BOL/BOLITEM) — no son un dato real por
@@ -310,7 +644,8 @@ onMounted(async () => {
       </div>
       <Button variant="outline" size="sm" as-child><a href="/admin.html" target="_blank"><Settings class="size-3.5" />Admin</a></Button>
       <Button size="sm" @click="abrirSubida"><Upload class="size-3.5" />Cargar XML/PDF</Button>
-      <input type="file" ref="archivoInput" accept=".xml,.pdf" class="hidden" @change="subir(($event.target as HTMLInputElement).files?.[0])" />
+      <input type="file" ref="archivoInput" accept=".xml,.pdf" multiple class="hidden"
+        @change="subirVarios(Array.from(($event.target as HTMLInputElement).files || []))" />
     </header>
 
     <div class="flex flex-1 overflow-hidden">
@@ -323,7 +658,19 @@ onMounted(async () => {
           <span class="text-xs text-ink-faint">{{ datosManifiesto.manifest.vessel_name || '' }}</span>
           <div class="flex-1"></div>
           <Button variant="outline" size="sm" :disabled="!blActual" @click="blActual && verTxt(blActual.id)"><Eye class="size-3.5" />Ver TXT</Button>
-          <Button size="sm" @click="exportarTxt"><FileOutput class="size-3.5" />Exportar TXT</Button>
+          <Button variant="outline" size="sm" :disabled="validandoTodos || !blsPendientes"
+            :title="blsPendientes ? `Valida los B/L completos de este viaje; los incompletos quedan pendientes (${blsPendientes} pendientes)` : 'Todos los B/L de este viaje ya están validados'"
+            @click="validarTodosLosBL">
+            <Loader2 v-if="validandoTodos" class="size-3.5 animate-spin" /><CheckCheck v-else class="size-3.5" />
+            {{ validandoTodos ? 'Validando...' : 'Validar todos' }}
+            <span v-if="blsPendientes && !validandoTodos" class="ml-1 rounded-full bg-accent-soft px-1.5 text-[11px] text-accent">{{ blsPendientes }}</span>
+          </Button>
+          <Button size="sm" :variant="sinTamanoEnValidados ? 'destructive' : 'default'"
+            :title="sinTamanoEnValidados ? `Faltan ${sinTamanoEnValidados} tamaño(s) de contenedor en B/L validados; el export se bloqueará` : ''"
+            @click="exportarTxt">
+            <FileOutput class="size-3.5" />Exportar TXT
+            <span v-if="sinTamanoEnValidados" class="ml-1 rounded-full bg-destructive/20 px-1.5 text-[11px]">{{ sinTamanoEnValidados }} sin tamaño</span>
+          </Button>
           <Button size="sm" variant="outline" class="border-status-siscommate text-status-siscommate hover:bg-status-siscommate-soft hover:text-status-siscommate" :disabled="enviando" @click="pushSiscommate">
             <Loader2 v-if="enviando" class="size-3.5 animate-spin" /><DatabaseZap v-else class="size-3.5" />
             {{ enviando ? 'Guardando...' : 'Guardar en SISCOMMATE' }}
@@ -331,6 +678,21 @@ onMounted(async () => {
           <Button variant="outline" size="sm" :disabled="viendoVivo" @click="verSiscommateVivo">
             <Loader2 v-if="viendoVivo" class="size-3.5 animate-spin" /><Database v-else class="size-3.5" />
             Ver en SISCOMMATE
+          </Button>
+          <Button variant="outline" size="sm" :disabled="sincronizando" title="Trae lo que haya en SISCOMMATE ahora mismo y sobreescribe estos B/L localmente, marcándolos validado" @click="sincronizarDesdeSiscommate">
+            <Loader2 v-if="sincronizando" class="size-3.5 animate-spin" /><RefreshCw v-else class="size-3.5" />
+            {{ sincronizando ? 'Sincronizando...' : 'Sincronizar desde SISCOMMATE' }}
+          </Button>
+        </div>
+
+        <div v-if="siscommateEliminado" class="flex shrink-0 items-center gap-3 border-b border-danger/40 bg-danger-soft px-4 py-2 text-sm text-danger">
+          <span class="flex-1">
+            Este viaje está marcado como "enviado a SISCOMMATE" acá, pero ya no existe allá —
+            probablemente lo eliminaron con la app nativa de SISCOMMATE.
+          </span>
+          <Button size="sm" variant="destructive" :disabled="reabriendo" @click="reabrirSiscommate">
+            <Loader2 v-if="reabriendo" class="size-3.5 animate-spin" />
+            {{ reabriendo ? 'Reabriendo...' : 'Reabrir para reenviar' }}
           </Button>
         </div>
 
@@ -396,9 +758,25 @@ onMounted(async () => {
     </div>
 
     <Dialog :open="!!modal" @update:open="(v) => !v && cerrarModal()">
-      <DialogContent v-if="modal">
+      <DialogContent v-if="modal" :class="modal.ancho && 'sm:max-w-2xl'">
         <DialogHeader><DialogTitle>{{ modal.titulo }}</DialogTitle></DialogHeader>
         <div class="text-sm text-ink-muted" v-html="modal.cuerpo"></div>
+        <Input v-if="modal.pedirTexto" v-model="nuevoVoyageNo" placeholder="ej. CF371TB" class="h-9 font-mono text-xs" autofocus />
+        <div v-if="modal.archivosConflicto?.length" class="flex flex-col gap-2 rounded-md border border-status-pending/40 bg-status-pending/10 p-2.5">
+          <p class="text-xs text-status-pending">
+            Estos archivos comparten el número de viaje entre sí o con uno ya existente. Si es el
+            MISMO viaje partido en varios archivos, dejalos tal cual (se van a combinar). Si son
+            viajes distintos, escribe un nombre diferente para separarlos.
+          </p>
+          <div v-for="item in modal.archivosConflicto" :key="item.archivo.name" class="flex items-center gap-2">
+            <span class="flex-1 truncate text-xs">{{ item.archivo.name }}</span>
+            <Input v-model="item.nombre" class="h-8 w-36 font-mono text-xs" />
+          </div>
+        </div>
+        <label v-if="modal.enOtroViaje?.length" class="flex items-center gap-2 rounded-md border border-border bg-paper-sunken px-3 py-2 text-sm">
+          <input type="checkbox" v-model="moverEnOtroViaje" class="size-3.5" />
+          Mover esos {{ modal.enOtroViaje.length }} B/L a este viaje también
+        </label>
         <DialogFooter>
           <Button v-for="(b, i) in modal.botones" :key="i" :variant="(b.variant as any)" @click="b.accion">{{ b.label }}</Button>
         </DialogFooter>

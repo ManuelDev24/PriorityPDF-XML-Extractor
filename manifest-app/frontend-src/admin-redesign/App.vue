@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import { api, type ContainerType, type EnvioSiscommate } from '../admin/api';
+import { api, type ContainerType, type EnvioSiscommate, type Cliente, type ClienteDuplicado, type Consignador, type PreviewAuditoria } from '../admin/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -14,7 +14,60 @@ import {
 import {
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell, TableFooter,
 } from '@/components/ui/table';
-import { Trash2 } from '@lucide/vue';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { Trash2, Search, RefreshCw, Plus } from '@lucide/vue';
+import ClientesTable from './ClientesTable.vue';
+import ConsignadoresTable from './ConsignadoresTable.vue';
+import Paginador from './Paginador.vue';
+
+// Barra lateral de navegación — cada sección es su propia pantalla completa,
+// nunca se apilan varias tarjetas grandes una debajo de otra (motivo del
+// cambio: la vieja estructura de 3 pestañas obligaba a escrollear cada vez
+// más a medida que se agregaban funciones nuevas a la misma pestaña).
+interface SeccionNav { id: string; label: string; badge?: number | null }
+interface GrupoNav { titulo: string; items: SeccionNav[] }
+
+const navGrupos = computed<GrupoNav[]>(() => [
+  {
+    titulo: 'Sistema',
+    items: [
+      { id: 'bridge', label: 'Conexión SISCOMMATE' },
+      { id: 'contenedores', label: 'Tipos de contenedor', badge: filas.value.length || null },
+      { id: 'historial', label: 'Historial de envíos', badge: historial.value.length || null },
+    ],
+  },
+  {
+    titulo: 'Catálogos',
+    items: [
+      { id: 'clientes', label: 'Clientes', badge: totalClientes.value },
+      { id: 'consignadores', label: 'Consignadores', badge: totalConsignadoresSiscommate.value },
+      { id: 'sugerencias', label: 'Sugerencias inteligentes' },
+    ],
+  },
+  {
+    titulo: 'Datos',
+    items: [
+      { id: 'auditoria', label: 'Auditoría de datos' },
+    ],
+  },
+]);
+const IDS_SECCION_VALIDOS = ['bridge', 'contenedores', 'historial', 'clientes', 'consignadores', 'sugerencias', 'auditoria'];
+
+// Recordar la sección activa entre recargas — conveniencia por navegador, no
+// dato que valga la pena guardar en el servidor. Si quedó guardado un id de
+// la vieja estructura de pestañas (p.ej. "config"), no calza con ninguna
+// sección nueva y cae al respaldo en vez de mostrar una pantalla en blanco.
+function seccionGuardada(): string {
+  try {
+    const v = localStorage.getItem('admin_seccion');
+    return v && IDS_SECCION_VALIDOS.includes(v) ? v : 'bridge';
+  } catch { return 'bridge'; }
+}
+const seccionActiva = ref(seccionGuardada());
+function cambiarSeccion(id: string) {
+  seccionActiva.value = id;
+  try { localStorage.setItem('admin_seccion', id); } catch { /* privado/bloqueado: no pasa nada */ }
+}
 
 const FALLBACK_TAMANOS = ['20', '40', '40HC', '45', '48', '53', 'RORO'];
 
@@ -168,12 +221,392 @@ async function correrAnalisisLocal() {
   } finally { corriendoLocal.value = false; }
 }
 
-onMounted(() => { cargarSettings(); cargarTipos(); cargarTamanos(); checkBridge(); cargarHistorial(); });
+// ── Catálogo de clientes (caché local de CUSTOMER.DBF de SISCOMMATE) ──
+// Paginación real (ver admin/api.ts: listaClientes) — antes se traían como
+// mucho 100 filas y se "paginaban" del lado del navegador sobre ese
+// recorte: con más de 100 coincidencias reales, el resto quedaba invisible
+// sin ningún aviso. Ahora cada página pide exactamente sus filas al
+// servidor, con el total REAL de la búsqueda.
+const POR_PAGINA_CLIENTES = 25;
+const totalClientes = ref<number | null>(null);
+const busquedaCliente = ref('');
+const clientesFiltrados = ref<Cliente[]>([]);
+const totalClientesFiltrados = ref(0);
+const paginaClientes = ref(0);
+const buscandoClientes = ref(false);
+const sincronizandoClientes = ref(false);
+const resultadoSincronizacion = ref<{ creados: number; actualizados: number; sin_cambios: number; total_siscommate: number } | null>(null);
+let temporizadorBusqueda: ReturnType<typeof setTimeout> | undefined;
+
+async function cargarTotalClientes() {
+  try { totalClientes.value = (await api.contarClientes()).total; }
+  catch { totalClientes.value = null; }
+}
+
+async function buscarClientesAdmin() {
+  buscandoClientes.value = true;
+  try {
+    const r = await api.listaClientes(busquedaCliente.value, POR_PAGINA_CLIENTES, paginaClientes.value * POR_PAGINA_CLIENTES);
+    clientesFiltrados.value = r.rows;
+    totalClientesFiltrados.value = r.total;
+  } catch { clientesFiltrados.value = []; totalClientesFiltrados.value = 0; }
+  finally { buscandoClientes.value = false; }
+}
+
+function alBuscarCliente() {
+  paginaClientes.value = 0;
+  clearTimeout(temporizadorBusqueda);
+  temporizadorBusqueda = setTimeout(buscarClientesAdmin, 250);
+}
+
+function cambiarPaginaClientes(p: number) {
+  paginaClientes.value = p;
+  buscarClientesAdmin();
+}
+
+async function sincronizarClientes() {
+  sincronizandoClientes.value = true;
+  resultadoSincronizacion.value = null;
+  try {
+    const r = await api.sincronizarClientesSiscommate();
+    resultadoSincronizacion.value = r;
+    toast(`Catálogo actualizado: ${r.creados} nuevos, ${r.actualizados} actualizados`);
+    await cargarTotalClientes();
+    await buscarClientesAdmin();
+  } catch (e) {
+    let msg = 'Error al sincronizar';
+    try { msg = JSON.parse((e as Error).message).error || msg; } catch { /* texto plano */ }
+    toast(msg, 'err');
+  } finally { sincronizandoClientes.value = false; }
+}
+
+// ── Catálogo de consignadores (BOL.exporter consolidado de SISCOMMATE) ──
+// Mismo patrón de paginación real que clientes, ver arriba.
+const POR_PAGINA_CONSIGNADORES = 25;
+const totalConsignadoresSiscommate = ref<number | null>(null);
+const sincronizandoConsignadores = ref(false);
+const resultadoSincConsignadores = ref<{ canonicos: number; nuevos: number; total_siscommate: number } | null>(null);
+const busquedaConsignador = ref('');
+const consignadoresFiltrados = ref<Consignador[]>([]);
+const totalConsignadoresFiltrados = ref(0);
+const paginaConsignadores = ref(0);
+const buscandoConsignadores = ref(false);
+let temporizadorBusquedaConsignador: ReturnType<typeof setTimeout> | undefined;
+
+async function buscarConsignadoresAdmin() {
+  buscandoConsignadores.value = true;
+  try {
+    const r = await api.listaConsignadores(busquedaConsignador.value, POR_PAGINA_CONSIGNADORES, paginaConsignadores.value * POR_PAGINA_CONSIGNADORES);
+    consignadoresFiltrados.value = r.rows;
+    totalConsignadoresFiltrados.value = r.total;
+  } catch { consignadoresFiltrados.value = []; totalConsignadoresFiltrados.value = 0; }
+  finally { buscandoConsignadores.value = false; }
+}
+
+function alBuscarConsignador() {
+  paginaConsignadores.value = 0;
+  clearTimeout(temporizadorBusquedaConsignador);
+  temporizadorBusquedaConsignador = setTimeout(buscarConsignadoresAdmin, 250);
+}
+
+function cambiarPaginaConsignadores(p: number) {
+  paginaConsignadores.value = p;
+  buscarConsignadoresAdmin();
+}
+
+async function eliminarConsignadorLista(c: Consignador) {
+  try {
+    await api.eliminarConsignadorSiscommate(c.name);
+    toast(`"${c.name}" eliminado`);
+    await cargarTotalConsignadoresSiscommate();
+    await buscarConsignadoresAdmin();
+  } catch (e) {
+    let msg = 'Error al eliminar';
+    try { msg = JSON.parse((e as Error).message).error || msg; } catch { /* texto plano */ }
+    toast(msg, 'err');
+  }
+}
+
+async function cargarTotalConsignadoresSiscommate() {
+  try { totalConsignadoresSiscommate.value = (await api.contarConsignadoresSiscommate()).total; }
+  catch { totalConsignadoresSiscommate.value = null; }
+}
+
+async function sincronizarConsignadores() {
+  sincronizandoConsignadores.value = true;
+  resultadoSincConsignadores.value = null;
+  try {
+    const r = await api.sincronizarConsignadoresSiscommate();
+    resultadoSincConsignadores.value = r;
+    toast(`Consignadores actualizados: ${r.nuevos} nuevos (de ${r.canonicos} nombres consolidados)`);
+    await cargarTotalConsignadoresSiscommate();
+    await buscarConsignadoresAdmin();
+  } catch (e) {
+    let msg = 'Error al sincronizar';
+    try { msg = JSON.parse((e as Error).message).error || msg; } catch { /* texto plano */ }
+    toast(msg, 'err');
+  } finally { sincronizandoConsignadores.value = false; }
+}
+
+// ── Duplicados: mismo cliente/consignador real guardado dos veces bajo una
+// redacción distinta (ver clientSync.js: detectarClientesDuplicados /
+// detectarConsignadoresDuplicados) — la sincronización empareja por nombre
+// exacto o solo agrupa dentro de su propia corrida, así que una redacción
+// nueva en SISCOMMATE puede dejar una fila vieja huérfana en vez de
+// actualizarla. Búsqueda bajo demanda desde Admin, nunca automática.
+//
+// Paginado en ambos casos: con cientos de grupos reales, traerlos todos de
+// un tirón (y para clientes, verificar cada nombre contra SISCOMMATE en la
+// misma pasada) fue justo lo que colgó el navegador la primera vez —
+// producción tiene 10,000+ clientes, muchos más candidatos a duplicado que
+// en desarrollo. Cada página pide sus propios grupos, y para clientes
+// además dispara la verificación en vivo SOLO de los nombres de esa página
+// (nunca del total).
+const POR_PAGINA_DUPLICADOS = 15;
+
+const buscandoDuplicadosClientes = ref(false);
+const duplicadosClientes = ref<ClienteDuplicado[][] | null>(null);
+const totalDuplicadosClientes = ref(0);
+const paginaDuplicadosClientes = ref(0);
+const verificandoDuplicadosClientes = ref(false);
+
+async function buscarPaginaDuplicadosClientes(pagina: number) {
+  paginaDuplicadosClientes.value = pagina;
+  buscandoDuplicadosClientes.value = true;
+  try {
+    const r = await api.clientesDuplicados(POR_PAGINA_DUPLICADOS, pagina * POR_PAGINA_DUPLICADOS);
+    duplicadosClientes.value = r.groups;
+    totalDuplicadosClientes.value = r.total;
+    buscandoDuplicadosClientes.value = false;
+    // La verificación en vivo puede tardar (un viaje al bridge por nombre) —
+    // se muestra la tabla de una vez con "Sin verificar" y se van llenando
+    // las etiquetas cuando responde, en vez de bloquear toda la página.
+    if (r.groups.length) {
+      verificandoDuplicadosClientes.value = true;
+      const nombres = [...new Set(r.groups.flat().map(c => c.name))];
+      try {
+        const { estado } = await api.verificarClientesSiscommate(nombres);
+        duplicadosClientes.value = r.groups.map(grupo =>
+          grupo.map(c => ({ ...c, existe_en_siscommate: estado[c.name] ?? null }))
+        );
+      } catch { /* se queda en "Sin verificar" — no es crítico */ }
+      finally { verificandoDuplicadosClientes.value = false; }
+    }
+  } catch (e) {
+    let msg = 'Error al buscar duplicados';
+    try { msg = JSON.parse((e as Error).message).error || msg; } catch { /* texto plano */ }
+    toast(msg, 'err');
+    buscandoDuplicadosClientes.value = false;
+  }
+}
+function buscarDuplicadosClientes() { buscarPaginaDuplicadosClientes(0); }
+
+const buscandoDuplicadosConsignadores = ref(false);
+const duplicadosConsignadores = ref<string[][] | null>(null);
+const totalDuplicadosConsignadores = ref(0);
+const paginaDuplicadosConsignadores = ref(0);
+
+async function buscarPaginaDuplicadosConsignadores(pagina: number) {
+  paginaDuplicadosConsignadores.value = pagina;
+  buscandoDuplicadosConsignadores.value = true;
+  try {
+    const r = await api.consignadoresDuplicados(POR_PAGINA_DUPLICADOS, pagina * POR_PAGINA_DUPLICADOS);
+    duplicadosConsignadores.value = r.groups;
+    totalDuplicadosConsignadores.value = r.total;
+  } catch (e) {
+    let msg = 'Error al buscar duplicados';
+    try { msg = JSON.parse((e as Error).message).error || msg; } catch { /* texto plano */ }
+    toast(msg, 'err');
+  } finally { buscandoDuplicadosConsignadores.value = false; }
+}
+function buscarDuplicadosConsignadores() { buscarPaginaDuplicadosConsignadores(0); }
+
+async function eliminarConsignadorDuplicado(name: string) {
+  try {
+    await api.eliminarConsignadorSiscommate(name);
+    toast(`"${name}" eliminado`);
+    if (duplicadosConsignadores.value) {
+      duplicadosConsignadores.value = duplicadosConsignadores.value
+        .map(grupo => grupo.filter(n => n !== name))
+        .filter(grupo => grupo.length >= 2);
+    }
+    await cargarTotalConsignadoresSiscommate();
+    await buscarConsignadoresAdmin();
+  } catch (e) {
+    let msg = 'Error al eliminar';
+    try { msg = JSON.parse((e as Error).message).error || msg; } catch { /* texto plano */ }
+    toast(msg, 'err');
+  }
+}
+
+// ── Crear / editar un consignador — solo campos manuales (ver arriba: sin
+// fuente real en SISCOMMATE, así que no hay nada que dual-escribir). ──
+type FormConsignador = { nombreOriginal: string } & Consignador;
+const consignadorForm = ref<FormConsignador | null>(null);
+const guardandoConsignador = ref(false);
+
+function abrirEditarConsignador(c: Consignador) {
+  consignadorForm.value = { nombreOriginal: c.name, ...c };
+}
+
+async function guardarConsignador() {
+  const f = consignadorForm.value;
+  if (!f) return;
+  guardandoConsignador.value = true;
+  try {
+    await api.actualizarConsignador(f.nombreOriginal, {
+      document_no: f.document_no, tel: f.tel, street: f.street, city: f.city,
+    });
+    toast('Consignador actualizado');
+    consignadorForm.value = null;
+    await buscarConsignadoresAdmin();
+  } catch (e) {
+    let msg = 'Error al guardar';
+    try { msg = JSON.parse((e as Error).message).error || msg; } catch { /* texto plano */ }
+    toast(msg, 'err');
+  } finally { guardandoConsignador.value = false; }
+}
+
+// ── Crear / editar un cliente — escribe local Y en CUSTOMER.DBF real ──
+// (best-effort: si el bridge falla, el guardado local no se pierde, pero se
+// avisa claramente que no llegó a SISCOMMATE — ver routes/catalogs.js).
+type FormCliente = { id: number | null } & Omit<Cliente, 'id'>;
+const CLIENTE_VACIO = (): FormCliente => ({
+  id: null, name: '', ss: '', code: '', type: '', taxid: '',
+  add1: '', add2: '', add3: '', phone1: '', phone2: '', fax1: '', fax2: '', ivu: '',
+});
+const clienteForm = ref<FormCliente | null>(null);
+const guardandoCliente = ref(false);
+
+function abrirNuevoCliente() { clienteForm.value = CLIENTE_VACIO(); }
+function abrirEditarCliente(c: Cliente) { clienteForm.value = { ...c }; }
+
+async function guardarCliente() {
+  const f = clienteForm.value;
+  if (!f || !f.name.trim()) { toast('El nombre es requerido', 'err'); return; }
+  guardandoCliente.value = true;
+  try {
+    const r = f.id !== null ? await api.actualizarCliente(f.id, f) : await api.crearCliente(f);
+    if (r.siscommate.ok) {
+      toast(`Guardado — reflejado en SISCOMMATE`);
+    } else {
+      toast(`Guardado local, pero no en SISCOMMATE: ${r.siscommate.error}`, 'err');
+    }
+    clienteForm.value = null;
+    await cargarTotalClientes();
+    await buscarClientesAdmin();
+  } catch (e) {
+    let msg = 'Error al guardar';
+    try { msg = JSON.parse((e as Error).message).error || msg; } catch { /* texto plano */ }
+    toast(msg, 'err');
+  } finally { guardandoCliente.value = false; }
+}
+
+// ── Eliminar cliente(s) — local Y en CUSTOMER.DBF real ──
+// Irreversible: confirmación con window.confirm, mismo patrón que ya usa
+// "Eliminar" en Tipos de contenedor más arriba en este archivo.
+async function eliminarUnCliente(id: number, nombre: string) {
+  try {
+    const r = await api.eliminarCliente(id);
+    toast(r.siscommate.ok ? 'Eliminado — también en SISCOMMATE' : `Eliminado local, pero no en SISCOMMATE: ${r.siscommate.error}`, r.siscommate.ok ? 'ok' : 'err');
+  } catch (e) {
+    let msg = 'Error al eliminar';
+    try { msg = JSON.parse((e as Error).message).error || msg; } catch { /* texto plano */ }
+    toast(`No se pudo eliminar "${nombre}": ${msg}`, 'err');
+  }
+}
+
+const confirmarEliminarCliente = ref<{ mensaje: string; accion: () => void } | null>(null);
+
+function pedirEliminarCliente(c: Cliente) {
+  confirmarEliminarCliente.value = {
+    mensaje: `¿Eliminar "${c.name}" del catálogo local Y de SISCOMMATE? Esta acción no se puede deshacer.`,
+    accion: () => {
+      confirmarEliminarCliente.value = null;
+      eliminarUnCliente(c.id, c.name).then(() => { cargarTotalClientes(); buscarClientesAdmin(); });
+    },
+  };
+}
+
+function pedirEliminarClientes(clientes: Cliente[]) {
+  confirmarEliminarCliente.value = {
+    mensaje: `¿Eliminar ${clientes.length} clientes seleccionados del catálogo local Y de SISCOMMATE? Esta acción no se puede deshacer.`,
+    accion: async () => {
+      confirmarEliminarCliente.value = null;
+      for (const c of clientes) await eliminarUnCliente(c.id, c.name);
+      await cargarTotalClientes();
+      await buscarClientesAdmin();
+    },
+  };
+}
+
+// ── Auditoría de datos (SQLite + SISCOMMATE vía Excel) ──────────────────
+// Misma lógica y las mismas dos etapas que el CLI (backend/scripts/dataAudit.js):
+// "calcular" nunca escribe nada, "aplicar" solo corre tras confirmar.
+const archivoAuditoria = ref<File | null>(null);
+const calculandoPreview = ref(false);
+const previewAuditoria = ref<PreviewAuditoria | null>(null);
+const aplicandoAuditoria = ref(false);
+const confirmarAplicarAuditoria = ref(false);
+
+const cambiosAplicables = computed(() => previewAuditoria.value?.plan.filter(p => !p.error).length || 0);
+
+const filasVistaPreviaAuditoria = computed(() => {
+  if (!previewAuditoria.value) return [];
+  const filas: { hoja: string; claves: string; campo: string; antes: string; despues: string; error: string | null }[] = [];
+  for (const item of previewAuditoria.value.plan) {
+    if (item.error) {
+      filas.push({ hoja: item.hoja, claves: JSON.stringify(item.claves), campo: '', antes: '', despues: '', error: item.error });
+      continue;
+    }
+    for (const [campo, { antes, despues }] of Object.entries(item.cambios)) {
+      filas.push({ hoja: item.hoja, claves: JSON.stringify(item.claves), campo, antes: String(antes ?? ''), despues: String(despues ?? ''), error: null });
+    }
+  }
+  return filas;
+});
+
+function alSeleccionarArchivoAuditoria(e: Event) {
+  const input = e.target as HTMLInputElement;
+  archivoAuditoria.value = input.files?.[0] || null;
+  previewAuditoria.value = null;
+}
+
+async function calcularPreviewAuditoria() {
+  if (!archivoAuditoria.value) { toast('Selecciona un archivo Excel primero', 'err'); return; }
+  calculandoPreview.value = true;
+  previewAuditoria.value = null;
+  try {
+    previewAuditoria.value = await api.previewAuditoria(archivoAuditoria.value);
+    if (previewAuditoria.value.plan.length === 0) toast('Sin cambios que aplicar');
+  } catch (e) {
+    toast('Error al calcular cambios: ' + (e as Error).message, 'err');
+  } finally { calculandoPreview.value = false; }
+}
+
+async function aplicarCambiosAuditoria() {
+  if (!previewAuditoria.value) return;
+  confirmarAplicarAuditoria.value = false;
+  aplicandoAuditoria.value = true;
+  try {
+    const r = await api.aplicarAuditoria(previewAuditoria.value.token);
+    toast(`${r.aplicados} aplicado(s), ${r.fallidos} con error`, r.fallidos ? 'err' : 'ok');
+    previewAuditoria.value = null;
+    archivoAuditoria.value = null;
+  } catch (e) {
+    toast('Error al aplicar: ' + (e as Error).message, 'err');
+  } finally { aplicandoAuditoria.value = false; }
+}
+
+onMounted(() => {
+  cargarSettings(); cargarTipos(); cargarTamanos(); checkBridge(); cargarHistorial();
+  cargarTotalClientes(); buscarClientesAdmin(); cargarTotalConsignadoresSiscommate(); buscarConsignadoresAdmin();
+});
 </script>
 
 <template>
-  <div class="min-h-screen bg-paper">
-    <header class="flex h-14 items-center gap-3 border-b border-border bg-paper-raised px-6">
+  <div class="flex h-screen flex-col bg-paper">
+    <header class="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-paper-raised px-6">
       <span class="text-sm font-semibold text-accent">Priority Global</span>
       <span class="text-xs text-ink-muted">Manifiestos DGA → Hacienda PR</span>
       <div class="flex-1"></div>
@@ -182,12 +615,29 @@ onMounted(() => { cargarSettings(); cargarTipos(); cargarTamanos(); checkBridge(
       </Button>
     </header>
 
-    <main class="mx-auto max-w-4xl px-6 py-8">
-      <h1 class="text-2xl font-semibold text-ink">Administración</h1>
-      <p class="mt-1 text-sm text-ink-muted">
-        Configuración del sistema, mapeo de contenedores y conexión con SISCOMMATE
-      </p>
+    <div class="flex min-h-0 flex-1">
+      <!-- Barra lateral: cada ítem es una pantalla completa e independiente —
+           agregar una función nueva es un ítem nuevo acá, nunca alarga una
+           pantalla existente (motivo del cambio: antes 3 pestañas apilaban
+           varias tarjetas grandes cada una, y había que escrollear cada vez
+           más a medida que se agregaban funciones). -->
+      <nav class="w-60 shrink-0 overflow-y-auto border-r border-border bg-paper-raised px-3 py-6">
+        <div v-for="grupo in navGrupos" :key="grupo.titulo" class="mb-6">
+          <p class="mb-1.5 px-2.5 text-xs font-medium uppercase tracking-wide text-ink-faint">{{ grupo.titulo }}</p>
+          <button
+            v-for="item in grupo.items" :key="item.id" type="button"
+            class="flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors"
+            :class="seccionActiva === item.id ? 'bg-accent-soft font-medium text-accent' : 'text-ink-muted hover:bg-paper-sunken hover:text-ink'"
+            @click="cambiarSeccion(item.id)"
+          >
+            <span class="truncate">{{ item.label }}</span>
+            <Badge v-if="item.badge" class="shrink-0" :class="seccionActiva === item.id ? 'bg-paper text-accent' : 'bg-paper-sunken text-ink-faint'">{{ item.badge }}</Badge>
+          </button>
+        </div>
+      </nav>
 
+      <main class="min-w-0 flex-1 overflow-y-auto px-8 py-8">
+      <div v-if="seccionActiva === 'bridge'" class="mx-auto max-w-3xl">
       <!-- ── Bridge SISCOMMATE ── -->
       <Card class="mt-6">
         <CardHeader>
@@ -243,9 +693,11 @@ onMounted(() => { cargarSettings(); cargarTipos(); cargarTamanos(); checkBridge(
           </div>
         </CardContent>
       </Card>
+      </div>
 
       <!-- ── Tipos de contenedor ── -->
-      <Card class="mt-6">
+      <div v-else-if="seccionActiva === 'contenedores'" class="mx-auto max-w-4xl">
+      <Card>
         <CardHeader>
           <div class="flex items-center gap-2">
             <CardTitle>Tipos de contenedor XML → Tamaño SISCOMMATE</CardTitle>
@@ -313,9 +765,11 @@ onMounted(() => { cargarSettings(); cargarTipos(); cargarTamanos(); checkBridge(
           </Table>
         </CardContent>
       </Card>
+      </div>
 
       <!-- ── Historial de envíos a SISCOMMATE ── -->
-      <Card class="mt-6">
+      <div v-else-if="seccionActiva === 'historial'" class="mx-auto max-w-4xl">
+      <Card>
         <CardHeader>
           <div class="flex items-center gap-2">
             <CardTitle>Historial de envíos a SISCOMMATE</CardTitle>
@@ -355,9 +809,11 @@ onMounted(() => { cargarSettings(); cargarTipos(); cargarTamanos(); checkBridge(
           <p v-else class="text-sm text-ink-faint">Todavía no se hizo ningún envío a SISCOMMATE.</p>
         </CardContent>
       </Card>
+      </div>
 
       <!-- ── Sugerencias inteligentes (código, SS/EIN, nombre consignatario) ── -->
-      <Card class="mt-6">
+      <div v-else-if="seccionActiva === 'sugerencias'" class="mx-auto max-w-3xl">
+      <Card>
         <CardHeader>
           <CardTitle>Sugerencias inteligentes</CardTitle>
           <CardDescription>
@@ -383,7 +839,8 @@ onMounted(() => { cargarSettings(); cargarTipos(); cargarTamanos(); checkBridge(
             <p v-if="resultadoLocal" class="text-xs text-status-validated">
               {{ resultadoLocal.descripciones_aprendidas }} de {{ resultadoLocal.descripciones_con_historial }}
               descripciones aprendidas · {{ resultadoLocal.codigos_aprendidos }} de {{ resultadoLocal.codigos_con_historial }}
-              códigos con consignatario aprendido.
+              códigos con consignatario aprendido · {{ resultadoLocal.consignadores_aprendidos }} de
+              {{ resultadoLocal.consignadores_con_historial }} códigos con consignador aprendido.
             </p>
           </div>
 
@@ -392,9 +849,9 @@ onMounted(() => { cargarSettings(); cargarTipos(); cargarTamanos(); checkBridge(
               <div>
                 <p class="text-sm font-medium">Historial completo de SISCOMMATE</p>
                 <p class="text-xs text-ink-faint">
-                  Código → consignatario más frecuente entre TODOS los usuarios de
-                  SISCOMMATE, no solo Priority. Consulta el bridge repetidamente —
-                  puede tardar.
+                  Código → consignatario y código → consignador más frecuentes
+                  entre TODOS los usuarios de SISCOMMATE, no solo Priority.
+                  Consulta el bridge repetidamente — puede tardar.
                 </p>
               </div>
               <Button size="sm" variant="outline" :disabled="corriendoSiscommate" @click="correrAnalisisSiscommate">
@@ -404,12 +861,414 @@ onMounted(() => { cargarSettings(); cargarTipos(); cargarTamanos(); checkBridge(
             <p v-if="resultadoSiscommate" class="text-xs text-status-validated">
               {{ resultadoSiscommate.codigos_asociados_local }} asociados por catálogo local ·
               {{ resultadoSiscommate.codigos_asociados_siscommate }} por CUSTOMER.DBF ·
-              {{ resultadoSiscommate.sin_ss }} sin SS/EIN encontrado.
+              {{ resultadoSiscommate.sin_ss }} sin SS/EIN encontrado ·
+              {{ resultadoSiscommate.consignadores_asociados }} de
+              {{ resultadoSiscommate.consignadores_con_historial }} códigos con consignador aprendido.
             </p>
           </div>
         </CardContent>
       </Card>
-    </main>
+      </div>
+
+      <!-- ── Catálogo de clientes ── -->
+      <div v-else-if="seccionActiva === 'clientes'">
+        <Card>
+          <CardHeader>
+            <div class="flex items-center gap-2">
+              <CardTitle>Catálogo de clientes</CardTitle>
+              <Badge v-if="totalClientes !== null" class="bg-accent-soft text-accent">{{ totalClientes }} en total</Badge>
+            </div>
+            <CardDescription>
+              Caché local de la tabla CUSTOMER de SISCOMMATE — se usa para autocompletar
+              el consignatario (no el consignador, que no tiene catálogo propio en
+              SISCOMMATE — ver más abajo) y para avisar cuando un nombre nuevo se parece
+              mucho a uno ya conocido (posible error de digitación). Ella corrige en
+              SISCOMMATE, no acá — este botón trae esos cambios.
+            </CardDescription>
+          </CardHeader>
+          <CardContent class="flex flex-col gap-3.5">
+            <div class="flex items-center gap-3">
+              <Button :disabled="sincronizandoClientes" @click="sincronizarClientes">
+                <RefreshCw class="size-3.5" :class="sincronizandoClientes && 'animate-spin'" />
+                {{ sincronizandoClientes ? 'Sincronizando…' : 'Actualizar desde SISCOMMATE' }}
+              </Button>
+              <Button variant="outline" @click="abrirNuevoCliente"><Plus class="size-3.5" />Nuevo cliente</Button>
+              <p v-if="resultadoSincronizacion" class="text-xs text-status-validated">
+                {{ resultadoSincronizacion.creados }} nuevos ·
+                {{ resultadoSincronizacion.actualizados }} actualizados ·
+                {{ resultadoSincronizacion.sin_cambios }} sin cambios
+                (de {{ resultadoSincronizacion.total_siscommate }} en SISCOMMATE)
+              </p>
+            </div>
+
+            <div class="flex items-center gap-2 border-t border-border pt-3.5">
+              <Search class="size-3.5 shrink-0 text-ink-faint" />
+              <Input
+                v-model="busquedaCliente" placeholder="Buscar por nombre, SS/EIN o IVU..."
+                class="h-8 max-w-sm text-sm" @input="alBuscarCliente"
+              />
+              <span v-if="buscandoClientes" class="text-xs text-ink-faint">Buscando…</span>
+            </div>
+
+            <ClientesTable
+              :clientes="clientesFiltrados" :total="totalClientesFiltrados"
+              :pagina="paginaClientes" :por-pagina="POR_PAGINA_CLIENTES"
+              @editar="abrirEditarCliente" @eliminar-uno="pedirEliminarCliente" @eliminar-varios="pedirEliminarClientes"
+              @cambiar-pagina="cambiarPaginaClientes"
+            />
+
+            <div class="flex flex-col gap-3 border-t border-border pt-3.5">
+              <div class="flex items-center gap-3">
+                <Button variant="outline" size="sm" :disabled="buscandoDuplicadosClientes" @click="buscarDuplicadosClientes">
+                  <Search class="size-3.5" />
+                  {{ buscandoDuplicadosClientes ? 'Buscando (consulta SISCOMMATE por cada candidato)…' : 'Buscar duplicados' }}
+                </Button>
+                <span v-if="duplicadosClientes" class="text-xs text-ink-faint">
+                  {{ totalDuplicadosClientes }} grupo{{ totalDuplicadosClientes === 1 ? '' : 's' }} de nombres parecidos
+                  <template v-if="verificandoDuplicadosClientes"> · verificando contra SISCOMMATE…</template>
+                </span>
+              </div>
+              <p class="text-xs text-ink-faint">
+                Nombres muy parecidos entre sí (mismo umbral que el aviso de error de
+                digitación) — casi siempre el mismo cliente real guardado dos veces con
+                una redacción distinta. Se confirma contra SISCOMMATE en vivo cuál
+                variante sigue existiendo, para saber cuál conviene borrar — solo para
+                los nombres de la página que estás viendo, nunca todos de un tirón.
+              </p>
+              <div v-if="duplicadosClientes?.length" class="flex flex-col gap-2.5">
+                <div
+                  v-for="(grupo, i) in duplicadosClientes" :key="i"
+                  class="flex flex-col gap-1.5 rounded-lg border border-status-pending/40 bg-status-pending/5 p-3"
+                >
+                  <div v-for="c in grupo" :key="c.id" class="flex items-center justify-between gap-3 text-sm">
+                    <div class="flex min-w-0 items-center gap-2">
+                      <span class="truncate">{{ c.name }}</span>
+                      <span class="font-mono text-xs text-ink-faint">{{ c.ss || '—' }}</span>
+                      <Badge v-if="c.existe_en_siscommate === true" class="bg-status-validated/15 text-status-validated">En SISCOMMATE</Badge>
+                      <Badge v-else-if="c.existe_en_siscommate === false" class="bg-destructive/15 text-destructive">No está en SISCOMMATE</Badge>
+                      <Badge v-else class="bg-ink-faint/10 text-ink-faint">Sin verificar</Badge>
+                    </div>
+                    <Button variant="ghost" size="icon-sm" class="text-destructive hover:text-destructive" title="Eliminar" @click="pedirEliminarCliente(c)">
+                      <Trash2 class="size-3.5" />
+                    </Button>
+                  </div>
+                </div>
+                <Paginador
+                  :pagina="paginaDuplicadosClientes" :por-pagina="POR_PAGINA_DUPLICADOS" :total="totalDuplicadosClientes"
+                  @cambiar="buscarPaginaDuplicadosClientes"
+                />
+              </div>
+              <p v-else-if="duplicadosClientes" class="text-xs text-ink-faint">No se encontraron nombres parecidos entre sí.</p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      <!-- ── Catálogo de consignadores ── -->
+      <div v-else-if="seccionActiva === 'consignadores'">
+        <Card>
+          <CardHeader>
+            <div class="flex items-center gap-2">
+              <CardTitle>Catálogo de consignadores</CardTitle>
+              <Badge v-if="totalConsignadoresSiscommate !== null" class="bg-accent-soft text-accent">{{ totalConsignadoresSiscommate }} en total</Badge>
+            </div>
+            <CardDescription>
+              SISCOMMATE no guarda un catálogo de consignadores (RD) como CUSTOMER —
+              el nombre del exportador solo existe como texto libre en cada B/L
+              (BOL.exporter). Este botón trae TODOS los nombres distintos del histórico
+              real, agrupa variantes del mismo nombre (typos, mayúsculas, puntuación) y
+              guarda solo la forma más completa de cada uno. Se combina con el historial
+              propio de Priority al buscar consignador en el editor.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div class="flex items-center gap-3">
+              <Button :disabled="sincronizandoConsignadores" @click="sincronizarConsignadores">
+                <RefreshCw class="size-3.5" :class="sincronizandoConsignadores && 'animate-spin'" />
+                {{ sincronizandoConsignadores ? 'Sincronizando…' : 'Actualizar desde SISCOMMATE' }}
+              </Button>
+              <p v-if="resultadoSincConsignadores" class="text-xs text-status-validated">
+                {{ resultadoSincConsignadores.nuevos }} nuevos ·
+                {{ resultadoSincConsignadores.canonicos }} nombres consolidados
+                (de {{ resultadoSincConsignadores.total_siscommate }} en SISCOMMATE)
+              </p>
+            </div>
+
+            <div class="mt-3.5 flex flex-col gap-2.5 border-t border-border pt-3.5">
+              <div class="flex items-center gap-2">
+                <Search class="size-3.5 shrink-0 text-ink-faint" />
+                <Input
+                  v-model="busquedaConsignador" placeholder="Buscar por nombre..."
+                  class="h-8 max-w-sm text-sm" @input="alBuscarConsignador"
+                />
+                <span v-if="buscandoConsignadores" class="text-xs text-ink-faint">Buscando…</span>
+              </div>
+              <ConsignadoresTable
+                :consignadores="consignadoresFiltrados" :total="totalConsignadoresFiltrados"
+                :pagina="paginaConsignadores" :por-pagina="POR_PAGINA_CONSIGNADORES"
+                @editar="abrirEditarConsignador" @eliminar-uno="eliminarConsignadorLista" @cambiar-pagina="cambiarPaginaConsignadores"
+              />
+            </div>
+
+            <div class="flex flex-col gap-3 border-t border-border pt-3.5 mt-3.5">
+              <div class="flex items-center gap-3">
+                <Button variant="outline" size="sm" :disabled="buscandoDuplicadosConsignadores" @click="buscarDuplicadosConsignadores">
+                  <Search class="size-3.5" />
+                  {{ buscandoDuplicadosConsignadores ? 'Buscando…' : 'Buscar duplicados' }}
+                </Button>
+                <span v-if="duplicadosConsignadores" class="text-xs text-ink-faint">
+                  {{ totalDuplicadosConsignadores }} grupo{{ totalDuplicadosConsignadores === 1 ? '' : 's' }} de nombres parecidos
+                </span>
+              </div>
+              <p class="text-xs text-ink-faint">
+                Cada corrida de "Actualizar desde SISCOMMATE" agrupa nombres parecidos
+                solo entre sí misma, nunca contra lo que ya había guardado — una
+                redacción nueva del mismo consignador real puede quedar duplicada acá.
+                No hay forma de confirmar en vivo cuál es "la correcta" (SISCOMMATE no
+                tiene un catálogo propio de consignadores): elegí la más completa y
+                borrá el resto.
+              </p>
+              <div v-if="duplicadosConsignadores?.length" class="flex flex-col gap-2.5">
+                <div
+                  v-for="(grupo, i) in duplicadosConsignadores" :key="i"
+                  class="flex flex-col gap-1.5 rounded-lg border border-status-pending/40 bg-status-pending/5 p-3"
+                >
+                  <div v-for="nombre in grupo" :key="nombre" class="flex items-center justify-between gap-3 text-sm">
+                    <span class="truncate">{{ nombre }}</span>
+                    <Button variant="ghost" size="icon-sm" class="text-destructive hover:text-destructive" title="Eliminar" @click="eliminarConsignadorDuplicado(nombre)">
+                      <Trash2 class="size-3.5" />
+                    </Button>
+                  </div>
+                </div>
+                <Paginador
+                  :pagina="paginaDuplicadosConsignadores" :por-pagina="POR_PAGINA_DUPLICADOS" :total="totalDuplicadosConsignadores"
+                  @cambiar="buscarPaginaDuplicadosConsignadores"
+                />
+              </div>
+              <p v-else-if="duplicadosConsignadores" class="text-xs text-ink-faint">No se encontraron nombres parecidos entre sí.</p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      <!-- ── Auditoría de datos ── -->
+      <div v-else-if="seccionActiva === 'auditoria'" class="mx-auto max-w-4xl">
+        <Card>
+          <CardHeader>
+            <CardTitle>Exportar a Excel</CardTitle>
+            <CardDescription>
+              Descarga un Excel con 6 hojas — clientes, consignadores, consignatarios,
+              manifiestos, B/L y contenedores — todas desde SQLite, con el color ya
+              aplicado para caracteres especiales, datos faltantes y posibles nombres
+              duplicados. Antes de armar el Excel actualiza el catálogo de clientes
+              desde SISCOMMATE (acotado y seguro); si el bridge no responde, exporta
+              igual con lo último que haya localmente.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button as-child>
+              <a :href="api.urlExportarAuditoria()" download>Descargar Excel de auditoría</a>
+            </Button>
+          </CardContent>
+        </Card>
+
+        <Card class="mt-6">
+          <CardHeader>
+            <CardTitle>Reinyectar correcciones</CardTitle>
+            <CardDescription>
+              Sube el mismo Excel ya corregido a mano. Primero se calcula qué cambió
+              contra el estado actual — sin escribir nada — y solo se aplica si lo
+              confirmás.
+            </CardDescription>
+          </CardHeader>
+          <CardContent class="flex flex-col gap-3.5">
+            <div class="flex items-center gap-3">
+              <input type="file" accept=".xlsx" class="text-sm" @change="alSeleccionarArchivoAuditoria" />
+              <Button size="sm" :disabled="!archivoAuditoria || calculandoPreview" @click="calcularPreviewAuditoria">
+                {{ calculandoPreview ? 'Calculando…' : 'Calcular cambios' }}
+              </Button>
+            </div>
+
+            <div v-if="previewAuditoria" class="flex flex-col gap-2.5">
+              <p class="text-sm text-ink-muted">
+                {{ cambiosAplicables }} cambio{{ cambiosAplicables === 1 ? '' : 's' }} por aplicar
+                <span v-if="previewAuditoria.plan.length > cambiosAplicables">
+                  · {{ previewAuditoria.plan.length - cambiosAplicables }} con error
+                </span>
+              </p>
+
+              <Table v-if="filasVistaPreviaAuditoria.length">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Hoja</TableHead>
+                    <TableHead>Clave</TableHead>
+                    <TableHead>Campo</TableHead>
+                    <TableHead>Antes</TableHead>
+                    <TableHead>Después</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  <TableRow v-for="(fila, i) in filasVistaPreviaAuditoria" :key="i">
+                    <TableCell class="text-xs">{{ fila.hoja }}</TableCell>
+                    <TableCell class="font-mono text-xs">{{ fila.claves }}</TableCell>
+                    <template v-if="fila.error">
+                      <TableCell colspan="3" class="text-xs text-destructive">ERROR: {{ fila.error }}</TableCell>
+                    </template>
+                    <template v-else>
+                      <TableCell class="text-xs">{{ fila.campo }}</TableCell>
+                      <TableCell class="text-xs text-ink-muted">{{ fila.antes }}</TableCell>
+                      <TableCell class="text-xs font-medium text-accent">{{ fila.despues }}</TableCell>
+                    </template>
+                  </TableRow>
+                </TableBody>
+              </Table>
+
+              <Button
+                class="w-fit" variant="destructive" :disabled="cambiosAplicables === 0 || aplicandoAuditoria"
+                @click="confirmarAplicarAuditoria = true"
+              >
+                {{ aplicandoAuditoria ? 'Aplicando…' : `Aplicar ${cambiosAplicables} cambio(s)` }}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+      </main>
+    </div>
+
+    <Dialog :open="!!clienteForm" @update:open="(v) => !v && (clienteForm = null)">
+      <DialogContent v-if="clienteForm" class="sm:max-w-xl">
+        <DialogHeader>
+          <DialogTitle>{{ clienteForm.id !== null ? 'Editar cliente' : 'Nuevo cliente' }}</DialogTitle>
+        </DialogHeader>
+        <p class="-mt-2 text-xs text-ink-faint">
+          Se guarda acá Y en CUSTOMER.DBF de SISCOMMATE — si el bridge no responde, el
+          cambio local no se pierde, pero queda pendiente de reflejarse allá.
+        </p>
+        <div class="grid grid-cols-12 gap-x-3 gap-y-2.5">
+          <div class="col-span-12 flex flex-col gap-1">
+            <Label class="text-xs">Nombre / Razón social *</Label>
+            <Input v-model="clienteForm.name" class="h-9 text-xs" />
+          </div>
+          <div class="col-span-6 md:col-span-4 flex flex-col gap-1">
+            <Label class="text-xs">SS / EIN</Label>
+            <Input v-model="clienteForm.ss" class="h-9 font-mono text-xs" />
+          </div>
+          <div class="col-span-6 md:col-span-4 flex flex-col gap-1">
+            <Label class="text-xs">Tax ID</Label>
+            <Input v-model="clienteForm.taxid" class="h-9 font-mono text-xs" />
+          </div>
+          <div class="col-span-6 md:col-span-2 flex flex-col gap-1">
+            <Label class="text-xs">Código</Label>
+            <Input v-model="clienteForm.code" class="h-9 font-mono text-xs" />
+          </div>
+          <div class="col-span-6 md:col-span-2 flex flex-col gap-1">
+            <Label class="text-xs">Tipo</Label>
+            <Input v-model="clienteForm.type" class="h-9 text-xs" />
+          </div>
+          <div class="col-span-12 flex flex-col gap-1">
+            <Label class="text-xs">Dirección 1</Label>
+            <Input v-model="clienteForm.add1" class="h-9 text-xs" />
+          </div>
+          <div class="col-span-12 md:col-span-6 flex flex-col gap-1">
+            <Label class="text-xs">Dirección 2</Label>
+            <Input v-model="clienteForm.add2" class="h-9 text-xs" />
+          </div>
+          <div class="col-span-12 md:col-span-6 flex flex-col gap-1">
+            <Label class="text-xs">Dirección 3</Label>
+            <Input v-model="clienteForm.add3" class="h-9 text-xs" />
+          </div>
+          <div class="col-span-6 flex flex-col gap-1">
+            <Label class="text-xs">Teléfono</Label>
+            <Input v-model="clienteForm.phone1" class="h-9 font-mono text-xs" />
+          </div>
+          <div class="col-span-6 flex flex-col gap-1">
+            <Label class="text-xs">Teléfono 2</Label>
+            <Input v-model="clienteForm.phone2" class="h-9 font-mono text-xs" />
+          </div>
+          <div class="col-span-6 flex flex-col gap-1">
+            <Label class="text-xs">Fax</Label>
+            <Input v-model="clienteForm.fax1" class="h-9 font-mono text-xs" />
+          </div>
+          <div class="col-span-6 flex flex-col gap-1">
+            <Label class="text-xs">IVU</Label>
+            <Input v-model="clienteForm.ivu" class="h-9 font-mono text-xs" />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" @click="clienteForm = null">Cancelar</Button>
+          <Button :disabled="guardandoCliente || !clienteForm.name.trim()" @click="guardarCliente">
+            {{ guardandoCliente ? 'Guardando…' : 'Guardar' }}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog :open="!!consignadorForm" @update:open="(v) => !v && (consignadorForm = null)">
+      <DialogContent v-if="consignadorForm" class="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Editar consignador</DialogTitle>
+        </DialogHeader>
+        <p class="-mt-2 text-xs text-ink-faint">
+          SISCOMMATE no guarda estos datos (BOL.exporter es solo texto libre) — se
+          guardan únicamente acá, para tenerlos anotados la próxima vez.
+        </p>
+        <div class="grid grid-cols-12 gap-x-3 gap-y-2.5">
+          <div class="col-span-12 flex flex-col gap-1">
+            <Label class="text-xs">Nombre</Label>
+            <Input :model-value="consignadorForm.name" disabled class="h-9 text-xs" />
+          </div>
+          <div class="col-span-6 flex flex-col gap-1">
+            <Label class="text-xs">Documento</Label>
+            <Input v-model="consignadorForm.document_no" class="h-9 font-mono text-xs" />
+          </div>
+          <div class="col-span-6 flex flex-col gap-1">
+            <Label class="text-xs">Teléfono</Label>
+            <Input v-model="consignadorForm.tel" class="h-9 font-mono text-xs" />
+          </div>
+          <div class="col-span-12 md:col-span-7 flex flex-col gap-1">
+            <Label class="text-xs">Dirección</Label>
+            <Input v-model="consignadorForm.street" class="h-9 text-xs" />
+          </div>
+          <div class="col-span-12 md:col-span-5 flex flex-col gap-1">
+            <Label class="text-xs">Ciudad</Label>
+            <Input v-model="consignadorForm.city" class="h-9 text-xs" />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" @click="consignadorForm = null">Cancelar</Button>
+          <Button :disabled="guardandoConsignador" @click="guardarConsignador">
+            {{ guardandoConsignador ? 'Guardando…' : 'Guardar' }}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog :open="!!confirmarEliminarCliente" @update:open="(v) => !v && (confirmarEliminarCliente = null)">
+      <DialogContent v-if="confirmarEliminarCliente">
+        <DialogHeader><DialogTitle>Eliminar cliente</DialogTitle></DialogHeader>
+        <p class="text-sm text-ink-muted">{{ confirmarEliminarCliente.mensaje }}</p>
+        <DialogFooter>
+          <Button variant="outline" @click="confirmarEliminarCliente = null">Cancelar</Button>
+          <Button variant="destructive" @click="confirmarEliminarCliente.accion">Eliminar</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog :open="confirmarAplicarAuditoria" @update:open="(v) => !v && (confirmarAplicarAuditoria = false)">
+      <DialogContent>
+        <DialogHeader><DialogTitle>Aplicar cambios de auditoría</DialogTitle></DialogHeader>
+        <p class="text-sm text-ink-muted">
+          Se van a escribir {{ cambiosAplicables }} cambio{{ cambiosAplicables === 1 ? '' : 's' }} en SQLite
+          y/o en SISCOMMATE real. Esta acción no se puede deshacer automáticamente
+          (queda registrada en logs/dataAudit_*.log por si hay que revertir a mano).
+        </p>
+        <DialogFooter>
+          <Button variant="outline" @click="confirmarAplicarAuditoria = false">Cancelar</Button>
+          <Button variant="destructive" @click="aplicarCambiosAuditoria">Aplicar</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
 
     <div v-if="toastMsg" class="fixed bottom-5 right-5 rounded-md px-4 py-2.5 text-sm shadow-lg" :class="toastTipo === 'ok' ? 'bg-ink text-status-validated-soft' : 'bg-danger text-white'">
       {{ toastTipo === 'ok' ? '✓ ' : '⚠ ' }}{{ toastMsg }}

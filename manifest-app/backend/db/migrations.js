@@ -6,6 +6,7 @@
 
 const db = require('./connection');
 const { VESSELS, PORT_MAPPINGS } = require('./catalogDefaults');
+const { rellenarViajeDeEnvio } = require('../services/siscommateEnvio');
 
 // Agrega una columna solo si no existe todavía
 /**
@@ -63,6 +64,17 @@ function runMigrations({
   addColumnIfMissing('hacienda_items',  'client_add3',         'TEXT');
   addColumnIfMissing('hacienda_items',  'client_ivu',          'TEXT');
 
+  // Espejo de las columnas client_* de arriba, pero para el CONSIGNADOR
+  // (shipper/exportador) en vez del consignatario — ver
+  // localHistoryAnalysis.js. No hay columna consignor_ivu: a diferencia del
+  // consignatario, el B/L no trae un IVU de PR/DO para el consignador (suele
+  // ser un exportador extranjero), así que no hay nada real que aprender ahí.
+  addColumnIfMissing('hacienda_items',  'consignor_name',      'TEXT');
+  addColumnIfMissing('hacienda_items',  'consignor_document_no', 'TEXT');
+  addColumnIfMissing('hacienda_items',  'consignor_phone',     'TEXT');
+  addColumnIfMissing('hacienda_items',  'consignor_add1',      'TEXT');
+  addColumnIfMissing('hacienda_items',  'consignor_add2',      'TEXT');
+
   // El IMO del buque nunca tuvo columna, pese a que el editor lo pide, la ruta
   // lo declara editable y el TXT de Hacienda lo escribe en [174:181]. Cualquier
   // PUT que lo incluyera fallaba con "no such column: imo", perdiendo de paso
@@ -82,6 +94,11 @@ function runMigrations({
   // ya existe en MANIFEST — con esta columna, push-siscommate solo manda
   // los B/L que todavía no tienen esta marca, en vez de fallar por completo.
   addColumnIfMissing('bills_of_lading', 'siscommate_sent_at',  'TEXT');
+  // Viaje de SISCOMMATE donde está la copia de este B/L. La fecha de arriba
+  // viaja con el B/L cuando se mueve a otro viaje, pero la copia en SISCOMMATE
+  // se queda donde se envió — sin esta columna el push del viaje nuevo creía
+  // que el B/L ya estaba enviado y lo salteaba (ver services/siscommateEnvio.js).
+  addColumnIfMissing('bills_of_lading', 'siscommate_voyage_no', 'TEXT');
 
   // Cantidad de bultos por item de carga. txtGenerator ya la escribía
   // (src.package_qty || bl.package_qty) desde antes de que existiera esta
@@ -171,6 +188,9 @@ function runMigrations({
     bl_count    INTEGER NOT NULL DEFAULT 0,
     pushed_at   TEXT    NOT NULL DEFAULT (datetime('now'))
   )`);
+  // B/L enviados antes de existir siscommate_voyage_no: se deduce el viaje
+  // real con este historial (por eso va DESPUÉS de crear la tabla).
+  rellenarViajeDeEnvio(db);
 
   // ── Items de carga múltiples por B/L (opcionalmente por contenedor) ────────
   db.exec(`CREATE TABLE IF NOT EXISTS bl_cargo_items (
@@ -184,6 +204,42 @@ function runMigrations({
     hacienda_tariff  TEXT,
     seq              INTEGER NOT NULL DEFAULT 1
   )`);
+
+  // Únicos dos campos de CUSTOMER.DBF que el catálogo local `clients` no
+  // traía todavía (confirmado contra el esquema real vía el bridge:
+  // name/ss/code/type/taxid/add1-3/phone1-2/fax1-2/ivu son TODOS los campos
+  // que existen — no hay nada más que sincronizar). Ver services/clientSync.js.
+  addColumnIfMissing('clients', 'fax1', 'TEXT');
+  addColumnIfMissing('clients', 'fax2', 'TEXT');
+
+  // Posición real del B/L dentro del PDF/XML original — antes se ordenaba
+  // por "id" (orden de inserción), que coincide con el orden del documento
+  // SOLO para un B/L insertado por primera vez. Un B/L movido a este viaje
+  // desde otro (feature "mover B/L") conserva su id viejo (de cuando se
+  // insertó la primera vez, normalmente mucho más bajo) y por eso saltaba
+  // al principio de la lista en vez de quedar en su posición real entre los
+  // demás. NULL en filas viejas — ORDER BY hace COALESCE(sort_seq, id) para
+  // no romper el orden ya existente de datos previos a esta columna.
+  addColumnIfMissing('bills_of_lading', 'sort_seq', 'INTEGER');
+
+  // Catálogo de consignadores (exportadores RD) alimentado desde el
+  // histórico real de SISCOMMATE (BOL.exporter) — ver services/clientSync.js
+  // (sincronizarConsignadoresDesdeSiscommate). A diferencia de `clients`
+  // (CUSTOMER.DBF, con perfil completo), SISCOMMATE no guarda dirección ni
+  // documento del consignador — BOL.exporter es solo texto libre, así que
+  // este catálogo es nombre únicamente. Se combina con `bills_of_lading`
+  // (que sí tiene perfil completo de los consignadores que Priority ya
+  // cargó) al buscar, igual que "Locales"/"SISCOMMATE" ya hace consignatario.
+  db.exec(`CREATE TABLE IF NOT EXISTS consignor_catalog (name TEXT PRIMARY KEY)`);
+
+  // Campos editables a mano desde Admin — SISCOMMATE no trae nada de esto
+  // (BOL.exporter es solo texto libre), así que no hay forma de sincronizarlos
+  // automáticamente. Sirven para que quien conoce al consignador de memoria
+  // pueda dejarlo anotado, igual que ya se puede con un cliente nuevo.
+  addColumnIfMissing('consignor_catalog', 'document_no', 'TEXT');
+  addColumnIfMissing('consignor_catalog', 'tel',         'TEXT');
+  addColumnIfMissing('consignor_catalog', 'street',      'TEXT');
+  addColumnIfMissing('consignor_catalog', 'city',        'TEXT');
 }
 
 module.exports = { runMigrations, addColumnIfMissing };

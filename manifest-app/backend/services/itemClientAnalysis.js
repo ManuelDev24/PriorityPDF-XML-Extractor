@@ -14,7 +14,7 @@
 // fuente real) — `clients` local es solo un caché liviano, no el maestro.
 
 const db = require('../db/connection');
-const { analizarItemClienteTodos, buscarClientesSiscommate } = require('./siscommateClient');
+const { analizarItemClienteTodos, analizarItemExportadorTodos, buscarClientesSiscommate, limpiarTextoLibre } = require('./siscommateClient');
 
 const MIN_OCURRENCIAS = 3;
 
@@ -38,11 +38,50 @@ function emparejarClienteLocal(nombreSiscommate, clientMap) {
 }
 
 /**
+ * Código arancelario → CONSIGNADOR (BOL.exporter) más frecuente en TODO el
+ * historial real de SISCOMMATE. A diferencia del consignatario, SISCOMMATE
+ * no tiene una tabla propia de consignadores (son texto libre en BOL.exporter,
+ * la República Dominicana no tiene un CUSTOMER equivalente) — así que acá no
+ * hay SS/dirección que resolver, solo el nombre más frecuente para ese código.
+ * @param {Set<string>} codigosValidos Códigos de hacienda_items (mismo filtro que analizarYGuardar)
+ * @returns {Promise<{consignadores_con_historial:number, consignadores_asociados:number}>}
+ */
+async function analizarConsignadorYGuardar(codigosValidos) {
+  const filas = await analizarItemExportadorTodos();
+
+  const porCodigo = new Map();
+  filas.forEach(f => {
+    if (!codigosValidos.has(f.code)) return;
+    if (!porCodigo.has(f.code)) porCodigo.set(f.code, []);
+    porCodigo.get(f.code).push(f);
+  });
+
+  const actualizar = db.prepare(`UPDATE hacienda_items SET consignor_name=? WHERE code=?`);
+  let asociados = 0;
+  const guardar = db.transaction(() => {
+    porCodigo.forEach((filasCodigo, code) => {
+      filasCodigo.sort((a, b) => b.n - a.n);
+      const top = filasCodigo[0];
+      if (top.n >= MIN_OCURRENCIAS) {
+        const nombre = limpiarTextoLibre(top.exporter);
+        if (nombre) { actualizar.run(nombre, code); asociados++; }
+      }
+    });
+  });
+  guardar();
+
+  return { consignadores_con_historial: porCodigo.size, consignadores_asociados: asociados };
+}
+
+/**
  * Corre el análisis completo: trae el historial agregado del bridge, elige
  * el cliente más frecuente por código (mínimo 3 casos), busca su SS —
  * primero en el catálogo local, si no en CUSTOMER.DBF real — y guarda
- * hacienda_items.client_name/client_ss.
- * @returns {Promise<{codigos_con_historial:number, codigos_asociados_local:number, codigos_asociados_siscommate:number, sin_ss:number}>}
+ * hacienda_items.client_name/client_ss. De paso corre el mismo análisis del
+ * lado del consignador (ver analizarConsignadorYGuardar) — un solo botón en
+ * Admin ("Analizar SISCOMMATE"), igual que "Analizar historial local" ya
+ * corre sus tres análisis juntos.
+ * @returns {Promise<{codigos_con_historial:number, codigos_candidatos:number, codigos_asociados_local:number, codigos_asociados_siscommate:number, sin_ss:number, consignadores_con_historial:number, consignadores_asociados:number}>}
  */
 async function analizarYGuardar() {
   const filas = await analizarItemClienteTodos();
@@ -99,12 +138,15 @@ async function analizarYGuardar() {
     }
   }
 
+  const consignador = await analizarConsignadorYGuardar(codigosValidos);
+
   return {
     codigos_con_historial: porCodigo.size,
     codigos_candidatos: candidatos.length,
     codigos_asociados_local: asociadosLocal,
     codigos_asociados_siscommate: asociadosSiscommate,
     sin_ss: sinSS,
+    ...consignador,
   };
 }
 

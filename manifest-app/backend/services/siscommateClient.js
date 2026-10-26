@@ -5,13 +5,33 @@
 // IMPORTANTE (Fase B): hoy la comunicación es HTTP contra SiscommateBridge.exe
 // (C#), que corre en el servidor y escribe en las tablas DBF de Visual FoxPro.
 // Ese bridge NO puede modificarse desde aquí, y hoy descarta cuatro campos que
-// el operador sí llena: docking_number, hacienda_tariff, hacienda_client_ss/ivu
+// el operador sí llena: docking_number, hacienda_client_ss/ivu
 // y el detalle de bl_cargo_items. Cuando se resuelva el acceso al esquema DBF,
 // la Fase B reemplaza la implementación de este archivo por escritura directa
 // vía VFPOLEDB — sin tocar las rutas que lo consumen.
 
 const http = require('http');
 const db = require('../db/connection');
+const { quitarAcentos, sanitizeIdentificador, normalizarEmpaque, calcularPuertosDbf } = require('./txtGenerator');
+
+/**
+ * Para el push a SISCOMMATE: más estricto que quitarAcentos() (que se usa
+ * para el TXT local y sí conserva puntuación real como "S.A." o "KM. 72.2").
+ * Pedido explícito: NINGÚN carácter especial debe llegar a la base real de
+ * SISCOMMATE — ni dos puntos, ni guiones, ni barras, ni comas, nada que no
+ * sea letra/número/espacio. Se quitan acentos primero (para no perder la
+ * letra, solo el acento) y despues cualquier otra cosa que no sea A-Z, 0-9
+ * o espacio.
+ * @param {string|null|undefined} texto
+ * @returns {string}
+ */
+function limpiarTextoLibre(texto) {
+  return quitarAcentos(String(texto || ''))
+    .toUpperCase()
+    .replace(/[^A-Z0-9 ]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 const DEFAULT_HOST = process.env.BRIDGE_HOST || 'localhost';
 const DEFAULT_PORT = process.env.BRIDGE_PORT || 5001;
@@ -44,10 +64,12 @@ function getBridgeConfig() {
  * @param {string} method
  * @param {string} path
  * @param {object|null} [body]
+ * @param {number} [timeoutMs] Por defecto BRIDGE_TIMEOUT_MS — algunas llamadas
+ *   (volcado completo de una tabla histórica) necesitan más margen.
  * @returns {Promise<any>} La respuesta parseada, o {raw} si no es JSON válido
- * @throws {Error} Si no conecta o si supera BRIDGE_TIMEOUT_MS
+ * @throws {Error} Si no conecta o si supera el timeout
  */
-function bridgeRequest(method, path, body) {
+function bridgeRequest(method, path, body, timeoutMs) {
   return new Promise((resolve, reject) => {
     const { host, port } = getBridgeConfig();
     const postData = body ? JSON.stringify(body) : null;
@@ -82,9 +104,10 @@ function bridgeRequest(method, path, body) {
     });
 
     // Fix Fase A: sin esto una petición podía quedar colgada para siempre
-    req.setTimeout(BRIDGE_TIMEOUT_MS, () => {
+    const limite = timeoutMs || BRIDGE_TIMEOUT_MS;
+    req.setTimeout(limite, () => {
       req.destroy(new Error(
-        `El bridge no respondió en ${BRIDGE_TIMEOUT_MS / 1000}s (${host}:${port})`
+        `El bridge no respondió en ${limite / 1000}s (${host}:${port})`
       ));
     });
 
@@ -144,11 +167,53 @@ async function getLote() {
 
 /**
  * Envía el manifiesto al bridge para que lo escriba en las tablas DBF.
+ * Limpia caracteres especiales antes de mandar — ver limpiarTextoLibre() y
+ * sanitizeIdentificador() (mismas reglas que ya usa el TXT local, para que
+ * lo que queda en SISCOMMATE nunca diverja de lo que dice el TXT). No muta
+ * los objetos originales: el caller (routes/siscommate.js) los sigue usando
+ * después para marcar siscommate_sent_at por id.
  * @param {{manifest: import('../types').ManifestRow, bls: import('../types').BLRow[], containers: import('../types').BridgeContainer[]}} payload
  * @returns {Promise<any>}
  */
+/**
+ * Mismo par de reglas que ya usa el TXT local (generateTxtLine2) — antes el
+ * bridge decidía el ptype por su cuenta, sin mirar si el B/L de verdad tiene
+ * contenedor (si package_unit_code venía vacío, siempre ponía "BOX" fijo,
+ * nunca "LSE") ni validar el valor contra el vocabulario real de SISCOMMATE.
+ * Eso podía divergir de lo que el TXT decía para el mismo B/L. Calculado
+ * aquí con la misma lógica, lo que queda en SISCOMMATE ya no se desalinea.
+ * @param {string|null|undefined} packageUnitCode
+ * @param {boolean} hasContainer
+ * @returns {string}
+ */
+function calcularPackageUnitCode(packageUnitCode, hasContainer) {
+  const empaqueValido = normalizarEmpaque(packageUnitCode);
+  return empaqueValido || (hasContainer ? 'BOX' : 'LSE');
+}
+
 function pushManifest({ manifest, bls, containers }) {
-  return bridgeRequest('POST', '/guardar', { manifest, bls, containers });
+  const blNosConContenedor = new Set(containers.map(c => c.bl_no));
+  // calcularPuertosDbf vive en txtGenerator.js — única fuente para el TXT y
+  // el push, así nunca divergen (ver el jsdoc ahí para la distinción real
+  // entre descarga y destino en carga en tránsito).
+  const { origport, discport, destport } = calcularPuertosDbf(manifest);
+  const manifestLimpio = {
+    ...manifest, vessel_name: limpiarTextoLibre(manifest.vessel_name), origport, discport, destport,
+  };
+  const blsLimpios = bls.map(bl => ({
+    ...bl,
+    bl_no: sanitizeIdentificador(bl.bl_no),
+    consignee_name: limpiarTextoLibre(bl.consignee_name),
+    consignor_name: limpiarTextoLibre(bl.consignor_name),
+    goods_name: limpiarTextoLibre(bl.goods_name),
+    package_unit_code: calcularPackageUnitCode(bl.package_unit_code, blNosConContenedor.has(bl.bl_no)),
+  }));
+  const containersLimpios = containers.map(c => ({
+    ...c,
+    bl_no: sanitizeIdentificador(c.bl_no),
+    container_no: sanitizeIdentificador(c.container_no),
+  }));
+  return bridgeRequest('POST', '/guardar', { manifest: manifestLimpio, bls: blsLimpios, containers: containersLimpios });
 }
 
 /**
@@ -160,6 +225,136 @@ function pushManifest({ manifest, bls, containers }) {
  */
 function consultarManifiesto(voyageNo) {
   return bridgeRequest('GET', '/consultar?voyage=' + encodeURIComponent(voyageNo), null);
+}
+
+/**
+ * Volcado directo de una tabla real de SISCOMMATE (endpoint /muestra del
+ * bridge, ya existente — pensado para explorar tablas a mano). Se reutiliza
+ * aquí para traer TODO el catálogo de clientes (CUSTOMER) de una sola vez en
+ * vez de una búsqueda con "q" — no existe otro endpoint para un volcado
+ * masivo, y agregar uno nuevo al bridge hubiera significado recompilar y
+ * redesplegar el .exe para algo que /muestra ya resuelve.
+ * @param {string} tabla Nombre de la tabla real en SISCOMMATE (ej. "CUSTOMER")
+ * @param {number} [limite]
+ * @returns {Promise<object[]>}
+ */
+function obtenerMuestra(tabla, limite) {
+  return bridgeRequest('GET', `/muestra?tabla=${encodeURIComponent(tabla)}&limite=${limite || 10}`, null);
+}
+
+// Un volcado histórico completo (BOL/BOLITEM pueden tener años de datos de
+// TODOS los usuarios de SISCOMMATE, no solo Priority) puede tardar mucho más
+// que una operación interactiva normal — 30s (BRIDGE_TIMEOUT_MS) cortaba la
+// conexión a mitad de camino y el bridge terminaba escribiendo sobre un
+// socket ya cerrado.
+const TIMEOUT_EXPORTAR_TABLA_MS = Number(process.env.BRIDGE_TIMEOUT_EXPORTAR_MS) || 5 * 60 * 1000;
+
+/**
+ * Volcado completo de una tabla real de SISCOMMATE, sin limite (endpoint
+ * /exportar-tabla del bridge) — a diferencia de obtenerMuestra(), que trae
+ * solo las primeras N filas. Lo usa el modulo de auditoria de datos para
+ * traer TODO el historico.
+ * @param {string} tabla Nombre de la tabla real en SISCOMMATE (ej. "BOL")
+ * @returns {Promise<object[]>}
+ */
+function obtenerTablaCompleta(tabla) {
+  return bridgeRequest('GET', `/exportar-tabla?tabla=${encodeURIComponent(tabla)}`, null, TIMEOUT_EXPORTAR_TABLA_MS);
+}
+
+/**
+ * Crea un cliente nuevo directo en CUSTOMER.DBF de SISCOMMATE (no en el
+ * catálogo local — CUSTOMER es la fuente real). Verificado en vivo contra
+ * SISCOMMATE real antes de exponerse acá.
+ * @param {object} datos name, ss, code, type, taxid, add1-3, phone1-2, fax1-2, ivu
+ * @returns {Promise<any>}
+ */
+function crearClienteSiscommate(datos) {
+  return bridgeRequest('POST', '/cliente-crear', datos);
+}
+
+/**
+ * Actualiza un cliente existente en CUSTOMER.DBF, ubicado por su nombre
+ * ANTERIOR — necesario porque el nombre mismo se puede estar editando en el
+ * mismo guardado. filas_afectadas en la respuesta: 0 = no se encontró ese
+ * nombre (pudo cambiar mientras tanto), más de 1 = el nombre no era único —
+ * el caller debe avisar en vez de asumir que se aplicó a la fila correcta.
+ * @param {string} nombreOriginal
+ * @param {object} datos Mismos campos que crearClienteSiscommate
+ * @returns {Promise<{ok: true, filas_afectadas: number}>}
+ */
+function actualizarClienteSiscommate(nombreOriginal, datos) {
+  return bridgeRequest('POST', '/cliente-actualizar', { ...datos, nombre_original: nombreOriginal });
+}
+
+/**
+ * Retira UN B/L de un viaje de SISCOMMATE (BOL + BOLCONT + BOLITEM de ese
+ * bolno), dejando el resto del viaje intacto. Lo usa el push cuando un B/L ya
+ * enviado se movió a otro viaje: sin esto quedaría duplicado. Requiere la
+ * versión del bridge con /eliminar-bl — una vieja contesta 404 y esto rechaza.
+ * @param {string} voyageNo Viaje donde está la copia a retirar
+ * @param {string} blNo
+ * @returns {Promise<{ok: true, msg: string}>}
+ */
+function eliminarBlSiscommate(voyageNo, blNo) {
+  return bridgeRequest('POST', '/eliminar-bl', { voyage: voyageNo, bl_no: blNo });
+}
+
+/**
+ * Elimina un cliente de CUSTOMER.DBF por nombre exacto. Igual que
+ * actualizarClienteSiscommate, filas_afectadas dice cuántas filas reales se
+ * tocaron (0 = no se encontró, más de 1 = el nombre no era único).
+ * @param {string} nombre
+ * @returns {Promise<{ok: true, filas_afectadas: number}>}
+ */
+function eliminarClienteSiscommate(nombre) {
+  return bridgeRequest('POST', '/cliente-eliminar', { name: nombre });
+}
+
+/**
+ * Corrige el consignatario/consignador (BOL.consigne/exporter) de un B/L ya
+ * guardado en SISCOMMATE, identificado por manifest+bolno. Usado por el
+ * modulo de auditoria de datos al reinyectar correcciones.
+ * @param {string} manifest
+ * @param {string} bolno
+ * @param {{consigne?: string, exporter?: string}} datos
+ * @returns {Promise<{ok: true, filas_afectadas: number}>}
+ */
+function actualizarBolSiscommate(manifest, bolno, datos) {
+  return bridgeRequest('POST', '/bol-actualizar', {
+    manifest, bolno, consigne: datos.consigne || '', exporter: datos.exporter || '',
+  });
+}
+
+/**
+ * Corrige el numero de contenedor o tamano de una fila de BOLCONT ya
+ * guardada, identificada por manifest+bolno+control.
+ * @param {string} manifest
+ * @param {string} bolno
+ * @param {string} control
+ * @param {{contain?: string, size?: string}} datos
+ * @returns {Promise<{ok: true, filas_afectadas: number}>}
+ */
+function actualizarBolcontSiscommate(manifest, bolno, control, datos) {
+  return bridgeRequest('POST', '/bolcont-actualizar', {
+    manifest, bolno, control, contain: datos.contain || '', size: datos.size || '',
+  });
+}
+
+/**
+ * Corrige cantidad/peso/descripcion/codigo/valor de una fila de BOLITEM ya
+ * guardada, identificada por manifest+bolno+control.
+ * @param {string} manifest
+ * @param {string} bolno
+ * @param {string} control
+ * @param {{qty?: number, weight?: number, desc?: string, code?: string, value?: number}} datos
+ * @returns {Promise<{ok: true, filas_afectadas: number}>}
+ */
+function actualizarBolitemSiscommate(manifest, bolno, control, datos) {
+  return bridgeRequest('POST', '/bolitem-actualizar', {
+    manifest, bolno, control,
+    qty: datos.qty || 0, weight: datos.weight || 0,
+    desc: datos.desc || '', code: datos.code || '', value: datos.value || 0,
+  });
 }
 
 /**
@@ -185,9 +380,38 @@ async function analizarItemClienteTodos() {
   return bridgeRequest('GET', '/analisis-item-cliente-todos', null);
 }
 
+/**
+ * Igual que analizarItemClienteTodos pero (code, exporter, n) — la misma
+ * asociación código arancelario → parte más frecuente, del lado del
+ * consignador (BOL.exporter) en vez del consignatario (BOL.consigne). Ver
+ * services/itemClientAnalysis.js.
+ * @returns {Promise<{code:string, exporter:string, n:number}[]>}
+ */
+async function analizarItemExportadorTodos() {
+  return bridgeRequest('GET', '/analisis-item-exportador-todos', null);
+}
+
+/**
+ * Nombres DISTINCT de BOL.exporter en TODO el historial real de SISCOMMATE —
+ * no existe una tabla propia de consignadores (a diferencia de CUSTOMER para
+ * consignatarios), así que esto es lo único disponible para alimentar el
+ * catálogo local `consignor_catalog` (ver clientSync.js). Es una consulta
+ * DISTINCT agregada del lado del bridge — nunca trae filas completas de BOL,
+ * a diferencia del volcado sin límite que ya tumbó el bridge una vez — pero
+ * igual puede tardar sobre historial grande, por eso el mismo timeout largo
+ * que obtenerTablaCompleta.
+ * @returns {Promise<string[]>}
+ */
+async function obtenerExportadoresSiscommate() {
+  return bridgeRequest('GET', '/exportadores', null, TIMEOUT_EXPORTAR_TABLA_MS);
+}
+
 module.exports = {
   getBridgeConfig, bridgeRequest,
   getBridgeStatus, getLote, pushManifest, consultarManifiesto, buscarClientesSiscommate,
-  analizarItemClienteTodos,
+  analizarItemClienteTodos, analizarItemExportadorTodos, limpiarTextoLibre, calcularPackageUnitCode,
+  obtenerMuestra, crearClienteSiscommate, actualizarClienteSiscommate, eliminarClienteSiscommate, eliminarBlSiscommate,
+  obtenerTablaCompleta, actualizarBolSiscommate, actualizarBolcontSiscommate, actualizarBolitemSiscommate,
+  obtenerExportadoresSiscommate,
   BRIDGE_TIMEOUT_MS,
 };

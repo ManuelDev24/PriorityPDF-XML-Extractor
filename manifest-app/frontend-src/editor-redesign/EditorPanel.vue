@@ -5,10 +5,11 @@
 // vez de fracciones iguales (era el reclamo original: IMO con 7 caracteres
 // ocupaba el mismo ancho que el nombre del buque).
 import { ref, computed, watch } from 'vue';
-import { api, type ItemHacienda, type Cliente, type ClienteSiscommate } from '../editor/api';
+import { api, type ItemHacienda, type Cliente, type ClienteSiscommate, type Consignador, type ConsignadorSiscommate } from '../editor/api';
 import {
   datosManifiesto, blActual, carriers, puertos, buques, contenedoresDelBL, tamanosValidos,
   actualizarBL, actualizarManifiesto, cerrarBL, setEstado, toast, sincronizarEstadoManifiesto,
+  cargarManifiestos,
 } from '../editor/store';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -20,7 +21,7 @@ import { Combobox, ComboboxAnchor, ComboboxInput, ComboboxList, ComboboxEmpty, C
 import CargoItems from './CargoItems.vue';
 import StatusBadge from './StatusBadge.vue';
 const cargoItemsRef = ref<InstanceType<typeof CargoItems> | null>(null);
-import { Check, Eye, X, Sparkles, Box } from '@lucide/vue';
+import { Check, Eye, X, Sparkles, Box, Trash2 } from '@lucide/vue';
 
 const emit = defineEmits<{
   vistaPrevia: [blId: number];
@@ -76,11 +77,15 @@ const puertoDescarga = computed({
   get: () => m.value.discharge_port || '',
   set: (v: string) => actualizarManifiesto('discharge_port', v),
 });
-const tarifa = computed({
-  get: () => bl.value.hacienda_tariff || '040',
-  set: (v: string) => actualizarBL('hacienda_tariff', v),
+// B/L con varios contenedores: el TXT reparte la SUMA de sus pesos. Si el peso
+// del B/L es distinto (suele ser el de un solo contenedor), se avisa.
+const sumaPesoContenedores = computed(() => {
+  const cs = contenedoresDelBL.value;
+  if (cs.length < 2 || cs.some(c => !c.peso)) return null;
+  return Math.round(cs.reduce((n, c) => n + c.peso, 0) * 100) / 100;
 });
-const libreArancel = computed(() => tarifa.value !== '045');
+const pesoBlDifiere = computed(() =>
+  sumaPesoContenedores.value !== null && Math.abs(sumaPesoContenedores.value - (Number(bl.value.gross_weight) || 0)) > 1);
 const contenedorHacienda = computed(() => bl.value.hacienda_container_no || contenedoresDelBL.value[0]?.container_no || '');
 
 function imoDelBuque(code: string) { return buques.value.find(v => v.code === code)?.imo ?? ''; }
@@ -95,6 +100,31 @@ function alCambiarBuque(code: string) {
 }
 function alCambiarDocking(valor: string) { actualizarManifiesto('docking_number', valor.replace(/[^0-9]/g, '')); }
 
+// Renombrar el viaje NO pasa por la cola de autoguardado genérica
+// (actualizarManifiesto): esa cola aplica el valor en memoria de inmediato y
+// recién avisa por toast si el guardado falla, dejando el campo mostrando un
+// nombre que en realidad no se guardó. Acá el nombre es la clave con la que
+// se identifica el viaje en TODA la app (push a SISCOMMATE, export TXT,
+// carga de un XML/PDF nuevo) — si dos viajes terminan con el mismo nombre
+// por una renombrada fallida que no se revirtió, esas búsquedas por
+// voyage_no se vuelven ambiguas. Por eso se espera la respuesta del server
+// (que ya rechaza un nombre repetido) antes de aplicar el cambio en memoria.
+async function alCambiarVoyageNo(e: Event) {
+  const input = e.target as HTMLInputElement;
+  const nuevo = input.value.trim();
+  const anterior = m.value.voyage_no;
+  if (!nuevo || nuevo === anterior) { input.value = anterior; return; }
+  try {
+    await api.actualizarManifiesto(m.value.id, { voyage_no: nuevo });
+    m.value.voyage_no = nuevo;
+    cargarManifiestos();
+    toast('Viaje renombrado a ' + nuevo);
+  } catch (e2) {
+    input.value = anterior; // el input no usa v-model: sin esto quedaría mostrando el nombre rechazado
+    toast('No se pudo renombrar el viaje: ' + (e2 as Error).message, 'err');
+  }
+}
+
 // Combobox: al enfocar con un valor ya elegido, selecciona todo el texto
 // para que escribir lo reemplace en vez de insertarse en medio. Diferido con
 // setTimeout porque en el momento del evento focus el valor mostrado (el
@@ -105,12 +135,15 @@ function seleccionarTextoInput(e: FocusEvent) {
   window.setTimeout(() => el.select(), 0);
 }
 
-async function alCambiarTamano(id: number | null, size: string) {
-  if (!id) return;
+async function alCambiarTamano(containerNo: string, size: string) {
+  const d = datosManifiesto.value;
+  if (!d) return;
   try {
-    await api.actualizarTamano(id, size);
-    const c = datosManifiesto.value?.containers.find(ct => ct.id === id);
-    if (c) c.size = size;
+    // Por número de contenedor: si no tenía fila en containers, el servidor la crea.
+    const { container } = await api.fijarTamanoContenedor(d.manifest.id, containerNo, size);
+    const c = d.containers.find(ct => ct.container_no === container.container_no);
+    if (c) c.size = container.size;
+    else d.containers.push(container);
     setEstado('Tamaño guardado', new Date().toLocaleTimeString('es-PR'));
   } catch (e) { toast('Error guardando tamaño: ' + (e as Error).message, 'err'); }
 }
@@ -130,6 +163,29 @@ async function alCambiarNumeroContenedor(id: number | null, nuevoNo: string) {
     if (eraHacienda) actualizarBL('hacienda_container_no', limpio);
     setEstado('Contenedor guardado', new Date().toLocaleTimeString('es-PR'));
   } catch (e) { toast('Error guardando contenedor: ' + (e as Error).message, 'err'); }
+}
+
+// Quita un contenedor de "Contenedores asociados" — pensado sobre todo
+// para cuando el mismo número quedó repetido para este B/L (el parser lo
+// duplicó, o se digitó dos veces a mano). Solo borra UNA fila a la vez del
+// lado del backend, así que si sigue repetido hay que volver a hacer clic;
+// acá se refleja quitando solo la primera coincidencia del array local para
+// no desincronizar de lo que el backend realmente hizo.
+async function eliminarContenedorDeBL(containerNo: string) {
+  if (!blActual.value) return;
+  if (!confirm(`¿Quitar el contenedor "${containerNo}" de este B/L?`)) return;
+  try {
+    await api.eliminarContenedorDeBL(blActual.value.id, containerNo);
+    const lista = datosManifiesto.value?.container_bl;
+    if (lista) {
+      const i = lista.findIndex(v => v.container_no === containerNo && v.bl_no === blActual.value?.bl_no);
+      if (i !== -1) lista.splice(i, 1);
+    }
+    if (bl.value.hacienda_container_no === containerNo && contenedoresDelBL.value.every(c => c.container_no !== containerNo)) {
+      actualizarBL('hacienda_container_no', '');
+    }
+    setEstado('Contenedor quitado', new Date().toLocaleTimeString('es-PR'));
+  } catch (e) { toast('Error quitando el contenedor: ' + (e as Error).message, 'err'); }
 }
 
 function opcionesTamano(size: string) {
@@ -214,6 +270,17 @@ function elegirItem(it: ItemHacienda) {
     rellenarSiVacio('consignee_street', street);
     rellenarSiVacio('consignee_city', city);
   }
+  // Mismo aprendizaje que arriba, pero para el consignador (shipper/
+  // exportador) — ver analizarConsignadorPorCodigo() en
+  // localHistoryAnalysis.js. Solo del historial local: no hay un catálogo
+  // tipo CUSTOMER.DBF de SISCOMMATE para exportadores extranjeros.
+  if (it.consignor_name && !bl.value.consignor_name) {
+    rellenarSiVacio('consignor_name', it.consignor_name);
+    rellenarSiVacio('consignor_document_no', it.consignor_document_no || '');
+    rellenarSiVacio('consignor_tel', it.consignor_phone || '');
+    rellenarSiVacio('consignor_street', it.consignor_add1 || '');
+    rellenarSiVacio('consignor_city', it.consignor_add2 || '');
+  }
 }
 // El Combobox nativo emite el `value` del item elegido (el código, un
 // string), no el objeto completo — se busca en itemsHallados para reusar
@@ -241,6 +308,12 @@ function alCambiarDescripcion(valor: string) {
 
 // ── Combobox: consignatario ──
 const clienteAbierto = ref(false);
+// Segundo trigger para el MISMO buscador (clientesHallados/clientesSiscommate
+// abajo), embebido directo en "Nombre / Razón social" de la tarjeta
+// Consignatario — necesita su propio estado "open" porque cada <Combobox>
+// maneja su propio popover; compartir un solo booleano entre dos triggers en
+// lugares distintos de la pantalla los abriría/cerraría en conjunto.
+const clienteAbierto2 = ref(false);
 const clientesHallados = ref<Cliente[]>([]);
 const clientesSiscommate = ref<ClienteSiscommate[]>([]);
 const nombreCliente = ref('');
@@ -266,8 +339,37 @@ function partirDireccion(lineas: Array<string | undefined>) {
   return { street: validas.slice(0, -1).join(', '), city: validas[validas.length - 1] };
 }
 // No pisa lo que el operador ya haya escrito a mano en el consignatario.
-function rellenarSiVacio(campo: 'consignee_name' | 'consignee_tel' | 'consignee_street' | 'consignee_city', valor: string) {
+function rellenarSiVacio(campo: 'consignee_name' | 'consignee_tel' | 'consignee_street' | 'consignee_city'
+    | 'consignor_name' | 'consignor_tel' | 'consignor_street' | 'consignor_city' | 'consignor_document_no', valor: string) {
   if (valor && !bl.value[campo]) actualizarBL(campo, valor);
+}
+
+// ── Aviso de posible error de digitación (nombre parecido a uno conocido) ──
+// Solo sugiere, nunca cambia nada solo — decisión explícita: fusionar dos
+// clientes distintos por error de digitación sería peor que el problema que
+// se quiere resolver. Ver services/clientSync.js (buscarClienteParecido).
+const sugerenciaConsignor = ref<{ name: string; ss: string } | null>(null);
+const sugerenciaConsignee = ref<{ name: string; ss: string } | null>(null);
+let temporizadorParecido: ReturnType<typeof setTimeout> | undefined;
+
+function revisarNombreParecido(campo: 'consignor_name' | 'consignee_name', valor: string) {
+  const destino = campo === 'consignor_name' ? sugerenciaConsignor : sugerenciaConsignee;
+  destino.value = null;
+  if (!valor || valor.trim().length < 4) return;
+  clearTimeout(temporizadorParecido);
+  temporizadorParecido = setTimeout(async () => {
+    try {
+      const { sugerencia } = await api.clienteParecido(valor);
+      // El campo pudo cambiar mientras la petición estaba en vuelo (otro
+      // B/L, otro cambio) — no pisar un resultado más nuevo con uno viejo.
+      if (bl.value[campo] === valor) destino.value = sugerencia;
+    } catch { /* si falla, simplemente no se sugiere nada */ }
+  }, 400);
+}
+
+function usarNombreSugerido(campo: 'consignor_name' | 'consignee_name', nombre: string) {
+  actualizarBL(campo, nombre);
+  (campo === 'consignor_name' ? sugerenciaConsignor : sugerenciaConsignee).value = null;
 }
 
 // A diferencia de rellenarSiVacio: esto es una elección explícita del
@@ -322,10 +424,65 @@ function alElegirClienteValor(valor: string) {
   if (c) elegirCliente(c);
 }
 
+// ── Combobox: consignador (Shipper, RD) — mismo patrón que el buscador de
+// código arancelario y el de consignatario, pero contra el historial de B/L
+// (ver /api/catalogs/consignors: no hay catálogo curado de consignadores). ──
+// Segundo grupo (consignadoresSiscommate) viene de consignor_catalog — solo
+// nombre, no perfil completo, porque SISCOMMATE guarda el consignador como
+// texto libre en BOL.exporter, sin dirección/documento aparte (ver
+// services/clientSync.js sincronizarConsignadoresDesdeSiscommate).
+const consignadorAbierto = ref(false);
+const consignadoresHallados = ref<Consignador[]>([]);
+const consignadoresSiscommate = ref<ConsignadorSiscommate[]>([]);
+let tConsignador: ReturnType<typeof setTimeout> | undefined;
+
+function buscarConsignador(q: string) {
+  clearTimeout(tConsignador);
+  if (!q || q.length < 2) { consignadoresHallados.value = []; consignadoresSiscommate.value = []; return; }
+  tConsignador = setTimeout(async () => {
+    try { consignadoresHallados.value = await api.buscarConsignadores(q); } catch { consignadoresHallados.value = []; }
+    try { consignadoresSiscommate.value = await api.buscarConsignadoresSiscommate(q); } catch { consignadoresSiscommate.value = []; }
+  }, 200);
+}
+
+function elegirConsignador(c: Consignador) {
+  consignadorAbierto.value = false;
+  actualizarBL('consignor_name', c.name);
+  actualizarBL('consignor_document_type', c.document_type || '');
+  actualizarBL('consignor_document_no', c.document_no || '');
+  actualizarBL('consignor_tel', c.tel || '');
+  actualizarBL('consignor_email', c.email || '');
+  actualizarBL('consignor_street', c.street || '');
+  actualizarBL('consignor_city', c.city || '');
+  sugerenciaConsignor.value = null;
+}
+// SISCOMMATE solo trae el nombre — se limpia el resto de los campos en vez
+// de dejar datos de un consignador anterior sin relación con este.
+function elegirConsignadorSiscommate(c: ConsignadorSiscommate) {
+  consignadorAbierto.value = false;
+  actualizarBL('consignor_name', c.name);
+  actualizarBL('consignor_document_type', '');
+  actualizarBL('consignor_document_no', '');
+  actualizarBL('consignor_tel', '');
+  actualizarBL('consignor_email', '');
+  actualizarBL('consignor_street', '');
+  actualizarBL('consignor_city', '');
+  sugerenciaConsignor.value = null;
+}
+function alElegirConsignadorValor(valor: string) {
+  if (valor.startsWith('sis:')) {
+    const c = consignadoresSiscommate.value[Number(valor.slice(4))];
+    if (c) elegirConsignadorSiscommate(c);
+    return;
+  }
+  const c = consignadoresHallados.value.find(x => String(x.id) === valor);
+  if (c) elegirConsignador(c);
+}
+
 watch(() => bl.value?.id, () => {
-  itemAbierto.value = false; clienteAbierto.value = false;
+  itemAbierto.value = false; clienteAbierto.value = false; clienteAbierto2.value = false; consignadorAbierto.value = false;
   sugerencias.value = []; nombreCliente.value = ''; clienteId.value = null; descItem.value = '';
-  clientesHallados.value = []; clientesSiscommate.value = [];
+  clientesHallados.value = []; clientesSiscommate.value = []; consignadoresHallados.value = []; consignadoresSiscommate.value = [];
   if (bl.value?.hacienda_item_code) cargarDescItem(bl.value.hacienda_item_code);
   else if (bl.value?.goods_name) sugerir(bl.value.goods_name);
 }, { immediate: true });
@@ -343,6 +500,18 @@ watch(() => bl.value?.id, () => {
         </CardTitle>
       </CardHeader>
       <CardContent class="flex flex-col gap-2.5">
+        <!-- Número de viaje editable, en su propia fila: dos XML/PDF
+             distintos pueden traer el mismo VoyageNo en su propio encabezado
+             (viajes operativamente separados, ej. "CF371" y "CF371TB") sin
+             que deban compartir el mismo viaje acá — renombrar uno de los
+             dos es la forma de separarlos. -->
+        <div class="grid grid-cols-12 gap-x-3 gap-y-2.5">
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-4">
+            <Label class="text-xs">Número de viaje</Label>
+            <Input :model-value="m.voyage_no || ''" class="h-9 font-mono text-xs" @change="alCambiarVoyageNo" />
+          </div>
+        </div>
+
         <!-- Grid único de 12 columnas. Fila 1 = quién transporta · Fila 2 =
              de dónde a dónde · Fila 3 = cuándo y bajo qué código. -->
         <div class="grid grid-cols-12 gap-x-3 gap-y-2.5">
@@ -461,7 +630,7 @@ watch(() => bl.value?.id, () => {
       <span v-if="posicionBL" class="text-xs text-ink-faint" title="Posición de este B/L dentro del viaje">B/L {{ posicionBL }}</span>
       <div class="flex-1"></div>
       <Button v-if="bl.status === 'validado'" variant="outline" size="sm" @click="blActual && marcar('pendiente')"><X class="size-3.5" />Desvalidar</Button>
-      <Button v-else variant="outline" size="sm" class="border-status-validated text-status-validated hover:bg-status-validated-soft hover:text-status-validated" @click="blActual && marcar('validado')"><Check class="size-3.5" />Validado</Button>
+      <Button v-else variant="outline" size="sm" class="border-status-validated text-status-validated hover:bg-status-validated-soft hover:text-status-validated" @click="blActual && marcar('validado')"><Check class="size-3.5" />Validar</Button>
       <!-- blActual (no el computed bl, que fuerza no-null con !) por si el
            clic llega justo cuando blActual ya pasó a null — evita el
            "Cannot read properties of null (reading 'id')" en este handler. -->
@@ -511,17 +680,6 @@ watch(() => bl.value?.id, () => {
               </ComboboxList>
             </Combobox>
             <p v-if="descItem" class="text-xs text-status-validated">{{ descItem }}</p>
-          </div>
-          <div class="col-span-12 md:col-span-4 flex flex-col gap-1">
-            <Label class="text-xs">Tarifa (arbitrio)</Label>
-            <Select v-model="tarifa">
-              <SelectTrigger class="h-9 w-full bg-paper-raised text-xs"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="040">040 — Libre arancel</SelectItem>
-                <SelectItem value="045">045 — Carga general</SelectItem>
-              </SelectContent>
-            </Select>
-            <p class="text-xs text-ink-faint">{{ libreArancel ? 'FOB será 0 en el TXT' : 'Incluye valor FOB' }}</p>
           </div>
         </div>
 
@@ -588,7 +746,7 @@ watch(() => bl.value?.id, () => {
           <div class="col-span-12 md:col-span-5 flex flex-col gap-1">
             <Label class="text-xs">Nombre consignatario</Label>
             <Input :model-value="bl.consignee_name || ''" placeholder="Se completa al elegir código o SS/EIN" class="text-xs"
-              @change="(e:Event) => actualizarBL('consignee_name', (e.target as HTMLInputElement).value)" />
+              @change="(e:Event) => { const v = (e.target as HTMLInputElement).value; actualizarBL('consignee_name', v); revisarNombreParecido('consignee_name', v); }" />
             <p v-if="nombreCliente" class="flex items-center gap-1 text-xs text-status-validated">
               <Check class="size-3" />
               <button v-if="clienteId !== null" class="text-accent underline" @click="emit('editarCliente', clienteId || 0, bl.hacienda_client_ss || '', nombreCliente)">Editar cliente local</button>
@@ -617,7 +775,7 @@ watch(() => bl.value?.id, () => {
           <div v-if="contenedoresDelBL.length" class="col-span-12 flex flex-col gap-1.5">
             <Label class="flex items-center gap-1.5 text-xs text-ink-muted"><Box class="size-3.5" />Contenedores asociados</Label>
             <div class="grid grid-cols-1 gap-1 sm:grid-cols-2">
-              <div v-for="c in contenedoresDelBL" :key="c.container_no"
+              <div v-for="(c, i) in contenedoresDelBL" :key="`${c.container_no}-${i}`"
                 class="flex items-center justify-between gap-1.5 rounded-md border border-border bg-paper-raised p-1.5 text-xs"
                 :class="c.container_no === contenedorHacienda && 'border-accent/50 bg-accent-soft'">
                 <div class="flex items-center gap-1">
@@ -628,13 +786,15 @@ watch(() => bl.value?.id, () => {
                   <Input :model-value="c.container_no" :disabled="!c.id" class="h-7 w-32 font-mono text-xs font-semibold text-accent"
                     @change="(e:Event) => alCambiarNumeroContenedor(c.id, (e.target as HTMLInputElement).value)" />
                 </div>
-                <Select :model-value="c.size" :disabled="!c.id" @update:model-value="(v) => alCambiarTamano(c.id, String(v))">
+                <Select :model-value="c.size" @update:model-value="(v) => alCambiarTamano(c.container_no, String(v))">
                   <SelectTrigger class="h-7 w-24 text-xs" :class="!c.size && 'border-danger bg-danger-soft'"><SelectValue placeholder="— tamaño —" /></SelectTrigger>
                   <SelectContent>
                     <SelectItem v-for="s in opcionesTamano(c.size)" :key="s" :value="s">{{ s }}</SelectItem>
                   </SelectContent>
                 </Select>
                 <span class="whitespace-nowrap text-[11px] text-ink-faint">Tipo: <span class="text-ink">R (RORO)</span></span>
+                <button type="button" title="Quitar este contenedor del B/L" class="rounded p-0.5 text-destructive hover:bg-destructive/10"
+                  @click="eliminarContenedorDeBL(c.container_no)"><Trash2 class="size-3.5" /></button>
               </div>
             </div>
           </div>
@@ -656,11 +816,14 @@ watch(() => bl.value?.id, () => {
           <div class="col-span-12 flex flex-col gap-1 md:col-span-3">
             <Label class="text-xs">Peso bruto (kg)</Label>
             <Input type="number" step="0.01" :model-value="bl.gross_weight || 0" class="h-9 text-xs" @change="(e:Event) => actualizarBL('gross_weight', (e.target as HTMLInputElement).value)" />
+            <p v-if="pesoBlDifiere" class="text-[11px] leading-tight text-danger">
+              Los contenedores suman {{ sumaPesoContenedores }} kg; el TXT usa esa suma.
+              <button type="button" class="underline" @click="actualizarBL('gross_weight', String(sumaPesoContenedores))">Usar la suma</button>
+            </p>
           </div>
           <div class="col-span-12 flex flex-col gap-1 md:col-span-3">
             <Label class="text-xs">Valor FOB (USD)</Label>
-            <Input type="number" step="0.01" :model-value="bl.value || 0" class="h-9 text-xs" :class="libreArancel && 'opacity-50'"
-              :title="libreArancel ? '040 Libre arancel — se fuerza a 0 en el TXT' : ''"
+            <Input type="number" step="0.01" :model-value="bl.value || 0" class="h-9 text-xs"
               @change="(e:Event) => actualizarBL('value', (e.target as HTMLInputElement).value)" />
           </div>
           <div class="col-span-12 flex flex-col gap-1 md:col-span-2">
@@ -716,7 +879,47 @@ watch(() => bl.value?.id, () => {
     <Card>
       <CardHeader><CardTitle><span class="rounded bg-status-validated-soft px-1.5 py-0.5 text-status-validated">Consignador</span> — Shipper (República Dominicana)</CardTitle></CardHeader>
       <CardContent class="flex flex-col gap-2.5">
-        <div class="flex flex-col gap-1"><Label class="text-xs">Nombre / Razón social</Label><Input :model-value="bl.consignor_name || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('consignor_name', (e.target as HTMLInputElement).value)" /></div>
+        <div class="flex flex-col gap-1">
+          <Label class="text-xs">Nombre / Razón social</Label>
+          <!-- Mismo Combobox de búsqueda en vivo que código arancelario y
+               consignatario, pero contra el historial de B/L (no hay
+               catálogo de consignadores) — ver buscarConsignador. Sigue
+               siendo texto libre: si no aparece nada, se escribe uno nuevo. -->
+          <Combobox
+            :model-value="bl.consignor_name || ''"
+            @update:model-value="(v) => alElegirConsignadorValor(String(v))"
+            v-model:open="consignadorAbierto"
+            ignore-filter
+            open-on-click
+            open-on-focus
+            :display-value="(v: unknown) => String(v ?? '')"
+          >
+            <ComboboxAnchor as-child>
+              <ComboboxInput placeholder="Buscar por nombre o RNC/Cédula, o escribir uno nuevo..." class="h-9 text-xs"
+                @update:model-value="(v: string) => { buscarConsignador(v); actualizarBL('consignor_name', v); revisarNombreParecido('consignor_name', v); }"
+                @focus="seleccionarTextoInput" />
+            </ComboboxAnchor>
+            <ComboboxList>
+              <ComboboxEmpty>Sin coincidencias — se usará el nombre escrito</ComboboxEmpty>
+              <ComboboxGroup v-if="consignadoresHallados.length" heading="Locales">
+                <ComboboxItem v-for="c in consignadoresHallados" :key="c.id" :value="String(c.id)">
+                  <span class="flex-1 truncate">{{ c.name }}</span>
+                  <span class="font-mono text-xs text-ink-faint">{{ c.document_no || '—' }}</span>
+                </ComboboxItem>
+              </ComboboxGroup>
+              <ComboboxGroup v-if="consignadoresSiscommate.length" heading="SISCOMMATE">
+                <ComboboxItem v-for="(c, i) in consignadoresSiscommate" :key="'sis:'+i" :value="'sis:'+i">
+                  <span class="flex-1 truncate">{{ c.name }}</span>
+                </ComboboxItem>
+              </ComboboxGroup>
+            </ComboboxList>
+          </Combobox>
+          <p v-if="sugerenciaConsignor" class="flex items-center gap-1.5 text-xs text-status-pending">
+            <Sparkles class="size-3 shrink-0" />
+            ¿Quisiste decir
+            <button type="button" class="font-medium underline" @click="usarNombreSugerido('consignor_name', sugerenciaConsignor!.name)">{{ sugerenciaConsignor.name }}</button>?
+          </p>
+        </div>
         <!-- Fila 2: tipo primero (se elige antes de escribir el número) · documento (5, contenido más largo) · espacio restante (4) -->
         <div class="grid grid-cols-12 gap-x-3 gap-y-2.5">
           <div class="col-span-12 flex flex-col gap-1 md:col-span-3"><Label class="text-xs">Tipo documento</Label><Input :model-value="bl.consignor_document_type || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('consignor_document_type', (e.target as HTMLInputElement).value)" /></div>
@@ -737,7 +940,54 @@ watch(() => bl.value?.id, () => {
       <CardHeader><CardTitle><span class="rounded bg-accent-soft px-1.5 py-0.5 text-accent">Consignatario</span> — Consignee (Puerto Rico)</CardTitle></CardHeader>
       <CardContent class="flex flex-col gap-2.5">
         <div class="grid grid-cols-12 gap-x-3 gap-y-2.5">
-          <div class="col-span-12 flex flex-col gap-1 md:col-span-7"><Label class="text-xs">Nombre / Razón social</Label><Input :model-value="bl.consignee_name || ''" class="h-9 text-xs" @change="(e:Event) => actualizarBL('consignee_name', (e.target as HTMLInputElement).value)" /></div>
+          <div class="col-span-12 flex flex-col gap-1 md:col-span-7">
+            <Label class="text-xs">Nombre / Razón social</Label>
+            <!-- Mismo buscador que "SS / EIN consignatario" más arriba (los
+                 dos comparten clientesHallados/clientesSiscommate) — este
+                 trigger vive acá para poder elegir el cliente sin tener que
+                 subir hasta el campo de SS/EIN. Usa su propio "open"
+                 (clienteAbierto2): cada Combobox controla su propio popover. -->
+            <Combobox
+              :model-value="bl.consignee_name || ''"
+              @update:model-value="(v) => alElegirClienteValor(String(v))"
+              v-model:open="clienteAbierto2"
+              ignore-filter
+              open-on-click
+              open-on-focus
+              :display-value="(v: unknown) => String(v ?? '')"
+            >
+              <ComboboxAnchor as-child>
+                <ComboboxInput placeholder="Buscar por nombre o EIN, o escribir uno nuevo..." class="h-9 text-xs"
+                  @update:model-value="(v: string) => { buscarCliente(v); actualizarBL('consignee_name', v); revisarNombreParecido('consignee_name', v); }"
+                  @focus="seleccionarTextoInput" />
+              </ComboboxAnchor>
+              <ComboboxList>
+                <ComboboxEmpty>Sin resultados</ComboboxEmpty>
+                <ComboboxGroup v-if="clientesHallados.length" heading="Locales">
+                  <ComboboxItem v-for="c in clientesHallados" :key="c.id" :value="String(c.id)">
+                    <span class="flex-1 truncate">{{ c.name }}</span>
+                    <span class="font-mono text-xs text-ink-faint">{{ c.ss || '—' }}</span>
+                  </ComboboxItem>
+                </ComboboxGroup>
+                <ComboboxGroup v-if="clientesSiscommate.length" heading="SISCOMMATE">
+                  <ComboboxItem v-for="(c, i) in clientesSiscommate" :key="'sis:'+i" :value="'sis:'+i">
+                    <span class="flex-1 truncate">{{ c.name }}</span>
+                    <span class="font-mono text-xs text-ink-faint">{{ c.ss || '—' }}</span>
+                  </ComboboxItem>
+                </ComboboxGroup>
+                <ComboboxGroup>
+                  <ComboboxItem value="crear-nuevo" class="text-accent">
+                    + Crear nuevo consignatario…
+                  </ComboboxItem>
+                </ComboboxGroup>
+              </ComboboxList>
+            </Combobox>
+            <p v-if="sugerenciaConsignee" class="flex items-center gap-1.5 text-xs text-status-pending">
+              <Sparkles class="size-3 shrink-0" />
+              ¿Quisiste decir
+              <button type="button" class="font-medium underline" @click="usarNombreSugerido('consignee_name', sugerenciaConsignee!.name)">{{ sugerenciaConsignee.name }}</button>?
+            </p>
+          </div>
           <div class="col-span-12 flex flex-col gap-1 md:col-span-2"><Label class="text-xs">EIN / SS (PR)</Label><Input :model-value="bl.consignee_document_no || ''" class="h-9 font-mono text-xs" @change="(e:Event) => actualizarBL('consignee_document_no', (e.target as HTMLInputElement).value)" /></div>
           <div class="col-span-12 flex flex-col gap-1 md:col-span-3"><Label class="text-xs">Teléfono</Label><Input :model-value="bl.consignee_tel || ''" class="h-9 font-mono text-xs" @change="(e:Event) => actualizarBL('consignee_tel', (e.target as HTMLInputElement).value)" /></div>
         </div>

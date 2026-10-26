@@ -5,8 +5,9 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const {
-  pad, padZ, sanitizeSS, toSiscommatePort,
+  pad, padZ, sanitizeSS, toSiscommatePort, calcularPuertosDbf,
   generateTxtLine0, generateTxtLine1, generateTxtLine2, generateFullTxt,
+  normalizarTamano, contenedoresSinTamano,
 } = require('./txtGenerator');
 
 // ── Datos de ejemplo ─────────────────────────────────────────────────────────
@@ -34,6 +35,7 @@ const bl = {
   hacienda_item_code:    '391400',
   hacienda_tariff:       '045',
   hacienda_container_no: 'PRRU2010106',
+  containerSizes:        { PRRU2010106: '40', MSCU1234567: '53HC' },
   goods_name:            'PACKAGES CONTAINING PAINT',
   package_qty:           288,
   gross_weight:          12500.5,
@@ -102,8 +104,15 @@ test('línea 1 coloca cada campo en su posición documentada', () => {
   assert.strictEqual(l1.substring(76, 83), 'C      ',        'tipo C en [76:83]');
   assert.strictEqual(l1.substring(143, 146), 'DRP',          'puerto origen en [143:146]');
   assert.strictEqual(l1.substring(146, 149), 'XSJ',          'puerto descarga en [146:149]');
-  assert.strictEqual(l1.substring(186, 190), '045R',         'tarifa+R en [186:190]');
+  assert.strictEqual(l1.substring(186, 190), '040R',         'tamaño del contenedor+R en [186:190]');
   assert.strictEqual(l1.substring(190, 201), '01406530016',  'IVU en [190:201]');
+});
+
+test('línea 1 distingue descarga de destino cuando hay discharge_port (tránsito)', () => {
+  const manifestTransito = { ...manifest, unloading_port: 'JAX', discharge_port: 'XSJ' };
+  const l1 = generateTxtLine1(bl, manifestTransito, 'PRRU2010106');
+  assert.strictEqual(l1.substring(146, 149), 'XSJ', 'puerto descarga (donde desembarca) en [146:149]');
+  assert.strictEqual(l1.substring(149, 152), 'JAX', 'puerto destino (a dónde va la carga) en [149:152]');
 });
 
 test('línea 2 coloca cada campo en su posición documentada', () => {
@@ -113,7 +122,7 @@ test('línea 2 coloca cada campo en su posición documentada', () => {
   assert.strictEqual(l2.substring(17, 22), '00288',       'cantidad en [17:22]');
   assert.strictEqual(l2.substring(22, 28), 'BOX   ',      'unidad en [22:28]');
   assert.strictEqual(l2.substring(28, 35), '1250050',     'peso ×100 en [28:35]');
-  assert.strictEqual(l2.substring(35, 38), '045',         'tarifa en [35:38]');
+  assert.strictEqual(l2.substring(35, 38), '040',         'tamaño del contenedor en [35:38]');
   assert.strictEqual(l2.substring(38, 159), pad('PACKAGES CONTAINING PAINT', 121), 'descripción en [38:159]');
   assert.strictEqual(l2.substring(159, 164), '00288',     'cantidad repetida en [159:164]');
   assert.strictEqual(l2.substring(164, 179), padZ('391400', 15), 'código Hacienda en [164:179]');
@@ -121,21 +130,56 @@ test('línea 2 coloca cada campo en su posición documentada', () => {
 });
 
 // ── Reglas de negocio ────────────────────────────────────────────────────────
-test('tarifa 040 (libre arancel) fuerza el valor FOB a cero', () => {
-  const libre = { ...bl, hacienda_tariff: '040', value: 9999.99 };
-  const l1 = generateTxtLine1(libre, manifest, 'PRRU2010106');
-  assert.strictEqual(l1.substring(153, 162), '000000000', 'FOB debe ser 0 con tarifa 040');
+test('el FOB es siempre el valor del B/L, aunque haya una tarifa 040 guardada', () => {
+  const vieja = { ...bl, hacienda_tariff: '040', value: 9999.99 };
+  const l1 = generateTxtLine1(vieja, manifest, 'PRRU2010106');
+  assert.strictEqual(l1.substring(153, 162), '000999999');
 });
 
-test('tarifa 045 sí incluye el valor FOB en centavos', () => {
+test('el valor FOB sale en centavos', () => {
   const l1 = generateTxtLine1(bl, manifest, 'PRRU2010106');
   assert.strictEqual(l1.substring(153, 162), '000123456', '1234.56 USD → 123456 centavos');
 });
 
-test('sin tarifa, el campo tarifa+R queda en blanco', () => {
+test('el tamaño sale del contenedor de cada línea, no de la tarifa del B/L', () => {
   const sinTarifa = { ...bl, hacienda_tariff: '' };
-  const l1 = generateTxtLine1(sinTarifa, manifest, 'PRRU2010106');
-  assert.strictEqual(l1.substring(186, 190), '    ');
+  const l1 = generateTxtLine1(sinTarifa, manifest, 'MSCU1234567');
+  const l2 = generateTxtLine2(sinTarifa, 'MSCU1234567', 1, null);
+  assert.strictEqual(l1.substring(186, 190), '053R', '53HC → 053R');
+  assert.strictEqual(l2.substring(35, 38), '053');
+  assert.strictEqual(l1.length, 205);
+});
+
+test('contenedor sin tamaño conocido deja el campo en blanco y se detecta', () => {
+  const sinTam = { ...bl, containers: ['PRRU2010106', 'XXXX9999999'] };
+  assert.strictEqual(generateTxtLine1(sinTam, manifest, 'XXXX9999999').substring(186, 190), '    ');
+  assert.deepStrictEqual(contenedoresSinTamano(sinTam), ['XXXX9999999']);
+  assert.deepStrictEqual(contenedoresSinTamano({ ...bl, hacienda_container_no: '', containers: [''] }), []);
+});
+
+test('B/L con varios contenedores reparte la SUMA de los contenedores, no el peso del B/L', () => {
+  const multi = {
+    ...bl, gross_weight: 9500, containers: ['PRRU2010106', 'MSCU1234567'],
+    containerWeights: { PRRU2010106: 20000, MSCU1234567: 27500 },
+  };
+  // (20000 + 27500) / 2 = 23750 kg → 2375000
+  assert.strictEqual(generateTxtLine2(multi, 'PRRU2010106', 2, null).substring(28, 35), '2375000');
+});
+
+test('sin pesos de contenedor confiables se reparte el peso del B/L', () => {
+  const sinPeso = {
+    ...bl, gross_weight: 9500, containers: ['PRRU2010106', 'MSCU1234567'],
+    containerWeights: { PRRU2010106: 20000, MSCU1234567: 0 },
+  };
+  assert.strictEqual(generateTxtLine2(sinPeso, 'PRRU2010106', 2, null).substring(28, 35), '0475000');
+});
+
+test('normalizarTamano sigue la regla del bridge', () => {
+  assert.strictEqual(normalizarTamano('20'), '020');
+  assert.strictEqual(normalizarTamano('40HC'), '040');
+  assert.strictEqual(normalizarTamano('053'), '053');
+  assert.strictEqual(normalizarTamano('RORO'), '');
+  assert.strictEqual(normalizarTamano(null), '');
 });
 
 test('sin contenedor, la unidad es LSE en vez de BOX', () => {
@@ -181,10 +225,15 @@ test('un código no reconocido no se manda — cae al respaldo BOX/LSE', () => {
   assert.strictEqual(l2b.substring(22, 28), 'LSE   ', 'sin contenedor debería caer a LSE');
 });
 
-test('el IVU del carrier se usa cuando el consignatario no tiene', () => {
+test('sin IVU propio el campo queda en blanco, NUNCA cae al IVU del carrier', () => {
+  // Comparado contra un TXT real ya aceptado por SISCOMMATE (3309832.TXT /
+  // K1339): esa fila jamás mete el IVU del carrier ahí cuando el
+  // consignatario no tiene uno propio — o trae el IVU real del cliente, o
+  // queda en blanco. El respaldo al IVU del carrier mandaba un número que
+  // no le correspondía a ese consignatario.
   const sinIvu = { ...bl, hacienda_client_ivu: '' };
   const l1 = generateTxtLine1(sinIvu, manifest, 'PRRU2010106');
-  assert.strictEqual(l1.substring(190, 201), '01406530016', 'debe caer al IVU del carrier');
+  assert.strictEqual(l1.substring(190, 201), '           ', 'debe quedar en blanco, no usar el IVU del carrier');
 });
 
 test('con varios contenedores el peso se reparte entre ellos', () => {
@@ -275,6 +324,28 @@ test('toSiscommatePort sin código asume San Juan', () => {
   assert.strictEqual(toSiscommatePort(null), 'XSJ');
 });
 
+// ── calcularPuertosDbf ───────────────────────────────────────────────────────
+test('calcularPuertosDbf: sin discharge_port, descarga y destino son el mismo puerto', () => {
+  assert.deepStrictEqual(
+    calcularPuertosDbf({ loading_port: 'USMIA', unloading_port: 'PRSJU' }),
+    { origport: 'MIA', discport: 'XSJ', destport: 'XSJ' }
+  );
+});
+
+test('calcularPuertosDbf: con discharge_port, descarga y destino se distinguen (tránsito)', () => {
+  // Caso real reportado: barco descarga en San Juan pero la carga sigue
+  // camino a Jacksonville — antes discport/destport salían siempre iguales
+  // (el valor de unloading_port), perdiendo el puerto real de descarga.
+  assert.deepStrictEqual(
+    calcularPuertosDbf({ loading_port: 'DRP', unloading_port: 'JAX', discharge_port: 'XSJ' }),
+    { origport: 'DRP', discport: 'XSJ', destport: 'JAX' }
+  );
+});
+
+test('calcularPuertosDbf sin ningún puerto cae al respaldo (Santo Domingo / San Juan)', () => {
+  assert.deepStrictEqual(calcularPuertosDbf({}), { origport: 'DRP', discport: 'XSJ', destport: 'XSJ' });
+});
+
 // ── TXT completo ─────────────────────────────────────────────────────────────
 test('cada contenedor del B/L genera su propio par línea1 + línea2', () => {
   const blMulti = { ...bl, containers: ['PRRU2010106', 'MSCU1234567'] };
@@ -334,6 +405,21 @@ test('comillas curvas de un PDF (8" copiado como comilla) no rompen el ancho fij
   const l2 = generateTxtLine2(conComillas, 'PRRU2010106', 1, null);
   assert.strictEqual(l2.length, 205);
   assert.strictEqual(Buffer.byteLength(l2, 'utf8'), 205);
+});
+
+test('? > ; \' - _ : / % [ ] * se quitan del nombre/descripción — nunca aparecen en un TXT real ya aceptado', () => {
+  // Confirmado carácter por carácter contra un TXT real ya aceptado por
+  // SISCOMMATE (3309832.TXT / K1339), aislado a las columnas de
+  // consignatario/consignador/descripción: estos 12 símbolos NUNCA
+  // aparecen ahí. Coma, punto, paréntesis, "&" y "+" sí se toleran (el
+  // archivo real los trae) y se conservan tal cual.
+  const bl2 = { ...bl, consignee_name: "O'BRIEN; TEST? >CO_LTD-INC:A/B%C[D]E*F", consignor_name: 'GRUPO ROJAS & CO. (2DA) +1' };
+  const l1 = generateTxtLine1(bl2, manifest, 'PRRU2010106');
+  assert.strictEqual(
+    l1.substring(37, 67), pad('OBRIEN TEST COLTDINCABCDEF', 30),
+    'quita ? > ; \' - _ : / % [ ] * conservando los espacios que ya había'
+  );
+  assert.strictEqual(l1.substring(83, 143), pad('GRUPO ROJAS & CO. (2DA) +1', 60), 'conserva punto, &, paréntesis y +');
 });
 
 test('un símbolo no previsto se quita en vez de desalinear la línea', () => {

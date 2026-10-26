@@ -8,6 +8,7 @@ const { parseXmlManifest } = require('./xmlParser');
 const {
   normalizePdfDate, parsePdfNum, isIsoContainer, normContainerNo,
   isPhoneNumber, parsePdfParty, isCustoms1302, parseCustoms1302, parseGenericDga,
+  advertirContenedoresEnVariosBl,
 } = require('./pdfParser');
 
 // ═══════════════════════════════════════════════════════════════════
@@ -57,6 +58,54 @@ test('1302: extrae buque, viaje y puertos del encabezado', () => {
   assert.strictEqual(r.header.carrier_code, 'MPRIORO');
 });
 
+// La misma plantilla real (Priority RORO) puede llegar con estos
+// encabezados en español en vez de inglés — antes isCustoms1302 exigía
+// literalmente "Name of Ship", así que esta versión se hubiera ido al
+// parser genérico de la DGA (estrategia de extracción totalmente
+// distinta) en vez de reconocerse como lo que realmente es.
+const TEXTO_1302_ESPANOL = [
+  'Page 1/1',
+  '12,500.50',
+  '27,557.00',
+  '1.- Nombre del Buque',
+  'KYDON                    K1326',
+  'Puerto de carga',
+  'SANTO DOMINGO (DRP)',
+  'Puerto de Descarga',
+  'SAN JUAN (XSJ)',
+  'Números de B/L',
+  '',
+  'EXPORTADORA DOMINICANA SRL RNC: 130862154',
+  'CALLE PRIMERA #45',
+  '10101 - SANTO DOMINGO (DO - REP DOMINICANA)',
+  '',
+  'LANCO MANUFACTURING CORP TAX ID: 660487552',
+  'URB APONTE 5',
+  '00907 - SAN JUAN (PR - PUERTO RICO)',
+  '',
+  'NOTIFY PARTY INC',
+  'PO BOX 100',
+  '00907 - SAN JUAN (PR - PUERTO RICO)',
+  'PYRR-2617593 PRRU 201010-6',
+  "40' CONT",
+  '288 carton:',
+  'PACKAGES CONTAINING PAINT',
+  'KG',
+].join('\n');
+
+test('1302: se detecta igual con los encabezados en español (mismo formato, distinto idioma)', () => {
+  assert.strictEqual(isCustoms1302(TEXTO_1302_ESPANOL), true);
+});
+
+test('1302 en español: extrae buque, viaje, puertos y las 3 partes igual que en inglés', () => {
+  const r = parseCustoms1302(TEXTO_1302_ESPANOL);
+  assert.strictEqual(r.header.vessel_name, 'KYDON');
+  assert.strictEqual(r.header.voyage_no, 'K1326');
+  assert.strictEqual(r.bls.length, 1);
+  assert.strictEqual(r.bls[0].consignor_name, 'EXPORTADORA DOMINICANA SRL');
+  assert.strictEqual(r.bls[0].consignee_name, 'LANCO MANUFACTURING CORP');
+});
+
 test('1302: extrae el B/L con cantidad, descripción y peso de la página', () => {
   const r = parseCustoms1302(TEXTO_1302);
   assert.strictEqual(r.bls.length, 1);
@@ -89,6 +138,66 @@ test('1302: asigna shipper, consignee y notify en el orden correcto', () => {
   assert.strictEqual(bl.notify_name, 'NOTIFY PARTY INC', 'notify');
 });
 
+test('1302: shipper/consignee/notify idénticos a la fila de arriba (no repetidos en el PDF) se heredan', () => {
+  // Bug real (K1340): cuando una de las 3 partes es IDÉNTICA a la de la
+  // fila anterior, el PDF no la repite — 46 de 101 B/L de un manifiesto
+  // real quedaban sin consignatario ni consignador por esto. Dos variantes
+  // reales distintas en el mismo archivo:
+  //  · BL2: shipper se repite (SÍ viene impreso, mismo exportador que BL1)
+  //    pero consignee/notify — iguales a los de BL1 — no se repiten.
+  //  · BL3: consignee/notify SÍ vienen impresos (empresa nueva) pero el
+  //    shipper — igual al de BL2 — no se repite.
+  const texto = [
+    'Page 1/1',
+    '1,000.00', '2,204.00',
+    '1.- Name of Ship',
+    'KYDON                    K1340',
+    'BL Numbers',
+    '',
+    'PRODUCTOS DEL TROPICO',
+    'KM 28 CARR SANCHEZ',
+    '',
+    'EMPRESAS LA FAMOSA',
+    'CARR 866',
+    '',
+    'EMPRESAS LA FAMOSA',
+    'CARR 866',
+    'PYRR-3100001 PRRU 111111-1',
+    "40' CONT",
+    '100 carton:',
+    'ALGO UNO',
+    'KG',
+    '',
+    'PRODUCTOS DEL TROPICO',
+    'KM 28 CARR SANCHEZ',
+    'PYRR-3100002 PRRU 222222-2',
+    "40' CONT",
+    '200 carton:',
+    'ALGO DOS',
+    'KG',
+    '',
+    'BANDALUX CORPORATION',
+    'AVE LOS PROCERES',
+    '',
+    'PLAZA FOOD SYSTEMS',
+    'HC5 BOX 559000',
+    'PYRR-3100003 PRRU 333333-3',
+    "40' CONT",
+    '300 carton:',
+    'ALGO TRES',
+    'KG',
+  ].join('\n');
+  const r = parseCustoms1302(texto);
+  const bl2 = r.bls.find(b => b.bl_no === 'PYRR3100002');
+  const bl3 = r.bls.find(b => b.bl_no === 'PYRR3100003');
+  assert.strictEqual(bl2.consignor_name, 'PRODUCTOS DEL TROPICO', 'BL2: shipper viene impreso de nuevo, no se hereda');
+  assert.strictEqual(bl2.consignee_name, 'EMPRESAS LA FAMOSA', 'BL2: consignatario heredado de BL1 (no repetido en el PDF)');
+  assert.strictEqual(bl2.notify_name, 'EMPRESAS LA FAMOSA', 'BL2: notify heredado de BL1 (no repetido en el PDF)');
+  assert.strictEqual(bl3.consignor_name, 'PRODUCTOS DEL TROPICO', 'BL3: shipper heredado de BL2 (no repetido en el PDF)');
+  assert.strictEqual(bl3.consignee_name, 'BANDALUX CORPORATION', 'BL3: consignatario nuevo, viene impreso');
+  assert.strictEqual(bl3.notify_name, 'PLAZA FOOD SYSTEMS', 'BL3: notify nuevo, viene impreso');
+});
+
 test('1302: el EIN del consignatario alimenta hacienda_client_ss', () => {
   const r = parseCustoms1302(TEXTO_1302);
   assert.strictEqual(r.bls[0].hacienda_client_ss, '660487552');
@@ -111,6 +220,65 @@ test('1302: un vehículo se reconoce por VIN y no genera contenedor', () => {
   assert.strictEqual(r.containers.length, 0, 'un vehículo no crea contenedor');
   assert.ok(r.cargoItems[0].goods_name.startsWith('[VIN: 1HGCM82633A004352]'), 'el VIN queda en la descripción');
   assert.strictEqual(r.bls[0].hacienda_container_no, '1HGCM82633A004352');
+});
+
+test('1302: un vehículo con código de chasis corto (10 caracteres, no VIN de 17) también se reconoce y no genera contenedor', () => {
+  // Bug real (AU050S): este sistema identifica vehículos con un código de
+  // chasis corto ("RM1-1200191" → "RM11200191" sin el guión, 10 caracteres),
+  // no un VIN completo de 17. Antes el rango exigía 11-17, así que este
+  // código no calzaba ni con isIsoContainer (formato distinto) ni con el
+  // patrón de VIN, y caía al catch-all genérico quedando mal guardado como
+  // número de contenedor en vez de vin/VEHICLE.
+  const texto = TEXTO_1302
+    .replace('PYRR-2617593 PRRU 201010-6', 'PYRR-2617594 RM1-1200191')
+    .replace("40' CONT", 'VEHICLE');
+  const r = parseCustoms1302(texto);
+  assert.strictEqual(r.bls.length, 1);
+  assert.strictEqual(r.containers.length, 0, 'un vehículo con código corto tampoco crea contenedor');
+  assert.strictEqual(r.cargoItems[0].vin, 'RM11200191');
+  assert.strictEqual(r.cargoItems[0].container_no, null);
+});
+
+test('1302: un segundo vehículo del mismo B/L, en fila huérfana (celda fusionada), se reconecta y no se pierde', () => {
+  // Bug real (AU050S, B/L PYRR-2632441 con varios autos): igual que un
+  // contenedor extra fusionado, un segundo/tercer vehículo del mismo B/L
+  // llega en una línea sola, sin "PYRR-XXXXXXX" repetido. La detección de
+  // huérfanos solo aceptaba contenedores ISO reales (isIsoContainer) — un
+  // código de chasis de vehículo no calzaba ahí y la fila se perdía en
+  // silencio, sin siquiera contar como advertencia.
+  const texto = [
+    'Page 1/1',
+    '1,000.00', '2,204.00',
+    '1.- Name of Ship',
+    'KYDON                    K1340',
+    'BL Numbers',
+    '',
+    'SHIPPER UNO',
+    'CALLE X',
+    '',
+    'CONSIGNEE UNO',
+    'CALLE Y',
+    '',
+    'NOTIFY UNO',
+    'CALLE Z',
+    'PYRR-2632441 GRX130-6015688',
+    'VEHICLE',
+    'N/A',
+    '1 :',
+    'TOYOTA MARK X',
+    'KG',
+    'RM1-1002654',
+    'VEHICLE',
+    'N/A',
+    '1 :',
+    'HONDA CRV',
+    'LBS',
+  ].join('\n');
+  const r = parseCustoms1302(texto);
+  assert.strictEqual(r.bls.length, 1, 'un solo B/L, el segundo auto no crea uno nuevo por error');
+  const vins = r.cargoItems.map(ci => ci.vin).sort();
+  assert.deepStrictEqual(vins, ['GRX1306015688', 'RM11002654'], 'ambos vehículos quedan registrados, ninguno se pierde');
+  assert.strictEqual(r.containers.length, 0);
 });
 
 test('1302: el mismo B/L en dos contenedores consolida pesos y cantidades', () => {
@@ -156,6 +324,361 @@ test('1302: el mismo B/L en dos contenedores consolida pesos y cantidades', () =
   assert.strictEqual(r.bls[0].package_qty, 15, '10 + 5');
   assert.strictEqual(r.containers.length, 2, 'dos contenedores distintos');
   assert.strictEqual(r.cargoItems.length, 2, 'un item por contenedor');
+});
+
+test('1302: contenedor sin B/L al inicio de línea (celda fusionada) se reconecta con el último B/L', () => {
+  // Caso real: un B/L con varios contenedores donde el PDF original fusiona
+  // visualmente la celda del B/L para las filas extra — el texto extraído
+  // no repite "PYRR-1234567" en esas filas, solo el contenedor (ver CF365:
+  // PYRR-2631003 con PRRU 350178-1 y, en una fila huérfana, PRRU 433387-5).
+  const texto = [
+    'Page 1/1',
+    '1,000.00', '2,204.00',
+    '500.00', '1,102.00',
+    '1.- Name of Ship',
+    'KYDON                    K1327',
+    'BL Numbers',
+    '',
+    'SHIPPER UNO',
+    'CALLE X',
+    '',
+    'CONSIGNEE UNO',
+    'CALLE Y',
+    '',
+    'NOTIFY UNO',
+    'CALLE Z',
+    'PYRR-2631003 PRRU 350178-1',
+    "40' FR",
+    'N/A',
+    '17 rolls:',
+    'REBAR IN COIL',
+    'KG',
+    'PRRU 433387-5',
+    "40' FR",
+    'N/A',
+    '17 rolls:',
+    'REBAR IN COIL',
+    'KG',
+  ].join('\n');
+  const r = parseCustoms1302(texto);
+  assert.strictEqual(r.bls.length, 1, 'ambos contenedores pertenecen al mismo B/L');
+  assert.strictEqual(r.bls[0].bl_no, 'PYRR2631003');
+  assert.strictEqual(r.containers.length, 2, 'no se pierde el segundo contenedor');
+  assert.deepStrictEqual(
+    r.containers.map(c => c.container_no).sort(),
+    ['PRRU3501781', 'PRRU4333875'].sort()
+  );
+  assert.strictEqual(r.bls[0].gross_weight, 1500, 'se suma el peso de ambos contenedores, no se pierde el segundo');
+  assert.strictEqual(r.cargoItems.length, 2, 'un cargo item por contenedor, incluido el huérfano');
+});
+
+test('1302: un par KG/LBS partido justo en el salto de página no desalinea el peso del B/L siguiente', () => {
+  // Bug real (K1338, PYRR-2630003 / PYRR-2630487): cuando el KG de una fila
+  // cae al final de una página y su LBS queda al inicio de la siguiente, el
+  // conteo de peso reiniciaba por página — la cantidad de números "sobrante"
+  // en la página anterior (aquí, un solo número: el KG sin su LBS) hacía que
+  // la página siguiente empezara a contar desde su LBS "huérfano" como si
+  // fuera el KG de una fila nueva, corriendo el peso de TODOS los B/L de esa
+  // página en adelante.
+  const pagina1 = [
+    '1,000.00', // KG de PYRR-3000001 — su LBS queda en la página 2
+    '1.- Name of Ship',
+    'KYDON                    K1330',
+    'BL Numbers',
+    '',
+    'SHIPPER UNO',
+    'CALLE X',
+    '',
+    'CONSIGNEE UNO',
+    'CALLE Y',
+    '',
+    'NOTIFY UNO',
+    'CALLE Z',
+    'PYRR-3000001 PRRU 111111-1',
+    "40' CONT",
+    'N/A',
+    '10 carton:',
+    'ALGO',
+    'KG',
+  ].join('\n');
+  const pagina2 = [
+    '2,204.00', // LBS "huérfano" de PYRR-3000001 (empieza la página 2)
+    '500.00',   // KG de PYRR-3000002
+    '1,102.00', // LBS de PYRR-3000002
+    '1.- Name of Ship',
+    'KYDON                    K1330',
+    'BL Numbers',
+    '',
+    'SHIPPER DOS',
+    'CALLE A',
+    '',
+    'CONSIGNEE DOS',
+    'CALLE B',
+    '',
+    'NOTIFY DOS',
+    'CALLE C',
+    'PYRR-3000002 PRRU 222222-2',
+    "40' CONT",
+    'N/A',
+    '5 carton:',
+    'OTRA COSA',
+    'KG',
+  ].join('\n');
+  const texto = `Page 1/2\n${pagina1}\nPage 2/2\n${pagina2}`;
+  const r = parseCustoms1302(texto);
+  const bl1 = r.bls.find(b => b.bl_no === 'PYRR3000001');
+  const bl2 = r.bls.find(b => b.bl_no === 'PYRR3000002');
+  assert.strictEqual(bl1.gross_weight, 1000, 'el KG de la fila 1 no lo pisa el LBS huérfano de la página 2');
+  assert.strictEqual(bl2.gross_weight, 500, 'la fila 2 recibe su propio KG, no el LBS huérfano de la fila 1');
+});
+
+test('1302: un contenedor sin NINGÚN peso impreso (ni siquiera diferido) no le roba el peso al B/L siguiente', () => {
+  // Bug real (K1340, B/L PYRR-2631248, 8vo contenedor "PRRU 403698-5" de 8):
+  // el PDF marca el peso en blanco con "— KG"/"— LBS" (con guión), pero a
+  // diferencia del caso normal — donde ese "— KG" SÍ trae su 0.00 real
+  // diferido a la página siguiente (ver test de abajo) — aquí no se imprime
+  // NINGÚN número para esta fila en todo el documento: el próximo número
+  // real del documento es el peso del B/L que sigue. Antes del fix, el
+  // emparejamiento (por índice, sobre todo el documento) le asignaba ese
+  // número igual, robándole el peso al B/L siguiente y corriendo de ahí en
+  // adelante el peso de TODO el resto del manifiesto.
+  const texto = [
+    'Page 1/1',
+    '5,369.00', '11,836.62',   // peso real de A
+    '10,080.00', '22,222.60',  // peso real del contenedor 1 de B
+    '19,200.00', '42,328.75',  // peso real de C — NO debe ir al contenedor 2 de B
+    '1.- Name of Ship',
+    'KYDON                    K1340',
+    'BL Numbers',
+    '',
+    'SHIPPER A', 'CALLE A',
+    '',
+    'CONSIGNEE A', 'CALLE A',
+    '',
+    'NOTIFY A', 'CALLE A',
+    'PYRR-1111111 PRRU 111111-1',
+    "40' CONT",
+    '10 carton:',
+    'MERCANCIA A',
+    'KG',
+    '',
+    'SHIPPER B', 'CALLE B',
+    '',
+    'CONSIGNEE B', 'CALLE B',
+    '',
+    'NOTIFY B', 'CALLE B',
+    'PYRR-2222222 PRRU 222222-2',
+    "40' CONT",
+    '20 carton:',
+    'MERCANCIA B',
+    'KG',
+    'PRRU 333333-3',
+    "40' CONT",
+    '—  KG',
+    ' LBS',
+    '',
+    'SHIPPER C', 'CALLE C',
+    '',
+    'CONSIGNEE C', 'CALLE C',
+    '',
+    'NOTIFY C', 'CALLE C',
+    'PYRR-4444444 PRRU 444444-4',
+    "40' CONT",
+    '30 carton:',
+    'MERCANCIA C',
+    'KG',
+  ].join('\n');
+  const r = parseCustoms1302(texto);
+  const blA = r.bls.find(b => b.bl_no === 'PYRR1111111');
+  const blB = r.bls.find(b => b.bl_no === 'PYRR2222222');
+  const blC = r.bls.find(b => b.bl_no === 'PYRR4444444');
+  assert.strictEqual(blA.gross_weight, 5369, 'A no se ve afectado');
+  assert.strictEqual(blB.gross_weight, 10080, 'B: solo el contenedor 1 aporta peso, el 2do (sin peso impreso) suma 0');
+  assert.strictEqual(blC.gross_weight, 19200, 'C conserva SU propio peso, no el del contenedor huérfano de B');
+});
+
+test('1302: un contenedor con "— KG" cuyo 0.00 SÍ viene diferido se consume del fondo común normalmente', () => {
+  // Bug real (K1340, B/L PYRR-2632075): varios contenedores con "— KG" SÍ
+  // traen su 0.00 real impreso (diferido a la página siguiente, igual que
+  // cualquier fila normal) — a diferencia del caso de arriba. Si se tratara
+  // TODO "— KG" como "no aporta nada al documento" sin comprobar, ese 0.00
+  // real quedaría sin consumir y desalinearía el peso de todos los B/L
+  // siguientes (justo el bug opuesto al que arregla el test de arriba).
+  const texto = [
+    'Page 1/1',
+    '1,000.00', '2,204.00',  // peso de A
+    '0.00', '0.00',          // 0.00 real y diferido del contenedor de B
+    '5,000.00', '11,023.00', // peso de C — debe seguir intacto
+    '1.- Name of Ship',
+    'KYDON                    K1340',
+    'BL Numbers',
+    '',
+    'SHIPPER A', 'CALLE A',
+    '',
+    'CONSIGNEE A', 'CALLE A',
+    '',
+    'NOTIFY A', 'CALLE A',
+    'PYRR-1111111 PRRU 111111-1',
+    "40' CONT",
+    '10 carton:',
+    'MERCANCIA A',
+    'KG',
+    '',
+    'SHIPPER B', 'CALLE B',
+    '',
+    'CONSIGNEE B', 'CALLE B',
+    '',
+    'NOTIFY B', 'CALLE B',
+    'PYRR-2222222 PRRU 222222-2',
+    "40' CONT",
+    '—  KG',
+    ' LBS',
+    '',
+    'SHIPPER C', 'CALLE C',
+    '',
+    'CONSIGNEE C', 'CALLE C',
+    '',
+    'NOTIFY C', 'CALLE C',
+    'PYRR-4444444 PRRU 444444-4',
+    "40' CONT",
+    '30 carton:',
+    'MERCANCIA C',
+    'KG',
+  ].join('\n');
+  const r = parseCustoms1302(texto);
+  const blA = r.bls.find(b => b.bl_no === 'PYRR1111111');
+  const blB = r.bls.find(b => b.bl_no === 'PYRR2222222');
+  const blC = r.bls.find(b => b.bl_no === 'PYRR4444444');
+  assert.strictEqual(blA.gross_weight, 1000, 'A no se ve afectado');
+  assert.strictEqual(blB.gross_weight, 0, 'B: su 0.00 real se asigna');
+  assert.strictEqual(blC.gross_weight, 5000, 'C conserva su propio peso — el 0.00 de B no se dejó de consumir');
+});
+
+test('1302: peso diferido a una página que no existe (documento cortado) avisa en vez de quedar en 0 silencioso', () => {
+  // Bug real (viaje AU050S, PDF partido en varios archivos por el sistema de
+  // origen): el manifiesto real de un archivo termina en su última página
+  // justo con el peso de la última fila diferido "a la página siguiente" —
+  // que en ESE archivo no existe (quedó en otro PDF, o nunca se generó). A
+  // diferencia de pesoVacioExplicito ("— KG" que de verdad no trae número en
+  // ningún lado), acá el dato SÍ existía en el manifiesto original completo,
+  // solo que no en este recorte — amerita su propio aviso para que el
+  // operador sepa que hay que rellenar el peso a mano, en vez de confiar en
+  // un 0 silencioso indistinguible de un peso real.
+  const texto = [
+    'Page 1/1',
+    '1,000.00', '2,204.00', // peso de A — el único que sí está completo
+    '1.- Name of Ship',
+    'KYDON                    K1340',
+    'BL Numbers',
+    '',
+    'SHIPPER A', 'CALLE A',
+    '',
+    'CONSIGNEE A', 'CALLE A',
+    '',
+    'NOTIFY A', 'CALLE A',
+    'PYRR-1111111 PRRU 111111-1',
+    "40' CONT",
+    '10 carton:',
+    'MERCANCIA A',
+    'KG',
+    '',
+    'SHIPPER B', 'CALLE B',
+    '',
+    'CONSIGNEE B', 'CALLE B',
+    '',
+    'NOTIFY B', 'CALLE B',
+    'PYRR-2222222 PRRU 222222-2',
+    "40' CONT",
+    '20 carton:',
+    'MERCANCIA B',
+    'KG', // sin número: el documento se corta acá, no hay página siguiente
+  ].join('\n');
+  const r = parseCustoms1302(texto);
+  const blA = r.bls.find(b => b.bl_no === 'PYRR1111111');
+  const blB = r.bls.find(b => b.bl_no === 'PYRR2222222');
+  assert.strictEqual(blA.gross_weight, 1000, 'A no se ve afectado');
+  assert.strictEqual(blB.gross_weight, 0, 'B queda en 0 a falta de otro dato — pero debe avisar, no fallar en silencio');
+  assert.ok(
+    r.warnings.some(w => w.includes('documento termina justo antes de imprimir su peso') && w.includes('PYRR2222222')),
+    'debe avisar que el peso de B se perdió porque el documento se corta ahí, no por estar genuinamente vacío'
+  );
+});
+
+test('1302: un contenedor huérfano precedido de un bloque de dirección completo NO se reconecta al B/L anterior', () => {
+  // Bug real (K1338): "MXRU 485642-8" aparecía sin ningún "PYRR-XXXXXXX"
+  // junto, pero justo antes terminaba un bloque de shipper/consignee/notify
+  // COMPLETO de una fila distinta — a diferencia de la celda fusionada real
+  // (mismo B/L, mismo shipper, sin bloque de dirección de por medio), esto
+  // es una fila nueva cuyo propio B/L se perdió en la extracción, no una
+  // continuación. Reconectarlo con el B/L anterior le robaba el peso al
+  // B/L que sigue (ver test de arriba) porque ese contenedor no tiene peso
+  // propio en el PDF.
+  const texto = [
+    'Page 1/1',
+    '1,000.00', '2,204.00',
+    '1.- Name of Ship',
+    'KYDON                    K1331',
+    'BL Numbers',
+    '',
+    'SHIPPER UNO',
+    'CALLE X',
+    '00907 - SAN JUAN (PR - PUERTO RICO)',
+    '',
+    'CONSIGNEE UNO',
+    'CALLE Y',
+    '00907 - SAN JUAN (PR - PUERTO RICO)',
+    '',
+    'NOTIFY UNO',
+    'CALLE Z',
+    '00907 - SAN JUAN (PR - PUERTO RICO)',
+    'PYRR-3000010 PRRU 350178-1',
+    "40' FR",
+    'N/A',
+    '17 rolls:',
+    'REBAR IN COIL',
+    'KG',
+    '',
+    'SHIPPER OTRO ENVIO',
+    'OTRA CALLE',
+    '00726 - CAGUAS (PR - PUERTO RICO)',
+    '',
+    'CONSIGNEE OTRO ENVIO',
+    'OTRA CALLE 2',
+    '00726 - CAGUAS (PR - PUERTO RICO)',
+    '',
+    'NOTIFY OTRO ENVIO',
+    'OTRA CALLE 3',
+    '00726 - CAGUAS (PR - PUERTO RICO)',
+    'MXRU 485642-8',
+    "45' CONT",
+    '159 pack:',
+    'PACKAGES CONTAINING MODULAR KITCHEN',
+    'LBS',
+  ].join('\n');
+  const r = parseCustoms1302(texto);
+  assert.strictEqual(r.bls.length, 1, 'solo se reconoce el B/L real — el contenedor sin B/L propio no crea ni se pega a otro');
+  assert.strictEqual(r.containers.length, 1, 'MXRU485642-8 no se cuela como contenedor de PYRR-3000010');
+  assert.strictEqual(r.containers[0].container_no, 'PRRU3501781');
+  assert.strictEqual(r.bls[0].gross_weight, 1000, 'el peso de PYRR-3000010 no se corre ni se mezcla con el envío perdido');
+});
+
+test('1302: una línea huérfana sin B/L previo ni forma de contenedor se ignora sin romper', () => {
+  const texto = [
+    'Page 1/1',
+    '1,000.00', '2,204.00',
+    '1.- Name of Ship',
+    'KYDON                    K1328',
+    'BL Numbers',
+    'RANDOM TEXT THAT LOOKS LIKE NOTHING',
+    'PYRR-2631010 PRRU 999999-9',
+    "40' CONT",
+    '10 carton:',
+    'ALGO',
+    'KG',
+  ].join('\n');
+  const r = parseCustoms1302(texto);
+  assert.strictEqual(r.bls.length, 1);
+  assert.strictEqual(r.bls[0].bl_no, 'PYRR2631010');
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -404,4 +927,41 @@ test('XML: un manifiesto sin B/L no rompe el parser', async () => {
 
 test('XML inválido rechaza la promesa', async () => {
   await assert.rejects(() => parseXmlManifest('<<<no es xml'));
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// advertirContenedoresEnVariosBl — mismo contenedor en dos B/L distintos
+// ═══════════════════════════════════════════════════════════════════
+test('advertirContenedoresEnVariosBl: sin repetidos no avisa nada', () => {
+  const r = advertirContenedoresEnVariosBl([
+    { bl_no: 'PYRR0000001', container_no: 'PRRU1111111' },
+    { bl_no: 'PYRR0000002', container_no: 'PRRU2222222' },
+  ]);
+  assert.deepStrictEqual(r, []);
+});
+
+test('advertirContenedoresEnVariosBl: mismo contenedor en el MISMO B/L no cuenta como repetido', () => {
+  // Un B/L con varios containers legítimos (ej. flatbed con 2 piezas) no
+  // debe confundirse con el bug real — el contenedor solo se repite si
+  // aparece en B/L DISTINTOS.
+  const r = advertirContenedoresEnVariosBl([
+    { bl_no: 'PYRR0000001', container_no: 'PRRU1111111' },
+    { bl_no: 'PYRR0000001', container_no: 'PRRU2222222' },
+  ]);
+  assert.deepStrictEqual(r, []);
+});
+
+test('advertirContenedoresEnVariosBl: nombra el contenedor y los B/L exactos donde aparece repetido', () => {
+  // Bug real (K1339): un error de digitación o de lectura del PDF puede
+  // asignar el mismo contenedor a dos B/L reales distintos.
+  const r = advertirContenedoresEnVariosBl([
+    { bl_no: 'PYRR0000001', container_no: 'PRRU9999999' },
+    { bl_no: 'PYRR0000002', container_no: 'PRRU9999999' },
+    { bl_no: 'PYRR0000003', container_no: 'PRRU8888888' },
+  ]);
+  assert.strictEqual(r.length, 1);
+  assert.match(r[0], /PRRU9999999/);
+  assert.match(r[0], /PYRR0000001/);
+  assert.match(r[0], /PYRR0000002/);
+  assert.doesNotMatch(r[0], /PRRU8888888/, 'el contenedor sin repetir no debe aparecer en el aviso');
 });

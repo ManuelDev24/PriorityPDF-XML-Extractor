@@ -12,6 +12,10 @@ manifest-app/manifest.db
 # Respaldos generados por "npm run backup" — nunca se versionan
 backups/
 
+# Excel generado por "node backend/scripts/dataAudit.js exportar" — contiene
+# datos reales de clientes (SS/EIN, direcciones), nunca se versiona.
+manifest-app/audit_*.xlsx
+
 # Salida del build de Vite: se genera con "npm run build", no se versiona.
 # El instalador de produccion la genera en el servidor (Node 20 sobre Windows 10
 # es plataforma Tier 1 y Vite 8 pide Node 20.19+, ambos verificados).

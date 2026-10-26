@@ -120,12 +120,70 @@ function analizarClientePorCodigo() {
 }
 
 /**
- * Corre ambos análisis de una vez — botón único en Admin.
+ * Código arancelario → CONSIGNADOR (shipper/exportador) más frecuente en tu
+ * propio historial. Mismo principio que analizarClientePorCodigo(), pero
+ * agrupando por nombre normalizado en vez de documento/SS: a diferencia del
+ * consignatario (donde el SS/EIN casi siempre está lleno), el
+ * consignor_document_no solo aparece en ~27% de los B/L locales — agrupar
+ * por ese campo perdería la mayoría del historial real. El nombre, en
+ * cambio, está lleno en la gran mayoría de los B/L.
+ * @returns {{consignadores_con_historial:number, consignadores_aprendidos:number}}
+ */
+function analizarConsignadorPorCodigo() {
+  const filas = db.prepare(`
+    SELECT hacienda_item_code AS code, consignor_name AS name, consignor_document_no AS doc,
+           consignor_tel AS phone, consignor_street AS add1, consignor_city AS add2
+    FROM bills_of_lading
+    WHERE hacienda_item_code IS NOT NULL AND hacienda_item_code != ''
+      AND consignor_name IS NOT NULL AND consignor_name != ''
+  `).all();
+
+  const codigosValidos = new Set(db.prepare(`SELECT code FROM hacienda_items`).all().map(r => r.code));
+
+  const porCodigo = new Map();
+  filas.forEach(f => {
+    if (!codigosValidos.has(f.code)) return;
+    const nombreNorm = normalizarDescripcion(f.name);
+    if (!nombreNorm) return;
+    if (!porCodigo.has(f.code)) porCodigo.set(f.code, new Map());
+    const porNombre = porCodigo.get(f.code);
+    if (!porNombre.has(nombreNorm)) porNombre.set(nombreNorm, { n: 0, ultimo: f });
+    const entrada = porNombre.get(nombreNorm);
+    entrada.n++;
+    entrada.ultimo = f;
+  });
+
+  const actualizar = db.prepare(`
+    UPDATE hacienda_items
+    SET consignor_name=?, consignor_document_no=?, consignor_phone=?, consignor_add1=?, consignor_add2=?
+    WHERE code=?
+  `);
+
+  let aprendidos = 0;
+  const guardar = db.transaction(() => {
+    porCodigo.forEach((porNombre, code) => {
+      let mejorEntrada = null;
+      porNombre.forEach(entrada => { if (entrada.n > (mejorEntrada?.n || 0)) mejorEntrada = entrada; });
+      if (mejorEntrada && mejorEntrada.n >= MIN_OCURRENCIAS) {
+        const f = mejorEntrada.ultimo;
+        actualizar.run(f.name || '', f.doc || '', f.phone || '', f.add1 || '', f.add2 || '', code);
+        aprendidos++;
+      }
+    });
+  });
+  guardar();
+
+  return { consignadores_con_historial: porCodigo.size, consignadores_aprendidos: aprendidos };
+}
+
+/**
+ * Corre los tres análisis de una vez — botón único en Admin.
  */
 function analizarHistorialLocal() {
   const item = analizarDescripcionItem();
-  const cliente = analizarClientePorCodigo();
-  return { ...item, ...cliente };
+  const consignatario = analizarClientePorCodigo();
+  const consignador = analizarConsignadorPorCodigo();
+  return { ...item, ...consignatario, ...consignador };
 }
 
 module.exports = { analizarHistorialLocal, normalizarDescripcion, MIN_OCURRENCIAS };

@@ -17,6 +17,13 @@ export const tamanosValidos = ref<string[]>(FALLBACK_TAMANOS);
 
 // ── Listado y seleccion ──────────────────────────────────────────────────────
 export const manifiestos     = ref<Manifiesto[]>([]);
+// Viajes marcados "enviado a SISCOMMATE" (status='siscommate') que en
+// realidad YA NO EXISTEN allá — porque alguien los borró desde la app
+// nativa de SISCOMMATE, no desde acá. La webapp nunca se entera sola de
+// eso (ver reabrirSiscommate en App.vue y la ruta /reabrir-siscommate):
+// este Set es lo que hace que la alerta se vea en TODO el sidebar, no
+// solo cuando se abre justo ese viaje.
+export const manifiestosEliminadosSiscommate = reactive(new Set<number>());
 export const datosManifiesto = ref<DatosManifiesto | null>(null);
 export const blActual        = ref<BL | null>(null);
 export const expandidos      = reactive(new Set<number>());
@@ -174,7 +181,24 @@ export async function cargarManifiestos() {
   try {
     manifiestos.value = await api.listarManifiestos();
     cargarStats();
+    verificarManifiestosEnviados(); // en segundo plano — no bloquea la carga del sidebar
   } catch (e) { setEstado('Error conectando con el servidor: ' + (e as Error).message); }
+}
+
+// Revisa, uno por uno, cada viaje marcado como "enviado a SISCOMMATE" (los
+// únicos que pueden haberse borrado allá sin que la webapp se entere — un
+// borrador nunca llegó a SISCOMMATE, no hay nada que revisar). Secuencial y
+// no en paralelo para no saturar el bridge; si UNA falla por conexión, se
+// corta el resto en vez de encadenar N timeouts iguales.
+export async function verificarManifiestosEnviados() {
+  const enviados = manifiestos.value.filter(m => m.status === 'siscommate');
+  for (const m of enviados) {
+    try {
+      const datos = await api.siscommateVivo(m.id);
+      if (datos.encontrado) manifiestosEliminadosSiscommate.delete(m.id);
+      else manifiestosEliminadosSiscommate.add(m.id);
+    } catch { break; }
+  }
 }
 
 export async function seleccionarManifiesto(id: number) {
@@ -232,6 +256,23 @@ export async function restaurarSeleccion() {
   if (m) pestana.value = completado(m) ? 'completed' : 'active';
 }
 
+/** Cuántos contenedores de un B/L no tienen tamaño (el TXT los llevaría en blanco). */
+export function contenedoresSinTamano(blNo: string): number {
+  const d = datosManifiesto.value;
+  if (!d) return 0;
+  return d.container_bl.filter(c => {
+    if (c.bl_no !== blNo || !c.container_no) return false;
+    return !d.containers.find(ct => ct.container_no === c.container_no)?.size;
+  }).length;
+}
+
+/** Contenedores sin tamaño en los B/L validados — los que entran al export. */
+export const sinTamanoEnValidados = computed(() => {
+  const d = datosManifiesto.value;
+  if (!d) return 0;
+  return d.bls.filter(b => b.status === 'validado').reduce((n, b) => n + contenedoresSinTamano(b.bl_no), 0);
+});
+
 /** Contenedores vinculados al B/L abierto, con su tamaño. */
 export const contenedoresDelBL = computed(() => {
   const d = datosManifiesto.value;
@@ -241,6 +282,6 @@ export const contenedoresDelBL = computed(() => {
     .filter(c => c.bl_no === bl.bl_no)
     .map(c => {
       const full = d.containers.find(ct => ct.container_no === c.container_no);
-      return { container_no: c.container_no, id: full?.id ?? null, size: full?.size ?? '', amount: full?.amount ?? 0 };
+      return { container_no: c.container_no, id: full?.id ?? null, size: full?.size ?? '', amount: full?.amount ?? 0, peso: Number(full?.gross_weight) || 0 };
     });
 });

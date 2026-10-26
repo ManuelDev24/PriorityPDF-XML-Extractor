@@ -26,7 +26,7 @@ const multi = computed(() => cnos.value.length > 1);
 const modalAbierto = ref(false);
 const modalTitulo = ref('');
 const editandoId = ref<number | null>(null);
-const fGoods = ref(''); const fCantidad = ref(0); const fPeso = ref(0); const fCodigo = ref(''); const fTarifa = ref('');
+const fGoods = ref(''); const fCantidad = ref(0); const fPeso = ref(0); const fCodigo = ref('');
 // Antes un guardado sin descripción solo mostraba un toast — el textarea se
 // quedaba igual, sin señalar cuál campo faltaba.
 const fGoodsError = ref(false);
@@ -61,7 +61,7 @@ async function inicializarPorContenedor() {
     const contenedor = contenedoresDelBL.value.find(c => c.container_no === cno);
     await api.crearItem(bl.id, {
       container_no: cno, goods_name: bl.goods_name || '', gross_weight: bl.gross_weight || 0,
-      hacienda_item_code: bl.hacienda_item_code || null, hacienda_tariff: bl.hacienda_tariff || null,
+      hacienda_item_code: bl.hacienda_item_code || null,
       package_qty: contenedor?.amount || Number(bl.package_qty) || 0,
     });
   }
@@ -77,7 +77,7 @@ function abrirAgregar(forzarCno: string | null) {
   const contenedor = forzarCno ? contenedoresDelBL.value.find(c => c.container_no === forzarCno) : null;
   fCantidad.value = contenedor?.amount || Number(bl?.package_qty) || 0;
   fGoods.value = bl?.goods_name || ''; fPeso.value = Number(bl?.gross_weight) || 0;
-  fCodigo.value = bl?.hacienda_item_code || ''; fTarifa.value = bl?.hacienda_tariff || ''; fCont.value = forzarCno ?? TODOS_LOS_CONTENEDORES;
+  fCodigo.value = bl?.hacienda_item_code || ''; fCont.value = forzarCno ?? TODOS_LOS_CONTENEDORES;
   fGoodsError.value = false;
   modalAbierto.value = true;
 }
@@ -87,7 +87,7 @@ function abrirEditar(id: number) {
   modalTitulo.value = 'Editar item'; editandoId.value = id; contForzado.value = null;
   fCantidad.value = Number(it.package_qty) || 0;
   fGoods.value = it.goods_name; fPeso.value = Number(it.gross_weight) || 0;
-  fCodigo.value = it.hacienda_item_code || ''; fTarifa.value = it.hacienda_tariff || '';
+  fCodigo.value = it.hacienda_item_code || '';
   fGoodsError.value = false;
   modalAbierto.value = true;
 }
@@ -97,11 +97,11 @@ async function guardarModal() {
   fGoodsError.value = false;
   try {
     if (editandoId.value !== null) {
-      await api.actualizarItem(editandoId.value, { goods_name: fGoods.value.trim(), package_qty: fCantidad.value, gross_weight: fPeso.value, hacienda_item_code: fCodigo.value.trim() || null, hacienda_tariff: fTarifa.value || null });
+      await api.actualizarItem(editandoId.value, { goods_name: fGoods.value.trim(), package_qty: fCantidad.value, gross_weight: fPeso.value, hacienda_item_code: fCodigo.value.trim() || null });
       toast('Item actualizado');
     } else {
       const contenedor = fCont.value && fCont.value !== TODOS_LOS_CONTENEDORES ? fCont.value : null;
-      await api.crearItem(bl.id, { goods_name: fGoods.value.trim(), package_qty: fCantidad.value, gross_weight: fPeso.value, hacienda_item_code: fCodigo.value.trim() || null, hacienda_tariff: fTarifa.value || null, container_no: contenedor });
+      await api.crearItem(bl.id, { goods_name: fGoods.value.trim(), package_qty: fCantidad.value, gross_weight: fPeso.value, hacienda_item_code: fCodigo.value.trim() || null, container_no: contenedor });
       toast('Item agregado');
     }
     modalAbierto.value = false;
@@ -142,7 +142,6 @@ defineExpose({ renombrarContenedor });
             <span>Cantidad: <b class="text-ink">{{ item.package_qty || 0 }}</b></span>
             <span>Peso: <b class="text-ink">{{ item.gross_weight || 0 }} kg</b></span>
             <span>Código: <b class="font-mono text-ink">{{ item.hacienda_item_code || '—' }}</b></span>
-            <span>Tarifa: <b class="text-ink">{{ item.hacienda_tariff || '—' }}</b></span>
           </p>
         </div>
         <Button variant="ghost" size="icon" class="size-7" @click="abrirEditar(item.id)"><Pencil class="size-3.5" /></Button>
@@ -172,26 +171,19 @@ defineExpose({ renombrarContenedor });
       <Table v-if="itemsDe(cno).length" class="table-fixed">
         <TableHeader>
           <TableRow>
-            <TableHead class="w-4/12">Descripción</TableHead>
-            <TableHead class="w-1/12">Cantidad</TableHead>
+            <TableHead class="w-5/12">Descripción</TableHead>
+            <TableHead class="w-2/12">Cantidad</TableHead>
             <TableHead class="w-2/12">Peso (kg)</TableHead>
             <TableHead class="w-2/12">Código</TableHead>
-            <TableHead class="w-2/12">Tarifa</TableHead>
             <TableHead class="w-1/12"></TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           <TableRow v-for="item in itemsDe(cno)" :key="item.id">
-            <TableCell class="w-4/12"><Textarea :model-value="item.goods_name" rows="1" class="min-h-9 text-xs" @change="(e:Event) => guardarCampo(item.id,'goods_name',(e.target as HTMLTextAreaElement).value)" /></TableCell>
-            <TableCell class="w-1/12"><Input type="number" step="1" :model-value="item.package_qty || 0" class="h-9 text-xs" @change="(e:Event) => guardarCampo(item.id,'package_qty',(e.target as HTMLInputElement).value)" /></TableCell>
+            <TableCell class="w-5/12"><Textarea :model-value="item.goods_name" rows="1" class="min-h-9 text-xs" @change="(e:Event) => guardarCampo(item.id,'goods_name',(e.target as HTMLTextAreaElement).value)" /></TableCell>
+            <TableCell class="w-2/12"><Input type="number" step="1" :model-value="item.package_qty || 0" class="h-9 text-xs" @change="(e:Event) => guardarCampo(item.id,'package_qty',(e.target as HTMLInputElement).value)" /></TableCell>
             <TableCell class="w-2/12"><Input type="number" step="0.01" :model-value="item.gross_weight || 0" class="h-9 text-xs" @change="(e:Event) => guardarCampo(item.id,'gross_weight',(e.target as HTMLInputElement).value)" /></TableCell>
             <TableCell class="w-2/12"><Input :model-value="item.hacienda_item_code || ''" placeholder="código" class="h-9 font-mono text-xs" @change="(e:Event) => guardarCampo(item.id,'hacienda_item_code',(e.target as HTMLInputElement).value)" /></TableCell>
-            <TableCell class="w-2/12">
-              <Select :model-value="item.hacienda_tariff || ''" @update:model-value="(v) => guardarCampo(item.id,'hacienda_tariff',String(v))">
-                <SelectTrigger class="h-9 text-xs"><SelectValue placeholder="—" /></SelectTrigger>
-                <SelectContent><SelectItem value="040">040</SelectItem><SelectItem value="045">045</SelectItem></SelectContent>
-              </Select>
-            </TableCell>
             <TableCell class="w-1/12"><Button variant="ghost" size="icon" class="size-7 text-destructive" @click="eliminar(item.id)"><Trash2 class="size-3.5" /></Button></TableCell>
           </TableRow>
         </TableBody>
@@ -207,17 +199,10 @@ defineExpose({ renombrarContenedor });
           <Label class="text-xs">Descripción de mercancía <span class="text-danger">*</span></Label>
           <Textarea v-model="fGoods" rows="3" class="text-xs" :class="fGoodsError && 'border-danger focus-visible:ring-danger'" @input="fGoodsError = false" />
         </div>
-        <div class="grid grid-cols-4 gap-3">
+        <div class="grid grid-cols-3 gap-3">
           <div class="flex flex-col gap-1"><Label class="text-xs">Cantidad</Label><Input type="number" step="1" v-model.number="fCantidad" class="h-9 text-xs" /></div>
           <div class="flex flex-col gap-1"><Label class="text-xs">Peso bruto (kg)</Label><Input type="number" step="0.01" v-model.number="fPeso" class="h-9 text-xs" /></div>
           <div class="flex flex-col gap-1"><Label class="text-xs">Código arancelario</Label><Input v-model="fCodigo" class="h-9 font-mono text-xs" /></div>
-          <div class="flex flex-col gap-1">
-            <Label class="text-xs">Tarifa</Label>
-            <Select v-model="fTarifa">
-              <SelectTrigger class="h-9 text-xs"><SelectValue placeholder="—" /></SelectTrigger>
-              <SelectContent><SelectItem value="040">040</SelectItem><SelectItem value="045">045</SelectItem></SelectContent>
-            </Select>
-          </div>
         </div>
         <div v-if="multi && editandoId === null" class="flex flex-col gap-1">
           <Label class="text-xs">Contenedor</Label>

@@ -68,6 +68,7 @@ export interface Contenedor {
   container_type: string;
   size?: string;
   amount?: number;
+  gross_weight?: number | null;
 }
 
 export interface VinculoContenedor {
@@ -114,6 +115,15 @@ export interface ItemHacienda {
   client_add2?: string | null;
   client_add3?: string | null;
   client_ivu?: string | null;
+  /** Consignador (shipper/exportador) más frecuente para este código, según
+   * el historial local — ver analizarConsignadorPorCodigo() en
+   * localHistoryAnalysis.js. Solo local: no existe un CUSTOMER.DBF de
+   * SISCOMMATE para exportadores extranjeros. */
+  consignor_name?: string | null;
+  consignor_document_no?: string | null;
+  consignor_phone?: string | null;
+  consignor_add1?: string | null;
+  consignor_add2?: string | null;
 }
 
 export interface Cliente {
@@ -138,6 +148,28 @@ export interface ClienteSiscommate {
   add3?: string;
   phone1?: string;
   ivu?: string;
+}
+
+/** Consignador (shipper, RD) hallado en el historial de B/L ya cargados —
+ * no viene de un catálogo curado como Cliente, sino de la fila más reciente
+ * de bills_of_lading con ese nombre (ver /api/catalogs/consignors). */
+export interface Consignador {
+  id: number;
+  name: string;
+  document_type?: string;
+  document_no?: string;
+  tel?: string;
+  email?: string;
+  street?: string;
+  city?: string;
+}
+
+/** Consignador hallado en `consignor_catalog` (nombres de BOL.exporter,
+ * histórico real de SISCOMMATE, consolidados por similitud — ver
+ * services/clientSync.js). Solo nombre: SISCOMMATE no guarda dirección ni
+ * documento del consignador aparte. */
+export interface ConsignadorSiscommate {
+  name: string;
 }
 
 export interface Puerto { code: string; description: string; country: string }
@@ -203,6 +235,13 @@ export const api = {
     pedir<{ ok: true; manifest_status?: string }>(`/api/bl/${id}`, cuerpo('PUT', campos)),
   eliminarBL: (id: number) =>
     pedir<{ ok: true; manifest_status?: string }>(`/api/bl/${id}`, { method: 'DELETE' }),
+  eliminarBLLote: (blIds: number[]) =>
+    pedir<{
+      ok: true;
+      eliminados: Array<{ id: number; bl_no: string }>;
+      omitidos: Array<{ id: number; motivo: string }>;
+      estados: Record<string, string>;
+    }>('/api/bl/eliminar-lote', cuerpo('DELETE', { bl_ids: blIds })),
   renombrarBL: (id: number, blNo: string) =>
     pedir<{ ok: true; bl_no: string }>(`/api/bl/${id}/renombrar`, cuerpo('PUT', { bl_no: blNo })),
   moverBL: (id: number, manifestId: number) =>
@@ -210,13 +249,34 @@ export const api = {
       ok: true; bl_no: string; manifest_id_anterior: number; manifest_id_nuevo: number;
       status_anterior?: string; status_nuevo?: string;
     }>(`/api/bl/${id}/mover`, cuerpo('PUT', { manifest_id: manifestId })),
+  moverBLLote: (blIds: number[], manifestId: number) =>
+    pedir<{
+      ok: true;
+      movidos: Array<{ id: number; bl_no: string }>;
+      omitidos: Array<{ id: number; bl_no?: string; motivo: string }>;
+      manifest_id_destino: number; status_nuevo?: string;
+      estados_origen: Record<string, string>;
+    }>('/api/bl/mover-lote', cuerpo('PUT', { bl_ids: blIds, manifest_id: manifestId })),
+  /** Valida los B/L completos del viaje; los incompletos quedan pendientes, con su motivo. */
+  validarTodos: (manifestId: number) =>
+    pedir<{
+      ok: true;
+      validados: Array<{ id: number; bl_no: string }>;
+      omitidos: Array<{ id: number; bl_no: string; motivos: string[] }>;
+      ya_validados: number;
+      manifest_status?: string;
+    }>(`/api/manifests/${manifestId}/validar-todos`, { method: 'PUT' }),
   vistaPreviaTxt: (id: number) => pedir<VistaPreviaTxt>(`/api/bl/${id}/txt-preview`),
 
   // Contenedores
   actualizarTamano: (id: number, size: string) =>
     pedir<{ ok: true }>(`/api/containers/${id}`, cuerpo('PUT', { size })),
+  fijarTamanoContenedor: (manifestId: number, containerNo: string, size: string) =>
+    pedir<{ ok: true; container: Contenedor }>(`/api/manifests/${manifestId}/containers-size`, cuerpo('PUT', { container_no: containerNo, size })),
   actualizarContenedor: (id: number, campos: { size?: string; container_no?: string }) =>
     pedir<{ ok: true; container_no: string }>(`/api/containers/${id}`, cuerpo('PUT', campos)),
+  eliminarContenedorDeBL: (blId: number, containerNo: string) =>
+    pedir<{ ok: true }>(`/api/bl/${blId}/containers`, cuerpo('DELETE', { container_no: containerNo })),
 
   // Items de carga
   listarItems: (blId: number) => pedir<ItemCarga[]>(`/api/bl/${blId}/cargo-items`),
@@ -233,6 +293,15 @@ export const api = {
   buscarClientes: (q: string) => pedir<Cliente[]>(`/api/catalogs/clients?q=${encodeURIComponent(q)}`),
   buscarClientesSiscommate: (q: string) =>
     pedir<ClienteSiscommate[]>(`/api/catalogs/siscommate-clients?q=${encodeURIComponent(q)}`),
+  buscarConsignadores: (q: string) => pedir<Consignador[]>(`/api/catalogs/consignors?q=${encodeURIComponent(q)}`),
+  buscarConsignadoresSiscommate: (q: string) =>
+    pedir<ConsignadorSiscommate[]>(`/api/catalogs/consignors-siscommate?q=${encodeURIComponent(q)}`),
+  /** ¿Hay un cliente local con nombre PARECIDO (no igual) al que se está escribiendo?
+   * Solo avisa — nunca cambia nada solo. Ver services/clientSync.js. */
+  clienteParecido: (nombre: string) =>
+    pedir<{ sugerencia: { name: string; ss: string; similitud: number } | null }>(
+      `/api/catalogs/clients/parecido?name=${encodeURIComponent(nombre)}`
+    ),
   crearCliente: (c: Partial<Cliente> & { phone1?: string }) =>
     pedir<{ ok: true; client: Cliente }>('/api/catalogs/clients', cuerpo('POST', c)),
   actualizarCliente: (id: number, c: Partial<Cliente> & { phone1?: string }) =>
@@ -253,4 +322,10 @@ export const api = {
     }>(`/api/manifests/${id}/push-siscommate`, { method: 'POST' }),
   siscommateVivo: (id: number) =>
     pedir<DatosSiscommateVivo>(`/api/manifests/${id}/siscommate-live`),
+  sincronizarDesdeSiscommate: (id: number) =>
+    pedir<{ ok: true; actualizados: number; sin_encontrar_local: number; total_en_siscommate: number; mensaje?: string }>(
+      `/api/manifests/${id}/sync-from-siscommate`, { method: 'POST' }
+    ),
+  reabrirSiscommate: (id: number) =>
+    pedir<{ ok: true; bls_reabiertos: number }>(`/api/manifests/${id}/reabrir-siscommate`, { method: 'POST' }),
 };

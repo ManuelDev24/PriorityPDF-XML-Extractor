@@ -9,6 +9,7 @@
 // El PDF debe ser digital (generado por un sistema), no un escaneo sin texto.
 
 const pdfParse = require('pdf-parse');
+const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js');
 
 /** @typedef {import('../types').ParsedManifest} ParsedManifest */
 /** @typedef {import('../types').ParsedBL} ParsedBL */
@@ -254,7 +255,7 @@ function collectPartyBlocks(lines, blIdx) {
       continue;
     }
     if (/^[—-]?\s*(SH|CO|NO|NF|KG|LBS)$/.test(t) || /^P[aá]gina/i.test(t) || /^Page/i.test(t) ||
-        /CUSTOMS USE ONLY/i.test(t) || /^\d[\d,]*\.\d{2}$/.test(t)) break;
+        /CUSTOMS USE ONLY|USO EXCLUSIVO DE ADUANA/i.test(t) || /^\d[\d,]*\.\d{2}$/.test(t)) break;
     cur.push(t);
   }
   if (cur.length && blocks.length < 3) blocks.push(cur.reverse());
@@ -265,22 +266,115 @@ function collectPartyBlocks(lines, blIdx) {
   return blocks;  // [shipper, consignee, notify]
 }
 
+// ── Extracción posicional (pdfjs-dist) para pesos por fila ──────────────────
+// pdf-parse linealiza el PDF en texto plano en el orden en que el documento
+// dibuja los objetos, no en su orden visual real. Confirmado con un
+// manifiesto real de las islas (AU051S): el peso de cada fila va impreso en
+// la columna derecha de la MISMA fila que su B/L, pero pdf-parse lo separa
+// de esa fila y lo deja suelto en un bloque de números al inicio de cada
+// página, sin decir a qué fila pertenece cada uno — el código de abajo
+// (fondo común secuencial) asume que ese bloque trae un peso por fila en el
+// mismo orden, pero en AU051S ese bloque trae MENOS números de los que hay
+// filas (94 pares para 117 filas) y a veces el mismo par repetido varias
+// veces seguidas — así que ya desde la primera página con ese problema,
+// TODAS las filas siguientes quedan con el peso de otra fila (confirmado:
+// el peso total real de este manifiesto es ~2.95M kg; el fondo común solo
+// sumaba ~1.58M kg, casi la mitad perdida). Usando pdfjs-dist se lee la
+// posición (x, y) real de cada palabra y se toma el peso directamente de la
+// columna derecha de la fila real de cada B/L — sin adivinar nada.
+
+/**
+ * Agrupa los ítems de texto de cada página en filas por coordenada Y real.
+ * @param {Buffer} buffer
+ * @returns {Promise<Array<Array<Array<{str:string,x:number}>>>>} Por página, filas (de arriba hacia abajo), cada una con sus ítems (de izquierda a derecha)
+ */
+async function agruparFilasPosicionales(buffer) {
+  const doc = await pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
+  const paginas = [];
+  for (let p = 1; p <= doc.numPages; p++) {
+    const page = await doc.getPage(p);
+    const content = await page.getTextContent();
+    const porY = new Map();
+    content.items.forEach(raw => {
+      // content.items mezcla TextItem (con str/transform) y TextMarkedContent
+      // (marcadores de estructura, sin texto) — los pdf.js reales de este
+      // documento son todos TextItem, pero el tipo declarado es la unión.
+      const it = /** @type {{str: string, transform: number[]}} */ (raw);
+      const texto = it.str;
+      if (!texto || !texto.trim()) return;
+      const y = Math.round(it.transform[5]);
+      if (!porY.has(y)) porY.set(y, []);
+      porY.get(y).push({ str: texto.trim(), x: it.transform[4] });
+    });
+    const ysOrdenados = [...porY.keys()].sort((a, b) => b - a);
+    paginas.push(ysOrdenados.map(y => porY.get(y).sort((a, b) => a.x - b.x)));
+    page.cleanup();
+  }
+  return paginas;
+}
+
+/**
+ * Recorre las filas posicionales con la misma lógica de reconexión de
+ * contenedores huérfanos que usa parseCustoms1302 sobre el texto (mismo
+ * PREFIJOS_NO_BL, mismo criterio de contenedor/vehículo) y extrae, para cada
+ * fila real de B/L o contenedor, el peso en KG impreso en su propia columna
+ * derecha — el número decimal más a la derecha de la fila.
+ * @param {Array<Array<Array<{str:string,x:number}>>>} paginas
+ * @returns {Map<string, number[]>} Pesos en KG por B/L, en el orden en que aparecen sus filas
+ */
+function extraerPesosPosicionales(paginas) {
+  const PREFIJOS_NO_BL = /^(PALLET|BOX|LCL|CRATE|CARTON|DRUM|SKID|BUNDLE|ROLL|PACKAGE|PKG|LOOSE)$/i;
+  const pesosPorBl = new Map();
+  let lastBlNo = '';
+  paginas.forEach(filas => {
+    filas.forEach(fila => {
+      if (!fila.length) return;
+      const primero = fila[0].str;
+      const m = primero.match(/^([A-Z]{2,6})-(\d{5,10})$/);
+      let blNo = '';
+      if (m && !PREFIJOS_NO_BL.test(m[1])) {
+        blNo = m[1] + m[2];
+        lastBlNo = blNo;
+      } else {
+        if (!lastBlNo) return;
+        const cleaned = normContainerNo(primero);
+        const esContVin = isIsoContainer(cleaned) || /^[A-Z]{2}\d{8}$/i.test(cleaned);
+        if (!esContVin) return;
+        blNo = lastBlNo;
+      }
+      let kg = 0;
+      for (const it of fila) {
+        if (/^\d{1,3}(?:,\d{3})*\.\d{2}$/.test(it.str)) kg = parsePdfNum(it.str);
+      }
+      if (!pesosPorBl.has(blNo)) pesosPorBl.set(blNo, []);
+      pesosPorBl.get(blNo).push(kg);
+    });
+  });
+  return pesosPorBl;
+}
+
 /**
  * Parsea el formato US Customs 1302 (cargo manifest de Priority RORO).
  *
  * Es el único parser que produce cargoItems: genera una entrada por cada línea
  * del manifiesto, lo que permite varios ítems o vehículos por un mismo B/L.
  * @param {string} text Texto extraído del PDF
+ * @param {Map<string, number[]>} [pesosPosicionales] Pesos por B/L extraídos por posición (ver extraerPesosPosicionales) — si su conteo total no cuadra con las filas detectadas acá, se ignora y se usa el fondo común secuencial de siempre.
  * @returns {ParsedManifest}
  */
-function parseCustoms1302(text) {
+function parseCustoms1302(text, pesosPosicionales) {
   const header = {
     voyage_no:'', vessel_code:'', vessel_name:'', biz_company_code:'',
     loading_port:'', unloading_port:'', departure_date:'', arrival_date:'',
     manifest_no:'', carrier_code:'MPRIORO'
   };
 
-  const mShip = text.match(/Name of Ship[^\n]*\n(.+)/i);
+  // Bilingüe: la misma plantilla real (Priority RORO) puede traer este
+  // encabezado en inglés o en español según quién la generó — antes solo
+  // se reconocía "Name of Ship", así que una versión en español de la
+  // MISMA plantilla se hubiera ido al parser genérico de la DGA (una
+  // estrategia de extracción totalmente distinta) en vez de a este.
+  const mShip = text.match(/(?:Name of Ship|Nombre del? Buque|Nombre de la Nave)[^\n]*\n(.+)/i);
   if (mShip) {
     const mv = mShip[1].trim().match(/^(.*?)\s{2,}(\S+)$/);
     if (mv) {
@@ -304,19 +398,67 @@ function parseCustoms1302(text) {
   const rawPages = text.split(/(?:Page\s+\d+\/\d+|P[aá]gina\s*(?:\d+\/\d+)?)/i);
   const allEntries = [];
 
+  // Último B/L reconocido — persiste entre páginas porque un mismo B/L con
+  // varios contenedores puede partirse en un salto de página (ver más abajo).
+  let lastBlNo = '';
+  // Último shipper/consignee/notify completos — bug real encontrado con
+  // K1340: cuando una de las 3 partes de una fila es IDÉNTICA a la de la
+  // fila de arriba, el PDF no la vuelve a imprimir (mismo fenómeno que ya
+  // se maneja para contenedores y B/L, aplicado ahora a los datos de las
+  // partes) — la celda queda vacía, entendiéndose "igual que arriba". Sin
+  // esto, casi la mitad de los B/L de un PDF real (46 de 101 en K1340)
+  // quedaban sin consignatario ni consignador.
+  let lastShipper = null, lastConsignee = null, lastNotify = null;
+  let partesHeredadas = 0;
+  // Contadores para las advertencias de consistencia al final del parseo —
+  // cada carrier/barco imprime su PDF con variaciones de formato distintas
+  // (la de hoy: celdas de B/L fusionadas), y no hay forma de "aprender" un
+  // layout nuevo sin verlo antes. Esto no evita el problema, pero lo saca a
+  // la luz al momento de cargar en vez de perderse en silencio como pasó con
+  // CF365 — quien carga el PDF ve la advertencia y puede revisar a mano.
+  let contenedoresReconectados = 0;
+  // Contenedor huérfano que NO se reconecta porque justo antes termina un
+  // bloque de dirección completo — la fila real a la que pertenece tiene su
+  // propio "PYRR-XXXXXXX" perdido en la extracción del PDF (ver comentario
+  // más abajo). Se pierde ese contenedor puntual en vez de arriesgar
+  // corromper el peso de todos los B/L que siguen.
+  let contenedorSinBlPerdido = 0;
+  let totalWeightPdf = 0;
+  // Filas con peso EXPLÍCITAMENTE en blanco — el PDF imprime "— KG"/"— LBS"
+  // (con guión) pegado directo a "40' CONT" sin sello/cantidad/descripción de
+  // por medio, en vez del "— KG" normal que sí trae su número en la página
+  // siguiente. Caso real en K1340 (B/L PYRR-2631248, contenedor PRRU 403698-5,
+  // de 8): esa fila no aporta NINGÚN número al documento — a diferencia de
+  // una fila normal, cuyo peso simplemente está diferido a la página
+  // siguiente. Si se le asigna igual un par del fondo común (como hacía el
+  // código antes), le "roba" el peso a la fila real que sigue, y desde ahí
+  // en adelante CADA fila del resto del manifiesto queda una posición
+  // corrida — el bug real detrás de "lee mal el peso en los PDF". La suma
+  // total no delata el problema porque ningún número se pierde, solo se
+  // reparte en la fila equivocada.
+  let pesosVaciosExplicitos = 0;
+
+  // Números de peso (KG,LBS) de TODO el documento, en el mismo orden en que
+  // aparecen — NO se reinician por página. El par de una fila puede quedar
+  // partido justo en el salto de página (el KG al final de una página, su
+  // LBS al inicio de la siguiente): si se empareja por página, esa página
+  // "adelantada" en media pareja desalinea TODOS los pesos siguientes de
+  // ahí en adelante (cada entrada recibe el peso de la fila anterior o
+  // siguiente, en KG o LBS mezclados). Emparejando de una sola vez al final,
+  // sobre el documento completo, el corte de página deja de importar.
+  const allPureNums = [];
+
   rawPages.forEach((pageText, pIdx) => {
     if (!pageText.trim()) return;
     const lines = pageText.split('\n');
 
     // Pesos al inicio de la página
-    const pureNums = [];
     for (let i = 0; i < lines.length; i++) {
       const l = lines[i].trim();
-      if (/^\s*\d{1,3}(?:,\d{3})*\.\d{2}\s*$/.test(l)) pureNums.push(parsePdfNum(l));
-      if (/1\.- Name of Ship/i.test(l) || /BL Numbers/i.test(l)) break;
+      if (/^\s*\d{1,3}(?:,\d{3})*\.\d{2}\s*$/.test(l)) allPureNums.push(parsePdfNum(l));
+      if (/1\.-\s*(?:Name of Ship|Nombre del? Buque|Nombre de la Nave)/i.test(l) ||
+          /BL Numbers|N[uú]meros? de B\/?L/i.test(l)) break;
     }
-    const pageWeightsKg = [];
-    for (let i = 0; i + 1 < pureNums.length; i += 2) pageWeightsKg.push(pureNums[i]);
 
     // Entradas de B/L en la página. El PDF imprime el B/L con guión
     // ("PYRR-2624176"), pero el mismo número en el XML de la DGA no lo trae
@@ -336,10 +478,64 @@ function parseCustoms1302(text) {
     const blLineRe = /^([A-Z]{2,6})-(\d{5,10})(?:\s+(\S.*))?$/;
     const pageEntries = [];
     for (let i = 0; i < lines.length; i++) {
-      const m = lines[i].trim().match(blLineRe);
-      if (!m || PREFIJOS_NO_BL.test(m[1])) continue;
+      const raw = lines[i].trim();
+      const m = raw.match(blLineRe);
+      let blNo = '';
+      let rawSecondToken = '';
 
-      const rawSecondToken = (m[3] || '').trim();
+      if (m && !PREFIJOS_NO_BL.test(m[1])) {
+        blNo = m[1] + m[2];
+        rawSecondToken = (m[3] || '').trim();
+        lastBlNo = blNo;
+      } else {
+        // Contenedor "huérfano": cuando un B/L tiene más de un contenedor, la
+        // celda del B/L en el PDF original está fusionada visualmente para
+        // esas filas extra — el texto extraído no repite "PYRR-1234567" y la
+        // línea llega sola, solo con el número de contenedor. Sin esto la
+        // línea no hacía match con nada y se perdía entera (contenedor Y
+        // peso), aunque sí perteneciera a un B/L real — confirmado contra
+        // manifiestos reales de flatbed/rebar con muchos contenedores por B/L
+        // (ej. CF365: PYRR-2631003, PYRR-2631004).
+        if (!lastBlNo) continue;
+        const cleanedOrphan = normContainerNo(raw);
+        // Un vehículo adicional del mismo B/L (varios autos en un mismo
+        // envío) se fusiona igual que un contenedor extra — bug real
+        // confirmado en AU050S ("RM1-1002654" huérfano se perdía en
+        // silencio, ni siquiera contaba como advertencia, porque este
+        // chequeo solo aceptaba contenedores ISO reales). El patrón es
+        // preciso a propósito (2 letras + 8 dígitos, el código de chasis
+        // corto que usa este sistema) y NO un rango de longitud genérico
+        // como el de la clasificación VIN de más abajo — acá cualquier
+        // línea suelta del documento (teléfono, fecha, número AES ITN)
+        // puede caer en ese rango de longitud y se tomaba como fila
+        // fusionada real, inventando B/L falsos.
+        const pareceVehiculo = /^[A-Z]{2}\d{8}$/i.test(cleanedOrphan);
+        if (!isIsoContainer(cleanedOrphan) && !pareceVehiculo) continue;
+        // Pero si justo antes (sin nada de por medio) termina un bloque de
+        // dirección completo — "... (PUERTO RICO)", "... (REPUBLICA
+        // DOMINICANA)", etc., el mismo patrón con el que SIEMPRE cierra un
+        // bloque de shipper/consignee/notify — esto NO es una fila fusionada
+        // del B/L anterior: es una fila nueva cuyo propio "PYRR-XXXXXXX" se
+        // perdió en la extracción del PDF (bug real encontrado con K1338,
+        // B/L "PYRR-2630003": un contenedor de OTRO envío, con su propio
+        // shipper/consignee/notify completo, quedó pegado al B/L anterior
+        // sin ningún B/L real de por medio). Reconectarlo de todas formas
+        // no solo pone el contenedor en el B/L equivocado — como ese
+        // contenedor NO tiene peso propio en el PDF, "roba" el peso del
+        // siguiente B/L real y desalinea el peso de TODOS los que siguen.
+        // Mejor perder este contenedor puntual (con aviso) que corromper el
+        // peso de todo el resto del manifiesto.
+        let j2 = i - 1;
+        while (j2 >= 0 && lines[j2].trim() === '') j2--;
+        if (j2 >= 0 && /\([A-ZÁÉÍÓÚÑ\s.,\-]+\)\s*$/i.test(lines[j2].trim())) {
+          contenedorSinBlPerdido++;
+          continue;
+        }
+        blNo = lastBlNo;
+        rawSecondToken = raw;
+        contenedoresReconectados++;
+      }
+
       let containerNo = '';
       let vin = '';
       let equipmentType = '';
@@ -348,7 +544,14 @@ function parseCustoms1302(text) {
         const cleaned = normContainerNo(rawSecondToken);
         if (isIsoContainer(cleaned)) {
           containerNo = cleaned;
-        } else if (/^[A-HJ-NPR-Z0-9]{11,17}$/i.test(cleaned)) {
+        } else if (/^[A-HJ-NPR-Z0-9]{10,17}$/i.test(cleaned)) {
+          // {10,17} y no {11,17}: bug real confirmado en AU050S — este
+          // sistema identifica vehículos con un código de chasis corto
+          // ("RM1-1200191", 10 caracteres sin el guión), no un VIN completo
+          // de 17. Con el mínimo en 11 estos códigos no calzaban acá ni con
+          // isIsoContainer (que exige 11 exactos con formato distinto) y
+          // caían al catch-all genérico de abajo, quedando mal guardados
+          // como número de contenedor en vez de vin/VEHICLE.
           vin = cleaned;
           equipmentType = 'VEHICLE';
         } else if (!/^[—-]?(KG|LBS|N\/?A)$/i.test(cleaned) && cleaned.replace(/[^A-Z0-9]/gi, '').length >= 6) {
@@ -362,7 +565,7 @@ function parseCustoms1302(text) {
       }
 
       const e = {
-        bl_no: m[1] + m[2],
+        bl_no: blNo,
         container_no: containerNo,
         vin: vin,
         size: '',
@@ -374,7 +577,8 @@ function parseCustoms1302(text) {
         page: pIdx + 1,
         shipper: null,
         consignee: null,
-        notify: null
+        notify: null,
+        pesoVacioExplicito: false
       };
 
       let j = i + 1;
@@ -408,22 +612,111 @@ function parseCustoms1302(text) {
       const desc = [];
       for (j = descStart; j < lines.length; j++) {
         const t = lines[j].trim();
-        if (/^[—-]?\s*(KG|LBS|SH|CO|NO|NF)$/.test(t) || /^P[aá]gina/i.test(t) || /^Page/i.test(t) || /^1\.- Name/i.test(t)) break;
+        if (/^[—-]?\s*(KG|LBS|SH|CO|NO|NF)$/.test(t) || /^P[aá]gina/i.test(t) || /^Page/i.test(t) ||
+            /^1\.-\s*(?:Name|Nombre)/i.test(t)) break;
         desc.push(t);
         if (desc.join(' ').length > 400) break;
       }
-      e.goods = desc.join(' ').replace(/\s+/g, ' ').trim().substring(0, 300);
+      // La unidad de peso a veces queda pegada a la última línea de la
+      // descripción en vez de venir en su propia línea (confirmado en
+      // AU051S: "TOYOTA CAMRY-HV  KG" en una sola línea) — el corte de
+      // arriba no la separa porque la línea no es SOLO "KG"/"LBS", así que
+      // se recorta acá como último paso, ya con la descripción completa.
+      e.goods = desc.join(' ').replace(/\s+/g, ' ').trim().replace(/\s+(?:KG|LBS)$/i, '').substring(0, 300);
+
+      // "— KG"/"— LBS" con guión (a diferencia de " KG"/" LBS" sin guión, que
+      // es el caso normal cuyo número está diferido a la página siguiente):
+      // esta fila no tiene ningún número de peso en todo el documento.
+      if (/^[—-]\s*(KG|LBS)$/.test((lines[j] || '').trim())) {
+        e.pesoVacioExplicito = true;
+        pesosVaciosExplicitos++;
+      }
 
       const parties = collectPartyBlocks(lines, i);
+      // collectPartyBlocks siempre asume que, si faltan bloques, son los
+      // MÁS CERCANOS al principio (shipper primero) los que faltan — pero
+      // eso no siempre es así: caso real confirmado en K1340 donde la ÚNICA
+      // parte encontrada era justo el shipper (repetido a propósito porque
+      // el mismo exportador mandó el B/L siguiente), y consignatario/notify
+      // — iguales a los de la fila de arriba — eran los que de verdad no se
+      // repitieron. Se detecta comparando la única parte encontrada contra
+      // el shipper de la fila anterior: si calza, es la prueba de que ESE
+      // es su rol real, no el que collectPartyBlocks asumió por posición.
+      const encontradas = parties.filter(Boolean);
+      if (encontradas.length === 1 && lastShipper && encontradas[0][0] === lastShipper[0]) {
+        parties[0] = encontradas[0]; parties[1] = null; parties[2] = null;
+      }
+      if (parties[0]) lastShipper = parties[0]; else if (lastShipper) { parties[0] = lastShipper; partesHeredadas++; }
+      if (parties[1]) lastConsignee = parties[1]; else if (lastConsignee) { parties[1] = lastConsignee; partesHeredadas++; }
+      if (parties[2]) lastNotify = parties[2]; else if (lastNotify) { parties[2] = lastNotify; partesHeredadas++; }
       e.shipper = parties[0]; e.consignee = parties[1]; e.notify = parties[2];
       pageEntries.push(e);
     }
 
-    pageEntries.forEach((e, idx) => {
-      e.gross_weight = idx < pageWeightsKg.length ? pageWeightsKg[idx] : 0;
-      allEntries.push(e);
-    });
+    pageEntries.forEach(e => allEntries.push(e));
   });
+
+  // Un peso por fila, emparejado sobre el documento COMPLETO (ver comentario
+  // de allPureNums más arriba) — así el corte de página no desalinea nada.
+  const allWeightsKg = [];
+  for (let i = 0; i + 1 < allPureNums.length; i += 2) allWeightsKg.push(allPureNums[i]);
+  totalWeightPdf = allWeightsKg.reduce((a, b) => a + b, 0);
+  // Las filas con "pesoVacioExplicito" SIEMPRE pesan 0 (confirmado: el PDF
+  // nunca trae un peso real ahí) — pero NO siempre está ausente del fondo
+  // común: a veces el "0.00/0.00" sí se imprime, diferido a la página
+  // siguiente igual que cualquier fila normal (confirmado en K1340,
+  // PYRR-2632075: 3 contenedores con "— KG" cuyo 0.00 real SÍ aparece
+  // arriba de la página siguiente); otras veces no se imprime nada en
+  // absoluto (confirmado en K1340, PYRR-2631248 contenedor PRRU 403698-5:
+  // el siguiente número real en el documento es el peso del B/L
+  // siguiente, no un 0.00 para este contenedor). Ambos casos se ven
+  // idénticos en el texto ("— KG"/"— LBS"), así que se decide mirando el
+  // siguiente número disponible: si es (casi) cero, es el 0.00 diferido de
+  // esta fila y sí se consume; si no, esta fila no aportó nada al fondo
+  // común y no se toca (evita robarle el peso real a la fila siguiente).
+  // Filas cuyo peso quedó en 0 porque el documento se acabó justo antes de
+  // imprimirlo — no porque el B/L de verdad no traiga peso. Caso real
+  // (AU050S, archivo partido en varios PDF por el sistema de origen): la
+  // última fila de un PDF de 37/37 páginas tiene su peso diferido "a la
+  // página siguiente" como cualquier fila normal, pero esa página no existe
+  // en ESTE archivo — quedó en el PDF que sigue (u otro que nunca se generó).
+  // A diferencia de pesoVacioExplicito, acá el dato SÍ existía en el
+  // manifiesto real, solo que no en el recorte que llegó — por eso amerita
+  // su propio aviso en vez de mezclarse con el de "— KG" genuinamente vacío.
+  // Si pdfjs-dist encontró exactamente una fila posicional por cada entrada
+  // detectada acá (mismo conteo total), el peso de cada entrada se lee
+  // directamente de su propia fila — no hay fondo común que pueda
+  // desalinearse, así que ninguna de las advertencias de peso de abajo
+  // aplica. Si el conteo no cuadra (formato distinto, u otra falla puntual
+  // de extracción), se cae al método secuencial de siempre.
+  const totalPosicional = pesosPosicionales
+    ? [...pesosPosicionales.values()].reduce((a, arr) => a + arr.length, 0)
+    : 0;
+  const usarPesoPosicional = !!pesosPosicionales && totalPosicional === allEntries.length;
+
+  let pesosSinPagina = 0;
+  if (usarPesoPosicional) {
+    const cursores = new Map();
+    allEntries.forEach(e => {
+      const idx = cursores.get(e.bl_no) || 0;
+      const pesos = pesosPosicionales.get(e.bl_no) || [];
+      e.gross_weight = pesos[idx] ?? 0;
+      cursores.set(e.bl_no, idx + 1);
+    });
+  } else {
+    let weightPtr = 0;
+    allEntries.forEach(e => {
+      if (e.pesoVacioExplicito) {
+        const siguiente = allWeightsKg[weightPtr];
+        if (siguiente !== undefined && siguiente < 1) weightPtr++;
+        e.gross_weight = 0;
+        return;
+      }
+      if (weightPtr >= allWeightsKg.length) pesosSinPagina++;
+      e.gross_weight = weightPtr < allWeightsKg.length ? allWeightsKg[weightPtr] : 0;
+      weightPtr++;
+    });
+  }
 
   // Consolidar B/Ls y extraer Contenedores y Cargo Items
   const blMap = new Map();
@@ -489,7 +782,9 @@ function parseCustoms1302(text) {
           gross_weight: e.gross_weight,
           net_weight: 0,
           seal_no1: '',
-          size: e.size || '40'
+          // Sin tamaño en el PDF queda vacío (el editor lo marca en rojo): un
+          // '40' inventado terminaba en el TXT como si fuera real.
+          size: e.size || ''
         });
       }
     }
@@ -505,7 +800,85 @@ function parseCustoms1302(text) {
     });
   });
 
-  return { header, bls: [...blMap.values()], containers, containerBLs, cargoItems };
+  const bls = [...blMap.values()];
+
+  // ── Advertencias de consistencia ──────────────────────────────────────────
+  // No detectan un layout nuevo por sí solas — comparan cifras que deberían
+  // cuadrar sin importar el formato del PDF, así que cualquier fila que el
+  // parser haya perdido o malinterpretado (el bug de hoy, o uno futuro con
+  // otro carrier) deja una diferencia medible en vez de pasar inadvertido.
+  const warnings = [];
+  const totalWeightAsignado = bls.reduce((a, bl) => a + bl.gross_weight, 0);
+  // Margen de 1 kg: redondeos de parsePdfNum entre páginas, no un error real.
+  // En modo posicional (usarPesoPosicional) esta comparación no aplica: el
+  // "peso total impreso" de abajo viene del fondo común de página (el mismo
+  // que resultó incompleto/duplicado en AU051S), no del peso real de cada fila.
+  if (!usarPesoPosicional && Math.abs(totalWeightAsignado - totalWeightPdf) > 1) {
+    warnings.push(
+      `El peso total repartido entre los B/L (${totalWeightAsignado.toFixed(2)} kg) no coincide ` +
+      `con el peso total impreso en el PDF (${totalWeightPdf.toFixed(2)} kg) — puede haberse ` +
+      `perdido o duplicado una fila. Revisa los B/L antes de continuar.`
+    );
+  }
+  if (contenedoresReconectados > 0) {
+    warnings.push(
+      `${contenedoresReconectados} contenedor${contenedoresReconectados > 1 ? 'es' : ''} ` +
+      `aparecía${contenedoresReconectados > 1 ? 'n' : ''} en el PDF sin el número de B/L junto ` +
+      `(celda fusionada en el PDF original) y se reconectó automáticamente con el B/L anterior — ` +
+      `confirma que quedó en el B/L correcto.`
+    );
+  }
+  if (contenedorSinBlPerdido > 0) {
+    warnings.push(
+      `${contenedorSinBlPerdido} contenedor${contenedorSinBlPerdido > 1 ? 'es' : ''} ` +
+      `aparecía${contenedorSinBlPerdido > 1 ? 'n' : ''} en el PDF con su propia dirección de ` +
+      `shipper/consignatario pero SIN ningún número de B/L junto — a diferencia del aviso ` +
+      `anterior, no se reconectó con el B/L de arriba (habría quedado en el B/L equivocado y ` +
+      `corrompido el peso de los demás) y por ahora se perdió esa fila. Revisar el PDF original: ` +
+      `probablemente falta un "PYRR-XXXXXXX" que no se imprimió o no se pudo leer.`
+    );
+  }
+  if (partesHeredadas > 0) {
+    warnings.push(
+      `${partesHeredadas} shipper/consignatario/notify no venían impresos en el PDF (idénticos ` +
+      `a los de la fila de arriba, así que no se repitieron) y se completaron automáticamente con ` +
+      `el último valor conocido de esa parte — confirma que el B/L correspondiente quedó con el ` +
+      `shipper/consignatario/notify correcto.`
+    );
+  }
+  if (pesosVaciosExplicitos > 0) {
+    warnings.push(
+      `${pesosVaciosExplicitos} contenedor${pesosVaciosExplicitos > 1 ? 'es' : ''} ` +
+      `no trae${pesosVaciosExplicitos > 1 ? 'n' : ''} ningún peso impreso en el PDF ("— KG"/"— LBS" ` +
+      `sin número, no diferido a otra página) y qued${pesosVaciosExplicitos > 1 ? 'aron' : 'ó'} en 0 kg ` +
+      `— revisa si es un dato real que falta en el manifiesto original.`
+    );
+  }
+  if (pesosSinPagina > 0) {
+    // Un mismo B/L con varios contenedores puede aportar más de una fila acá
+    // (ej. AU050S: PYRR2632848 con 10 contenedores, los últimos 7 sin peso
+    // propio) — se listan los B/L una sola vez, no una por contenedor.
+    const blsAfectados = [...new Set(
+      allEntries.filter(e => !e.pesoVacioExplicito).slice(-pesosSinPagina).map(e => e.bl_no)
+    )];
+    warnings.push(
+      `${pesosSinPagina} fila${pesosSinPagina > 1 ? 's' : ''} de contenedor quedaron en 0 kg porque el ` +
+      `documento termina justo antes de imprimir su peso (diferido a una página que no existe en este ` +
+      `PDF) — a diferencia del aviso anterior, acá el peso SÍ existía en el manifiesto original. ` +
+      `Revisa manualmente el peso de: ${blsAfectados.join(', ')}.`
+    );
+  }
+  const conContenedor = new Set(containerBLs.map(cb => cb.bl_no));
+  const blsSinContenedor = bls.filter(bl => !conContenedor.has(bl.bl_no)).length;
+  if (blsSinContenedor > 0) {
+    warnings.push(
+      `${blsSinContenedor} B/L no trae${blsSinContenedor > 1 ? 'n' : ''} ningún número de ` +
+      `contenedor en el PDF — puede ser carga suelta real, o un dato que faltó digitar en el ` +
+      `manifiesto original.`
+    );
+  }
+
+  return { header, bls, containers, containerBLs, cargoItems, warnings };
 }
 
 // ¿El texto corresponde al formato US Customs 1302 de Priority RORO?
@@ -515,11 +888,13 @@ function parseCustoms1302(text) {
  * @returns {boolean}
  */
 function isCustoms1302(text) {
-  return /Name of Ship/i.test(text) && (
+  return /(?:Name of Ship|Nombre del? Buque|Nombre de la Nave)/i.test(text) && (
     /N[uú]mero de recibo/i.test(text) ||
     /Voyage Number/i.test(text) ||
+    /N[uú]mero de [Vv]iaje/i.test(text) ||
     /Customs Form 1300/i.test(text) ||
-    /BL Numbers/i.test(text)
+    /BL Numbers/i.test(text) ||
+    /N[uú]meros? de B\/?L/i.test(text)
   );
 }
 
@@ -613,7 +988,7 @@ function parseGenericDga(text) {
     throw new Error('No se encontraron B/L en el PDF. Verifica que sea un manifiesto DGA digital; si el formato es distinto, envía un ejemplo para ajustar el lector.');
   }
 
-  return { header, bls, containers, containerBLs };
+  return { header, bls, containers, containerBLs, warnings: [] };
 }
 
 // Punto de entrada: extrae el texto del PDF y elige el parser según el formato.
@@ -632,7 +1007,14 @@ async function parsePdfManifest(buffer) {
 
   // Tipo 1 — US Customs 1302 (cargo manifest Priority RORO / SIGA / Inbound & Outbound)
   if (isCustoms1302(text)) {
-    const r = parseCustoms1302(text);
+    let pesosPosicionales;
+    try {
+      const paginas = await agruparFilasPosicionales(buffer);
+      pesosPosicionales = extraerPesosPosicionales(paginas);
+    } catch (err) {
+      console.error('No se pudo extraer posiciones del PDF para leer los pesos (se usa el método anterior):', err.message);
+    }
+    const r = parseCustoms1302(text, pesosPosicionales);
     if (r.bls.length) return r;
   }
 
@@ -640,9 +1022,41 @@ async function parsePdfManifest(buffer) {
   return parseGenericDga(text);
 }
 
+/**
+ * Un mismo número de contenedor apareciendo en DOS B/L distintos del mismo
+ * archivo casi siempre es un error de digitación en el manifiesto original o
+ * de lectura del PDF (un contenedor real nunca pertenece a dos B/L a la
+ * vez) — bug real encontrado analizando K1339. Aplica sobre el resultado ya
+ * parseado (containerBLs), así que sirve para CUALQUIER formato — PDF 1302,
+ * DGA genérico o XML — sin repetir la lógica en cada parser.
+ *
+ * Se nombra el/los contenedor(es) exactos y en qué B/L aparecen — mientras
+ * no haya forma de saber automáticamente cuál copia es la correcta, esto
+ * permite revisar a mano y quitar la sobrante desde "Contenedores
+ * asociados" (ícono de papelera) en el B/L equivocado, en vez de
+ * descubrirlo después en SISCOMMATE.
+ * @param {{bl_no: string, container_no: string}[]} containerBLs
+ * @returns {string[]} Advertencias a agregar a parsed.warnings (vacío si no hay problema)
+ */
+function advertirContenedoresEnVariosBl(containerBLs) {
+  const blsPorContenedor = new Map();
+  (containerBLs || []).forEach(cb => {
+    if (!blsPorContenedor.has(cb.container_no)) blsPorContenedor.set(cb.container_no, new Set());
+    blsPorContenedor.get(cb.container_no).add(cb.bl_no);
+  });
+  const repetidos = [...blsPorContenedor.entries()].filter(([, bls]) => bls.size > 1);
+  if (!repetidos.length) return [];
+  const detalle = repetidos.map(([cont, bls]) => `${cont} (en ${[...bls].join(' y ')})`).join(', ');
+  return [
+    `${repetidos.length} contenedor${repetidos.length > 1 ? 'es' : ''} aparece${repetidos.length > 1 ? 'n' : ''} repetido${repetidos.length > 1 ? 's' : ''} en más de un B/L — casi seguro un error de digitación en el manifiesto original o de lectura del PDF: ${detalle}. Revisa cuál es el correcto y quita el sobrante desde "Contenedores asociados" en el B/L equivocado (ícono de papelera) antes de continuar.`,
+  ];
+}
+
 module.exports = {
   normalizePdfDate, parsePdfNum, grabPdf, emptyPdfBL,
   isIsoContainer, normContainerNo, isPhoneNumber,
   parsePdfParty, collectPartyBlocks,
   isCustoms1302, parseCustoms1302, parseGenericDga, parsePdfManifest,
+  advertirContenedoresEnVariosBl,
+  agruparFilasPosicionales, extraerPesosPosicionales,
 };

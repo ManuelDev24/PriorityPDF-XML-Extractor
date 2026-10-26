@@ -8,6 +8,8 @@ const db = require('../db/connection');
 /** @typedef {import('../types').BLRow} BLRow */
 /** @typedef {import('../types').CargoItemRow} CargoItemRow */
 const { generateTxtLine1, generateTxtLine2 } = require('../services/txtGenerator');
+const { moverBl } = require('../services/blMove');
+const { validarLote } = require('../services/blValidarLote');
 
 const router = express.Router();
 
@@ -91,6 +93,64 @@ router.put('/api/bl/:id/renombrar', (req, res) => {
   res.json({ ok: true, bl_no: nuevoNo });
 });
 
+// ── MOVER VARIOS B/L A OTRO MANIFIESTO (LOTE) ─────────────────────────────────
+// Misma lógica que el mover individual de abajo, pero para la cantidad de
+// B/L que el usuario seleccione a la vez. Un B/L cuyo bl_no ya exista en el
+// destino se omite (se reporta en "omitidos") en vez de abortar el lote
+// entero — así un solo choque de nombres no bloquea mover el resto.
+//
+// Registrada ANTES de "PUT /api/bl/:id": Express prueba las rutas en el
+// orden en que se registran, y "/api/bl/:id" hace match con CUALQUIER
+// segundo segmento (incluyendo literalmente "mover-lote" como si fuera un
+// id) — si esta ruta fuera declarada después, esa más genérica se la comía
+// primero y la petición nunca llegaba aquí (confirmado en pruebas: llegaba
+// un 200 OK vacío en vez de mover nada).
+router.put('/api/bl/mover-lote', (req, res) => {
+  const blIds = Array.isArray(req.body?.bl_ids) ? req.body.bl_ids.map(Number).filter(Number.isInteger) : [];
+  const destinoId = Number(req.body?.manifest_id);
+  if (!blIds.length) return res.status(400).json({ error: 'Falta la lista de B/L a mover' });
+  if (!Number.isInteger(destinoId)) return res.status(400).json({ error: 'Falta el manifiesto destino' });
+
+  const destino = db.prepare('SELECT id FROM manifests WHERE id=?').get(destinoId);
+  if (!destino) return res.status(404).json({ error: 'Manifiesto destino no encontrado' });
+
+  const movidos = [];
+  const omitidos = [];
+  const origenesAfectados = new Set();
+
+  // El B/L movido conserva por defecto el sort_seq de SU documento original
+  // (posición 3 de un PDF de 80, por ejemplo) — eso choca con la numeración
+  // del manifiesto destino y lo hacía aparecer intercalado en cualquier
+  // posición en vez de al final. Se le asigna un sort_seq nuevo, correlativo
+  // al final de lo que ya haya en el destino (uno por B/L movido en este
+  // mismo lote, para que tampoco choquen entre ellos).
+  let siguienteSeq = (db.prepare('SELECT COALESCE(MAX(sort_seq), -1) AS m FROM bills_of_lading WHERE manifest_id=?').get(destinoId).m) + 1;
+
+  blIds.forEach(id => {
+    /** @type {BLRow} */
+    const bl = db.prepare('SELECT * FROM bills_of_lading WHERE id=?').get(id);
+    if (!bl) { omitidos.push({ id, motivo: 'No encontrado' }); return; }
+    if (bl.manifest_id === destinoId) { omitidos.push({ id, bl_no: bl.bl_no, motivo: 'Ya está en ese manifiesto' }); return; }
+    if (db.prepare('SELECT 1 FROM bills_of_lading WHERE manifest_id=? AND bl_no=?').get(destinoId, bl.bl_no)) {
+      omitidos.push({ id, bl_no: bl.bl_no, motivo: `Ya existe un B/L "${bl.bl_no}" en el manifiesto destino` });
+      return;
+    }
+    origenesAfectados.add(bl.manifest_id);
+    moverBl(db, bl, destinoId, siguienteSeq++);
+    movidos.push({ id: bl.id, bl_no: bl.bl_no });
+  });
+
+  const estados_origen = {};
+  origenesAfectados.forEach(id => { estados_origen[id] = recalcularEstadoManifiesto(id); });
+  const status_nuevo = recalcularEstadoManifiesto(destinoId);
+
+  res.json({
+    ok: true, movidos, omitidos,
+    manifest_id_destino: destinoId, status_nuevo,
+    estados_origen,
+  });
+});
+
 router.put('/api/bl/:id', (req, res) => {
   const sets = []; const vals = [];
   CAMPOS_EDITABLES_BL.forEach(f => {
@@ -107,6 +167,65 @@ router.put('/api/bl/:id', (req, res) => {
     if (bl) manifest_status = recalcularEstadoManifiesto(bl.manifest_id);
   }
   res.json({ ok: true, manifest_status });
+});
+
+// ── VALIDAR TODOS LOS B/L DE UN VIAJE ─────────────────────────────────────────
+// Valida solo los B/L completos (la misma regla que bloquea el export y pinta
+// el punto rojo del sidebar — ver services/blValidarLote.js) y deja los
+// incompletos como están, diciendo por qué. El estado del viaje se recalcula
+// UNA vez al final, con la misma función que usan mover/crear/borrar un B/L,
+// así que un viaje ya enviado a SISCOMMATE sigue sin recalcularse.
+router.put('/api/manifests/:id/validar-todos', (req, res) => {
+  const manifestId = Number(req.params.id);
+  const r = Number.isInteger(manifestId) ? validarLote(db, manifestId) : null;
+  if (!r) return res.status(404).json({ error: 'Manifiesto no encontrado' });
+  const manifest_status = recalcularEstadoManifiesto(manifestId);
+  res.json({ ok: true, ...r, manifest_status });
+});
+
+// ── ELIMINAR VARIOS B/L A LA VEZ (LOTE) ───────────────────────────────────────
+// Pensado para reparaciones: cuando un viaje se cargó con datos malos (ej.
+// contenedores duplicados por un bug del parser ya corregido — ver K1339),
+// borrar B/L de a uno para volver a cargar el PDF limpio no era práctico con
+// decenas de B/L. Misma lógica que el DELETE individual de abajo, repetida
+// por cada id — un B/L que ya no existe se omite en vez de abortar el lote
+// entero.
+//
+// Registrada ANTES de "DELETE /api/bl/:id" por la misma razón que
+// PUT /api/bl/mover-lote: Express hace match de "/api/bl/:id" con CUALQUIER
+// segundo segmento, incluido literalmente "eliminar-lote" como si fuera un id.
+router.delete('/api/bl/eliminar-lote', (req, res) => {
+  const blIds = Array.isArray(req.body?.bl_ids) ? req.body.bl_ids.map(Number).filter(Number.isInteger) : [];
+  if (!blIds.length) return res.status(400).json({ error: 'Falta la lista de B/L a eliminar' });
+
+  const eliminados = [];
+  const omitidos = [];
+  const manifiestosAfectados = new Set();
+
+  const eliminarUno = db.transaction((bl) => {
+    db.prepare('DELETE FROM bl_cargo_items WHERE bl_id=?').run(bl.id);
+    db.prepare('DELETE FROM container_bl WHERE bl_no=? AND manifest_id=?').run(bl.bl_no, bl.manifest_id);
+    db.prepare(`
+      DELETE FROM containers
+      WHERE manifest_id=?
+        AND container_no NOT IN (SELECT container_no FROM container_bl WHERE manifest_id=?)
+    `).run(bl.manifest_id, bl.manifest_id);
+    db.prepare('DELETE FROM bills_of_lading WHERE id=?').run(bl.id);
+  });
+
+  blIds.forEach(id => {
+    /** @type {BLRow} */
+    const bl = db.prepare('SELECT * FROM bills_of_lading WHERE id=?').get(id);
+    if (!bl) { omitidos.push({ id, motivo: 'No encontrado' }); return; }
+    manifiestosAfectados.add(bl.manifest_id);
+    eliminarUno(bl);
+    eliminados.push({ id: bl.id, bl_no: bl.bl_no });
+  });
+
+  const estados = {};
+  manifiestosAfectados.forEach(id => { estados[id] = recalcularEstadoManifiesto(id); });
+
+  res.json({ ok: true, eliminados, omitidos, estados });
 });
 
 // ── ELIMINAR UN B/L (y sus items y vínculos de contenedor) ───────────────────
@@ -150,19 +269,11 @@ router.put('/api/bl/:id/mover', (req, res) => {
   }
 
   const origenId = bl.manifest_id;
-  const mover = db.transaction(() => {
-    db.prepare('UPDATE bills_of_lading SET manifest_id=? WHERE id=?').run(destinoId, bl.id);
-    db.prepare('UPDATE container_bl SET manifest_id=? WHERE bl_no=? AND manifest_id=?')
-      .run(destinoId, bl.bl_no, origenId);
-    db.prepare(`
-      UPDATE containers SET manifest_id=?
-      WHERE manifest_id=?
-        AND container_no IN (SELECT container_no FROM container_bl WHERE bl_no=? AND manifest_id=?)
-        AND container_no NOT IN (SELECT container_no FROM container_bl WHERE manifest_id=?)
-    `).run(destinoId, origenId, bl.bl_no, destinoId, origenId);
-    db.prepare('UPDATE bl_cargo_items SET manifest_id=? WHERE bl_id=?').run(destinoId, bl.id);
-  });
-  mover();
+  // Mismo motivo que en /api/bl/mover-lote: sin esto el B/L conserva el
+  // sort_seq de su documento original y aparece intercalado en el destino
+  // en vez de al final.
+  const nuevoSeq = (db.prepare('SELECT COALESCE(MAX(sort_seq), -1) AS m FROM bills_of_lading WHERE manifest_id=?').get(destinoId).m) + 1;
+  moverBl(db, bl, destinoId, nuevoSeq);
 
   const status_anterior = recalcularEstadoManifiesto(origenId);
   const status_nuevo = recalcularEstadoManifiesto(destinoId);
@@ -190,6 +301,14 @@ router.get('/api/bl/:id/txt-preview', (req, res) => {
 
   const carrier = db.prepare('SELECT ivu FROM carriers WHERE code=?').get(bl.carrier_code);
   bl.carrier_ivu = carrier ? carrier.ivu : '';
+
+  const containerSizes = {};
+  const containerWeights = {};
+  db.prepare('SELECT container_no, size, gross_weight FROM containers WHERE manifest_id=?').all(bl.manifest_id)
+    .forEach(c => { containerSizes[c.container_no] = c.size; containerWeights[c.container_no] = c.gross_weight; });
+  bl.containerSizes = containerSizes;
+  bl.containerWeights = containerWeights;
+  bl.containers = containerNos;
 
   // Un par línea1+línea2 por contenedor (igual que el TXT real)
   const pairs = containerNos.map(containerNo => ({
@@ -231,6 +350,76 @@ router.put('/api/containers/:id', (req, res) => {
   });
   actualizar();
   res.json({ ok: true, container_no: nuevoNo });
+});
+
+// Fija el tamaño de un contenedor por su número, creando la fila en containers
+// si no existe. Hay contenedores que están en container_bl (el B/L los lista)
+// pero sin fila propia — sin id el editor no podía darles tamaño y el TXT
+// salía con el campo en blanco.
+router.put('/api/manifests/:manifestId/containers-size', (req, res) => {
+  const manifestId = Number(req.params.manifestId);
+  const containerNo = String(req.body?.container_no || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const size = String(req.body?.size || '').trim();
+  if (!containerNo) return res.status(400).json({ error: 'Falta el número de contenedor' });
+  if (!size) return res.status(400).json({ error: 'Falta el tamaño' });
+  if (!db.prepare('SELECT 1 FROM manifests WHERE id=?').get(manifestId)) {
+    return res.status(404).json({ error: 'Manifiesto no encontrado' });
+  }
+  const vinculado = db.prepare('SELECT 1 FROM container_bl WHERE container_no=? AND manifest_id=?').get(containerNo, manifestId);
+  const existente = db.prepare('SELECT id FROM containers WHERE container_no=? AND manifest_id=?').get(containerNo, manifestId);
+  if (!vinculado && !existente) return res.status(404).json({ error: 'Ese contenedor no pertenece al manifiesto' });
+
+  let id;
+  if (existente) {
+    id = existente.id;
+    db.prepare('UPDATE containers SET size=? WHERE id=?').run(size, id);
+  } else {
+    id = db.prepare('INSERT INTO containers (manifest_id,container_no,size) VALUES (?,?,?)')
+      .run(manifestId, containerNo, size).lastInsertRowid;
+  }
+  res.json({ ok: true, container: db.prepare('SELECT * FROM containers WHERE id=?').get(id) });
+});
+
+// Quita un contenedor de la lista "Contenedores asociados" de UN B/L — para
+// cuando el mismo número quedó repetido ahí (ej. el PDF lo trajo duplicado
+// para el mismo B/L). Solo borra UNA fila de container_bl (por rowid, no hay
+// PK) así que un duplicado se quita a la vez sin tocar el resto.
+router.delete('/api/bl/:id/containers', (req, res) => {
+  const bl = db.prepare('SELECT * FROM bills_of_lading WHERE id=?').get(req.params.id);
+  if (!bl) return res.status(404).json({ error: 'B/L no encontrado' });
+
+  const containerNo = String(req.body?.container_no || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (!containerNo) return res.status(400).json({ error: 'Falta el número de contenedor' });
+
+  const eliminar = db.transaction(() => {
+    db.prepare(`
+      DELETE FROM container_bl WHERE rowid = (
+        SELECT rowid FROM container_bl WHERE container_no=? AND bl_no=? AND manifest_id=? LIMIT 1
+      )
+    `).run(containerNo, bl.bl_no, bl.manifest_id);
+
+    // Si ningún B/L de este manifiesto usa ya ese contenedor, también se
+    // borra de la tabla containers — si no, queda huérfano para siempre.
+    const vinculosEnManifiesto = db.prepare(
+      'SELECT COUNT(*) c FROM container_bl WHERE container_no=? AND manifest_id=?'
+    ).get(containerNo, bl.manifest_id).c;
+    if (vinculosEnManifiesto === 0) {
+      db.prepare('DELETE FROM containers WHERE container_no=? AND manifest_id=?').run(containerNo, bl.manifest_id);
+    }
+
+    // Si ya no queda ningún vínculo de ESTE B/L con ese contenedor (se quitó
+    // el único, o el último duplicado) y era el que usaba para Hacienda, se
+    // limpia — si no, el TXT seguiría mandando un contenedor que ya no
+    // aparece en "Contenedores asociados".
+    const quedaEnEsteBL = db.prepare(
+      'SELECT COUNT(*) c FROM container_bl WHERE container_no=? AND bl_no=? AND manifest_id=?'
+    ).get(containerNo, bl.bl_no, bl.manifest_id).c;
+    if (quedaEnEsteBL === 0 && bl.hacienda_container_no === containerNo) {
+      db.prepare(`UPDATE bills_of_lading SET hacienda_container_no='' WHERE id=?`).run(bl.id);
+    }
+  });
+  eliminar();
+  res.json({ ok: true });
 });
 
 // ── CARGO ITEMS POR B/L ──────────────────────────────────────────────────────
@@ -280,3 +469,4 @@ router.delete('/api/bl-cargo-items/:id', (req, res) => {
 });
 
 module.exports = router;
+module.exports.recalcularEstadoManifiesto = recalcularEstadoManifiesto;
